@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 base64.workspace = true
+brolga-store.workspace = true
 getrandom.workspace = true
 reqwest.workspace = true
 serde.workspace = true

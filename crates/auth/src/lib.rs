@@ -10,6 +10,7 @@
 //! only in memory. Neither is ever written to a log, and the types that hold
 //! them print as `[redacted]`.
 
+mod accounts;
 mod browser;
 mod claims;
 mod device;
@@ -19,6 +20,7 @@ mod pkce;
 mod secrets;
 mod token;
 
+pub use accounts::{AccountError, Accounts};
 pub use browser::BrowserSignIn;
 pub use claims::claims_challenge;
 pub use device::DeviceSignIn;
