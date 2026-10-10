@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "brolga": {
+      "command": "./target/debug/brolga-cli",
+      "args": ["mcp"]
+    }
+  }
+}
