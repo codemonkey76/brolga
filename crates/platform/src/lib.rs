@@ -54,3 +54,26 @@ pub fn data_dir() -> Option<PathBuf> {
 pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     open::that_detached(url)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Against the real secret store of whoever runs it, so it is not part
+    /// of the ordinary run: `cargo test -p brolga-platform -- --ignored`.
+    #[test]
+    #[ignore = "writes to, and cleans up after itself in, this user's real secret store"]
+    fn a_secret_goes_into_the_system_store_and_comes_back_out() {
+        let key = format!("test.{}", std::process::id());
+        let store = SystemSecrets;
+
+        assert_eq!(store.get(&key).unwrap(), None);
+        store.set(&key, "first").unwrap();
+        store.set(&key, "second").unwrap();
+        assert_eq!(store.get(&key).unwrap().as_deref(), Some("second"));
+        store.delete(&key).unwrap();
+        assert_eq!(store.get(&key).unwrap(), None);
+        // Forgetting what is not there is not an error.
+        store.delete(&key).unwrap();
+    }
+}
