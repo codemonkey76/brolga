@@ -15,6 +15,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # CI never opens a debugger, and debug info is most of the link time on Windows.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_INCREMENTAL: 0
 
 jobs:
   check:
@@ -59,9 +62,11 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      # A debug build, so it reuses what the tests just compiled. Optimised,
+      # packaged builds belong to the release workflow.
       - name: Build the app
         working-directory: app
-        run: bun run tauri build --no-bundle
+        run: bun run tauri build --debug --no-bundle
 
   supply-chain:
     name: Licences and advisories
