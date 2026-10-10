@@ -4,11 +4,8 @@ use serde_json::{Value, json};
 
 use crate::{CommandKind, CommandSpec, Handler, Registry, RegistryError};
 
-/// The commands the client has before any account is signed in.
-///
-/// There is no sign-in yet, so the two that report on accounts have nothing to
-/// report and say so. They are here so that every way of running a command has
-/// real ones to run.
+/// The commands that need nothing but the client itself. The core adds the
+/// rest, which need its accounts and its data.
 pub fn builtin_registry() -> Result<Registry, RegistryError> {
     let mut registry = Registry::new();
 
@@ -35,28 +32,6 @@ pub fn builtin_registry() -> Result<Registry, RegistryError> {
             examples: vec![json!({})],
         },
         handler(|| json!({ "name": "Brolga", "version": env!("CARGO_PKG_VERSION") })),
-    )?;
-
-    registry.register(
-        CommandSpec {
-            id: "app.accounts.list".to_owned(),
-            title: "List accounts".to_owned(),
-            description: "The mail accounts signed in to this client. Signing in is not built yet, so the list is always empty.".to_owned(),
-            kind: CommandKind::Query,
-            consequential: false,
-            mcp_tool: Some("list_accounts".to_owned()),
-            args_schema: no_arguments(),
-            result_schema: json!({
-                "type": "object",
-                "properties": {
-                    "accounts": { "type": "array", "items": { "type": "object" } }
-                },
-                "required": ["accounts"],
-                "additionalProperties": false
-            }),
-            examples: vec![json!({})],
-        },
-        handler(|| json!({ "accounts": [] })),
     )?;
 
     registry.register(
@@ -99,8 +74,8 @@ fn handler(result: impl Fn() -> Value + Send + Sync + 'static) -> Handler {
 mod tests {
     use super::*;
 
-    /// The gate the spec asks for: a command with no schema worth the name, no
-    /// description or no example that runs does not get into the client.
+    /// The same gate is applied to every command the client has in
+    /// `crates/core/tests/commands.rs`.
     #[tokio::test]
     async fn every_command_is_described_and_its_examples_run() {
         let registry = builtin_registry().unwrap();

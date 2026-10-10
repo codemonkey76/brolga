@@ -6,8 +6,11 @@
 
 use std::sync::Arc;
 
-use brolga_commands::{CommandError, Registry, builtin_registry};
+use brolga_auth::Authority;
+use brolga_commands::{CommandError, Registry};
 use brolga_control::{Server, default_endpoint};
+use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID};
+use brolga_platform::{SystemSecrets, data_dir, open_in_browser};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
@@ -41,17 +44,27 @@ async fn execute_command(
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let registry = Arc::new(builtin_registry()?);
-
-    // Opening the channel is also how a second copy finds out it is one, so
-    // it is done before there is a window to show.
+    // Opening the channel is how a second copy finds out it is one, so it is
+    // done first, before any data is opened or there is a window to show.
     let endpoint = default_endpoint()?;
-    let server = tauri::async_runtime::block_on(Server::bind(&endpoint, registry.clone()))?;
+    let server = tauri::async_runtime::block_on(Server::bind(&endpoint))?;
+
+    let core = Core::open(CoreOptions {
+        data_dir: Some(
+            data_dir().ok_or("this computer has no home folder to keep Brolga's data in")?,
+        ),
+        secrets: Arc::new(SystemSecrets),
+        open_browser: Arc::new(open_in_browser),
+        authority: Authority::default(),
+        default_client_id: DEFAULT_CLIENT_ID.map(str::to_owned),
+    })?;
+    let registry = core.registry();
+    let control = registry.clone();
 
     tauri::Builder::default()
         .manage(registry)
         .setup(move |_app| {
-            tauri::async_runtime::spawn(server.run());
+            tauri::async_runtime::spawn(server.run(control));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![execute_command])

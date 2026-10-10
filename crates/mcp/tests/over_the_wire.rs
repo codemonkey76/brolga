@@ -36,7 +36,6 @@ async fn an_agent_is_offered_the_tools() {
     assert_eq!(
         names,
         [
-            "list_accounts",
             "get_sync_status",
             "get_version",
             "list_commands",
@@ -162,10 +161,8 @@ async fn attached_to_a_running_client_the_tools_run_there() {
             std::env::temp_dir().join(format!("brolga-mcp-test-{}.sock", std::process::id())),
         )
     };
-    let app = Server::bind(&endpoint, Arc::new(builtin_registry().unwrap()))
-        .await
-        .unwrap();
-    tokio::spawn(app.run());
+    let app = Server::bind(&endpoint).await.unwrap();
+    tokio::spawn(app.run(Arc::new(builtin_registry().unwrap())));
     let agent = connect(Backend::attached(Client::connect(&endpoint).await.unwrap())).await;
 
     let tools = agent.list_all_tools().await.unwrap();
@@ -174,6 +171,6 @@ async fn attached_to_a_running_client_the_tools_run_there() {
         .await
         .unwrap();
 
-    assert_eq!(tools.len(), 5);
+    assert_eq!(tools.len(), 4);
     assert_eq!(result.structured_content.unwrap()["name"], "Brolga");
 }

@@ -18,15 +18,15 @@ pub enum ServerError {
     Io(#[from] io::Error),
 }
 
+/// The control channel, bound and ready to answer.
 pub struct Server {
     listener: Listener,
-    registry: Arc<Registry>,
 }
 
 impl Server {
     /// Start listening. A socket file left behind by a client that crashed is
     /// replaced; one that something still answers on is another running client.
-    pub async fn bind(endpoint: &Endpoint, registry: Arc<Registry>) -> Result<Self, ServerError> {
+    pub async fn bind(endpoint: &Endpoint) -> Result<Self, ServerError> {
         if Stream::connect(endpoint.name()?).await.is_ok() {
             return Err(ServerError::AlreadyRunning);
         }
@@ -36,18 +36,21 @@ impl Server {
             .try_overwrite(true)
             .create_tokio()?;
 
-        Ok(Self { listener, registry })
+        Ok(Self { listener })
     }
 
-    /// Answer callers until the task is dropped.
-    pub async fn run(self) {
+    /// Answer callers with these commands until the task is dropped.
+    ///
+    /// Binding and running are separate so that a client can find out it is a
+    /// second copy, by failing to bind, before it has opened any data.
+    pub async fn run(self, registry: Arc<Registry>) {
         loop {
             // A caller that fails to connect is that caller's trouble, not a
             // reason to stop answering the others.
             let Ok(connection) = self.listener.accept().await else {
                 continue;
             };
-            let registry = self.registry.clone();
+            let registry = registry.clone();
 
             tokio::spawn(async move {
                 // Likewise a caller that hangs up mid-line.

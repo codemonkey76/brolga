@@ -487,8 +487,11 @@ checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 name = "brolga-app"
 version = "0.0.1"
 dependencies = [
+ "brolga-auth",
  "brolga-commands",
  "brolga-control",
+ "brolga-core",
+ "brolga-platform",
  "serde",
  "serde_json",
  "tauri",
@@ -520,9 +523,12 @@ version = "0.0.1"
 name = "brolga-cli"
 version = "0.0.1"
 dependencies = [
+ "brolga-auth",
  "brolga-commands",
  "brolga-control",
+ "brolga-core",
  "brolga-mcp",
+ "brolga-platform",
  "clap",
  "serde_json",
  "tokio",
@@ -550,6 +556,21 @@ version = "0.0.1"
 dependencies = [
  "brolga-commands",
  "interprocess",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "brolga-core"
+version = "0.0.1"
+dependencies = [
+ "brolga-auth",
+ "brolga-commands",
+ "brolga-fake-graph",
+ "brolga-store",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

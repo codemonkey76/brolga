@@ -19,10 +19,8 @@ fn endpoint(name: &str) -> Endpoint {
 
 async fn start(name: &str) -> Endpoint {
     let endpoint = endpoint(name);
-    let server = Server::bind(&endpoint, Arc::new(builtin_registry().unwrap()))
-        .await
-        .unwrap();
-    tokio::spawn(server.run());
+    let server = Server::bind(&endpoint).await.unwrap();
+    tokio::spawn(server.run(Arc::new(builtin_registry().unwrap())));
     endpoint
 }
 
@@ -32,10 +30,7 @@ async fn a_command_runs_over_the_channel() {
     let mut client = Client::connect(&endpoint).await.unwrap();
 
     let version = client.execute("app.version", json!({})).await.unwrap();
-    let again = client
-        .execute("app.accounts.list", json!({}))
-        .await
-        .unwrap();
+    let again = client.execute("app.sync.status", json!({})).await.unwrap();
 
     assert_eq!(version["name"], "Brolga");
     assert_eq!(again, json!({ "accounts": [] }));
@@ -117,7 +112,7 @@ async fn a_line_that_is_not_a_request_is_answered_not_dropped() {
 async fn a_second_server_on_the_same_endpoint_is_refused() {
     let endpoint = start("twice").await;
 
-    let second = Server::bind(&endpoint, Arc::new(builtin_registry().unwrap())).await;
+    let second = Server::bind(&endpoint).await;
 
     assert!(matches!(second, Err(ServerError::AlreadyRunning)));
 }
@@ -133,10 +128,8 @@ async fn a_socket_file_left_by_a_crash_is_replaced() {
     drop(std::os::unix::net::UnixListener::bind(path).unwrap());
     assert!(path.exists());
 
-    let server = Server::bind(&endpoint, Arc::new(builtin_registry().unwrap()))
-        .await
-        .unwrap();
-    tokio::spawn(server.run());
+    let server = Server::bind(&endpoint).await.unwrap();
+    tokio::spawn(server.run(Arc::new(builtin_registry().unwrap())));
 
     assert!(
         Client::connect(&endpoint)

@@ -10,6 +10,9 @@ license.workspace = true
 [dependencies]
 brolga-commands.workspace = true
 brolga-control.workspace = true
+brolga-core.workspace = true
+brolga-auth.workspace = true
+brolga-platform.workspace = true
 brolga-mcp.workspace = true
 clap.workspace = true
 serde_json.workspace = true

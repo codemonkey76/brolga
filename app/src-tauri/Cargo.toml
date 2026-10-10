@@ -21,6 +21,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 brolga-commands.workspace = true
 brolga-control.workspace = true
+brolga-core.workspace = true
+brolga-auth.workspace = true
+brolga-platform.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }

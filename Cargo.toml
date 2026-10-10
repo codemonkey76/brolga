@@ -13,6 +13,7 @@ license = "MIT"
 brolga-auth = { path = "crates/auth" }
 brolga-commands = { path = "crates/commands" }
 brolga-control = { path = "crates/control" }
+brolga-core = { path = "crates/core" }
 brolga-mcp = { path = "crates/mcp" }
 brolga-platform = { path = "crates/platform" }
 brolga-store = { path = "crates/store" }

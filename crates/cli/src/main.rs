@@ -7,11 +7,14 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use brolga_commands::{CommandSpec, builtin_registry};
+use brolga_auth::Authority;
+use brolga_commands::CommandSpec;
 use brolga_control::{Client, default_endpoint};
+use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID};
 use brolga_mcp::{Backend, McpServer, serve_stdio};
+use brolga_platform::{SystemSecrets, data_dir, open_in_browser};
 use clap::{Parser, Subcommand};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[derive(Parser)]
 #[command(
@@ -39,6 +42,18 @@ enum Command {
         /// The command's arguments, as a JSON object.
         #[arg(long, value_name = "JSON", default_value = "{}")]
         json: String,
+    },
+    /// Sign in to a Microsoft 365 account and add it.
+    SignIn {
+        /// Sign in with a code typed in on another device, not this computer's browser.
+        #[arg(long)]
+        device_code: bool,
+        /// The client ID of your organisation's own app registration for Brolga.
+        #[arg(long, value_name = "ID")]
+        client_id: Option<String>,
+        /// Your organisation's tenant ID or domain, with --client-id.
+        #[arg(long)]
+        tenant: Option<String>,
     },
     /// Serve the commands as MCP tools on standard input and output.
     Mcp {
@@ -83,6 +98,40 @@ async fn run(command: Command) -> Result<(), Failure> {
                 .map_err(|e| Failure(USAGE, format!("--json is not JSON: {e}")))?;
             print(&backend(false).await?.execute(&id, args).await?)
         }
+        Command::SignIn {
+            device_code,
+            client_id,
+            tenant,
+        } => {
+            let mut under = serde_json::Map::new();
+            if let Some(client_id) = client_id {
+                under.insert("client_id".to_owned(), client_id.into());
+            }
+            if let Some(tenant) = tenant {
+                under.insert("tenant".to_owned(), tenant.into());
+            }
+            let under = Value::Object(under);
+
+            let added = if device_code {
+                let begun = backend(false)
+                    .await?
+                    .execute("accounts.sign_in_with_code.begin", under)
+                    .await?;
+                eprintln!("{}", begun["message"].as_str().unwrap_or_default());
+                let finish = json!({ "flow_id": begun["flow_id"] });
+                backend(false)
+                    .await?
+                    .execute("accounts.sign_in_with_code.finish", finish)
+                    .await?
+            } else {
+                eprintln!("Finish signing in in your browser.");
+                backend(false)
+                    .await?
+                    .execute("accounts.sign_in", under)
+                    .await?
+            };
+            print(&added)
+        }
         Command::Mcp { connect } => {
             let server = McpServer::new(match backend(connect).await? {
                 Where::Here(registry) => Backend::Headless(registry),
@@ -108,8 +157,23 @@ async fn backend(app_only: bool) -> Result<Where, Failure> {
             FAILED,
             "the app is not running, so there is nothing to connect to".to_owned(),
         )),
-        Err(_) => Ok(Where::Here(Arc::new(builtin_registry().map_err(failed)?))),
+        Err(_) => Ok(Where::Here(core()?.registry())),
     }
+}
+
+/// The client, run here with no window: this user's data and secret store.
+fn core() -> Result<Core, Failure> {
+    let data_dir = data_dir()
+        .ok_or_else(|| failed("this computer has no home folder to keep Brolga's data in"))?;
+
+    Core::open(CoreOptions {
+        data_dir: Some(data_dir),
+        secrets: Arc::new(SystemSecrets),
+        open_browser: Arc::new(open_in_browser),
+        authority: Authority::default(),
+        default_client_id: DEFAULT_CLIENT_ID.map(str::to_owned),
+    })
+    .map_err(failed)
 }
 
 impl Where {

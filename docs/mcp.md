@@ -29,7 +29,7 @@ argument `mcp`.
 | Tool | What it does |
 |---|---|
 | `get_version` | The client's name and version. |
-| `list_accounts` | The signed-in accounts. Sign-in is not built, so this is always empty. |
+| `list_accounts` | The signed-in accounts, and whether each still has a working sign-in. |
 | `get_sync_status` | Each account's sync state. Sync is not built, so no account is reported. |
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |
@@ -39,7 +39,8 @@ Mail, calendar and contacts tools arrive with those features.
 ## What an agent may do
 
 **Agents can only read.** Any command that changes something is refused over
-MCP, whichever tool asks for it. The permission tiers in the build spec
+MCP, whichever tool asks for it. That includes signing in and removing an
+account: a person does those, in the app or with `brolga-cli sign-in`. The permission tiers in the build spec
 (read-only, draft, full), confirmation of consequential commands, rate limits
 and the audit log are not built yet, and nothing that writes will be opened to
 agents before they are.
