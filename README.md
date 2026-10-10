@@ -25,3 +25,7 @@ cd app && bun run tauri dev                       # the window
 
 The window needs Tauri's system libraries; on Linux that is WebKitGTK 4.1.
 To work on the core alone, name the crate: `cargo test -p brolga-commands`.
+
+## Licence
+
+[MIT](LICENSE).

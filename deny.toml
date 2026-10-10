@@ -20,7 +20,7 @@ ignore = [
 
 [licenses]
 version = 2
-# Permissive licences, which sit with either licence Brolga may end up under.
+# Permissive licences, which sit with Brolga's own (MIT).
 allow = [
     "MIT",
     "Apache-2.0",
@@ -37,10 +37,6 @@ allow = [
     "CDLA-Permissive-2.0",
     "MIT-0",
 ]
-
-[licenses.private]
-# Brolga's own crates have no licence yet: that is an open decision.
-ignore = true
 
 [bans]
 multiple-versions = "warn"
