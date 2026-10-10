@@ -16,6 +16,17 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Microsoft Graph throttling guidance | https://learn.microsoft.com/graph/throttling | The 429 status, the `Retry-After` header and the throttled error body, in the fake Graph server |
 | Microsoft Graph error responses and resource types | https://learn.microsoft.com/graph/errors | The shape of an error body, and the meaning of 401, 404 and 503, in the fake Graph server |
 
+## Microsoft identity platform (Microsoft Learn)
+
+| Document | URL | Used for |
+|---|---|---|
+| Microsoft identity platform and OAuth 2.0 authorization code flow | https://learn.microsoft.com/entra/identity-platform/v2-oauth2-auth-code-flow | The authorize and token endpoints, their parameters, PKCE, refresh, and the error body, in `crates/auth` |
+| Microsoft identity platform and the OAuth 2.0 device authorization grant flow | https://learn.microsoft.com/entra/identity-platform/v2-oauth2-device-code | The devicecode endpoint, polling and its errors, in `crates/auth` |
+| Redirect URI (reply URL) outline and restrictions | https://learn.microsoft.com/entra/identity-platform/reply-url | `http://localhost` as the redirect, and the port being ignored when it is matched |
+| Microsoft Entra authentication and authorization error codes | https://learn.microsoft.com/entra/identity-platform/reference-error-codes | Which AADSTS code means which plain-language problem, in `crates/auth/src/error.rs` |
+| ID token claims reference | https://learn.microsoft.com/entra/identity-platform/id-token-claims-reference | `tid`, `oid`, `preferred_username` and `name`, to label an account |
+| Claims challenges, claims requests, and client capabilities | https://learn.microsoft.com/entra/identity-platform/claims-challenge | Reading a claims challenge from a 401's `WWW-Authenticate` header |
+
 ## Model Context Protocol
 
 | Document | URL | Used for |
@@ -24,7 +35,12 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 
 ## Open standards
 
-None used yet.
+| Document | URL | Used for |
+|---|---|---|
+| RFC 7636, Proof Key for Code Exchange | https://www.rfc-editor.org/rfc/rfc7636 | The code verifier and its S256 challenge, with the appendix B example as a test |
+| RFC 8252, OAuth 2.0 for Native Apps | https://www.rfc-editor.org/rfc/rfc8252 | Signing in through the system browser with a loopback redirect |
+| RFC 8628, OAuth 2.0 Device Authorization Grant | https://www.rfc-editor.org/rfc/rfc8628 | Waiting five seconds longer after `slow_down` (section 3.5) |
+| OpenID Connect Core 1.0 | https://openid.net/specs/openid-connect-core-1_0.html | Section 3.1.3.7: an ID token received straight from the token endpoint over TLS need not have its signature checked |
 
 ## Libraries
 

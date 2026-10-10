@@ -8,6 +8,10 @@
 //! So far it knows one resource, the signed-in user. Each one the client
 //! comes to use is added here first.
 
+mod identity;
+
+pub use identity::FakeIdentity;
+
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
