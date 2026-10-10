@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Original artwork: a brolga's head in three shapes. Grey crown, red band, long bill. -->
+  <rect width="1024" height="1024" rx="224" fill="#e9edf1"/>
+  <path d="M250 800 C250 520 330 300 520 300 C640 300 700 380 700 470 L700 520 C560 520 470 620 440 800 Z" fill="#8b98a5"/>
+  <path d="M430 330 C520 290 640 310 690 420 C610 400 520 400 440 440 C420 400 420 360 430 330 Z" fill="#d1352b"/>
+  <path d="M690 440 L900 520 L700 520 Z" fill="#5b6670"/>
+  <circle cx="590" cy="450" r="26" fill="#f6c343"/>
+  <circle cx="590" cy="450" r="11" fill="#1c2227"/>
+</svg>

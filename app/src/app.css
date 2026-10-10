@@ -1,0 +1,22 @@
+/* The system's own font, colours and accent, light or dark as the desktop is. */
+:root {
+    color-scheme: light dark;
+    font-family: system-ui, sans-serif;
+    font-size: 100%;
+    --surface: Canvas;
+    --text: CanvasText;
+    --muted: color-mix(in srgb, CanvasText 60%, Canvas);
+    --accent: AccentColor;
+}
+
+html,
+body,
+#app {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    background: var(--surface);
+    color: var(--text);
+}

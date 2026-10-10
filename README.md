@@ -16,10 +16,12 @@ yet. What exists is the skeleton the rest is built on.
 ## Building
 
 ```sh
-cargo test --workspace          # the core, with no window
+cd app && bun install && bun run build && cd ..   # the frontend, which the app crate embeds
+cargo test --workspace
 cargo run -p brolga-cli -- commands
 
-cd app && bun install && bun run tauri dev   # the window
+cd app && bun run tauri dev                       # the window
 ```
 
 The window needs Tauri's system libraries; on Linux that is WebKitGTK 4.1.
+To work on the core alone, name the crate: `cargo test -p brolga-commands`.
