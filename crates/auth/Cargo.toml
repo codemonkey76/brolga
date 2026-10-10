@@ -1,0 +1,10 @@
+[package]
+name = "brolga-auth"
+description = "OAuth flows, token refresh and the account registry."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

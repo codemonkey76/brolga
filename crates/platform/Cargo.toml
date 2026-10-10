@@ -1,0 +1,10 @@
+[package]
+name = "brolga-platform"
+description = "Per-OS integration: notifications, the secret store, tray and handlers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

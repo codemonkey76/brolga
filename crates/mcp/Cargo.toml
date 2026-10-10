@@ -1,0 +1,21 @@
+[package]
+name = "brolga-mcp"
+description = "The MCP server: the client's commands as tools for an agent, over stdio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+brolga-commands.workspace = true
+brolga-control.workspace = true
+rmcp = { version = "3", features = ["server", "transport-io"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+rmcp = { version = "3", features = ["client"] }
+
+[lints]
+workspace = true

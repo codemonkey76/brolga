@@ -1,0 +1,18 @@
+[package]
+name = "brolga-control"
+description = "The control channel: JSON lines on a local socket, so other tools can drive a running client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+brolga-commands.workspace = true
+interprocess.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

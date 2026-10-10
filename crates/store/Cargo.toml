@@ -1,0 +1,10 @@
+[package]
+name = "brolga-store"
+description = "SQLite schema, migrations, the search index and the blob cache."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
