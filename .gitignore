@@ -4,3 +4,5 @@ dist/
 .svelte-kit/
 *.sock
 app/src-tauri/gen/schemas/
+app/test-results/
+app/playwright-report/

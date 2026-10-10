@@ -53,6 +53,15 @@ jobs:
           bun run check
           bun run build
 
+      # The frontend behaves the same in every browser engine we can test
+      # here, so once is enough.
+      - name: Frontend tests
+        if: runner.os == 'Linux'
+        working-directory: app
+        run: |
+          bunx playwright install --with-deps chromium
+          bun run test
+
       - name: Formatting
         run: cargo fmt --all --check
 

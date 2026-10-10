@@ -3,20 +3,91 @@
     color-scheme: light dark;
     font-family: system-ui, sans-serif;
     font-size: 100%;
+    line-height: 1.45;
     --surface: Canvas;
     --text: CanvasText;
-    --muted: color-mix(in srgb, CanvasText 60%, Canvas);
+    --raised: color-mix(in srgb, CanvasText 4%, Canvas);
+    --line: color-mix(in srgb, CanvasText 18%, Canvas);
+    --muted: color-mix(in srgb, CanvasText 62%, Canvas);
     --accent: AccentColor;
+    --danger: #d1352b;
+    --warn: #f6c343;
 }
 
 html,
 body,
 #app {
-    height: 100%;
+    min-height: 100%;
     margin: 0;
 }
 
 body {
     background: var(--surface);
     color: var(--text);
+}
+
+.muted {
+    color: var(--muted);
+}
+
+button,
+input {
+    font: inherit;
+    color: inherit;
+}
+
+button {
+    padding: 0.4rem 0.85rem;
+    border: 1px solid var(--line);
+    border-radius: 0.4rem;
+    background: var(--surface);
+    cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+    background: color-mix(in srgb, CanvasText 8%, Canvas);
+}
+
+button:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+button.primary {
+    border-color: transparent;
+    background: var(--accent);
+    color: AccentColorText;
+    font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 85%, CanvasText);
+}
+
+button.danger {
+    border-color: transparent;
+    background: var(--danger);
+    color: white;
+}
+
+button.link {
+    align-self: flex-start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    text-decoration: underline;
+}
+
+input {
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 0.4rem;
+    background: var(--surface);
+    font-weight: 400;
+}
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
