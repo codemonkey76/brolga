@@ -164,6 +164,34 @@ impl GraphClient {
         decode(&self.get(&url, None).await?)
     }
 
+    /// When people are free and busy between two moments in UTC, in slots
+    /// of so many minutes ("calendar: getSchedule", SOURCES.md): one entry
+    /// for each address asked about, as Graph gives it. It changes nothing,
+    /// so it is safe to repeat.
+    pub async fn schedules(
+        &self,
+        addresses: &[String],
+        start: &str,
+        end: &str,
+        interval_minutes: u32,
+    ) -> Result<Vec<serde_json::Value>, GraphError> {
+        let url = format!("{}/me/calendar/getSchedule", self.base);
+        let at = |moment: &str| serde_json::json!({ "dateTime": moment.trim_end_matches('Z'), "timeZone": "UTC" });
+        let body = serde_json::json!({
+            "schedules": addresses,
+            "startTime": at(start),
+            "endTime": at(end),
+            "availabilityViewInterval": interval_minutes,
+        });
+        let answer: serde_json::Value = decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&body), true)
+                .await?,
+        )?;
+
+        Ok(answer["value"].as_array().cloned().unwrap_or_default())
+    }
+
     /// An event whole, as Graph gives it: for a series, its master, with
     /// how it repeats ("Get event", SOURCES.md).
     pub async fn event_raw(&self, event_id: &str) -> Result<serde_json::Value, GraphError> {

@@ -1166,6 +1166,139 @@ async fn delete(mailboxes: Arc<Mailboxes>, args: Delete) -> Result<Value, Comman
 }
 
 #[derive(Deserialize)]
+struct FreeBusy {
+    account_id: Option<String>,
+    people: Vec<String>,
+    start: String,
+    end: String,
+    interval_minutes: Option<u32>,
+    duration_minutes: Option<u32>,
+}
+
+/// The most time one question about free and busy may cover.
+const LONGEST_DAYS: i64 = 31;
+
+/// When people are free and busy, and when all of them are free at once.
+/// It is asked of the server each time: nobody else's calendar is kept here.
+async fn free_busy(mailboxes: Arc<Mailboxes>, args: FreeBusy) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let (start, end) = (moment(&args.start)?, moment(&args.end)?);
+    let (from, to): (jiff::Timestamp, jiff::Timestamp) =
+        (start.parse().map_err(failed)?, end.parse().map_err(failed)?);
+    let interval = args.interval_minutes.unwrap_or(30).clamp(5, 1440);
+    let minutes = to.duration_since(from).as_mins();
+    if minutes <= 0 {
+        return Err(failed("The time asked about would end before it starts."));
+    }
+    if minutes > LONGEST_DAYS * 24 * 60 {
+        return Err(failed(format!(
+            "Ask about no more than {LONGEST_DAYS} days at once."
+        )));
+    }
+    let mut people: Vec<String> = args
+        .people
+        .iter()
+        .map(|each| each.trim().to_lowercase())
+        .filter(|each| !each.is_empty())
+        .collect();
+    people.dedup();
+    if let Some(wrong) = people
+        .iter()
+        .find(|each| !each.contains('@') || each.contains(char::is_whitespace))
+    {
+        return Err(failed(format!("`{wrong}` is not an email address.")));
+    }
+    if people.is_empty() {
+        return Err(failed("Say whose time to look at."));
+    }
+
+    let found = mailbox
+        .graph
+        .schedules(&people, &start, &end, interval)
+        .await
+        .map_err(|error| {
+            if error.is_transient() {
+                failed("Microsoft 365 could not be reached. Free and busy times are only known while it can be.")
+            } else {
+                failed(error)
+            }
+        })?;
+    let utc = |at: &Value| {
+        brolga_calendar::utc(
+            at["dateTime"].as_str()?,
+            at["timeZone"].as_str().unwrap_or("UTC"),
+        )
+    };
+    let said: Vec<Value> = people
+        .iter()
+        .map(|address| {
+            let one = found
+                .iter()
+                .find(|each| each["scheduleId"].as_str().is_some_and(|id| id.eq_ignore_ascii_case(address)));
+            let Some(one) = one else {
+                return json!({ "address": address, "availability": "", "busy": [], "error": "Microsoft 365 said nothing about this address." });
+            };
+            let busy: Vec<Value> = one["scheduleItems"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| Some(json!({ "status": item["status"].as_str()?, "start": utc(&item["start"])?, "end": utc(&item["end"])? })))
+                .collect();
+            json!({
+                "address": address,
+                "availability": one["availabilityView"].as_str().unwrap_or_default(),
+                "busy": busy,
+                "error": one["error"]["message"].as_str(),
+            })
+        })
+        .collect();
+
+    // When everyone whose time is known is free for long enough at once.
+    let slots = usize::try_from(minutes / i64::from(interval)).unwrap_or(0);
+    let views: Vec<&[u8]> = said
+        .iter()
+        .filter(|each| each["error"].is_null())
+        .filter_map(|each| each["availability"].as_str().map(str::as_bytes))
+        .collect();
+    let needed = usize::try_from(
+        args.duration_minutes
+            .unwrap_or(interval)
+            .div_ceil(interval)
+            .max(1),
+    )
+    .unwrap_or(1);
+    let free = |slot: usize| {
+        views
+            .iter()
+            .all(|view| view.get(slot).is_none_or(|digit| *digit == b'0'))
+    };
+    let at = |slot: usize| {
+        from.checked_add(
+            jiff::Span::new().minutes(i64::try_from(slot).unwrap_or(0) * i64::from(interval)),
+        )
+        .map(stamp)
+        .unwrap_or_default()
+    };
+    let free_slots: Vec<Value> = if views.is_empty() {
+        Vec::new()
+    } else {
+        (0..slots.saturating_sub(needed - 1))
+            .filter(|first| (*first..first + needed).all(free))
+            .take(200)
+            .map(|first| json!({ "start": at(first), "end": at(first + needed) }))
+            .collect()
+    };
+
+    Ok(json!({
+        "start": start, "end": end, "interval_minutes": interval,
+        "people": said, "free_slots": free_slots
+    }))
+}
+
+#[derive(Deserialize)]
 struct Cancel {
     account_id: Option<String>,
     event_id: String,
@@ -1726,6 +1859,51 @@ pub(crate) fn register(
             examples: vec![json!({ "event_id": "event-0002", "response": "tentative", "send_response": false })],
         },
         handler(&mailboxes, respond),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.free_busy".to_owned(),
+            title: "Free and busy times".to_owned(),
+            description: "When people are free and busy between two moments, asked of Microsoft 365 now: for each address a digit for every \
+                          slot of the time (0 free, 1 tentative, 2 busy, 3 out of office) and what they have on, without what it is about; \
+                          and the times when all of them are free at once for duration_minutes. Include the owner's own address to count their time too."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: Some("get_free_busy".to_owned()),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "people": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 20, "description": "Email addresses: people, rooms or lists." },
+                    "start": { "type": "string", "description": "A moment with its offset, as 2026-10-20T08:00:00+10:00." },
+                    "end": { "type": "string" },
+                    "interval_minutes": { "type": "integer", "minimum": 5, "maximum": 1440, "description": "How long each slot is. Default 30." },
+                    "duration_minutes": { "type": "integer", "minimum": 5, "maximum": 1440, "description": "How long everyone must be free for at once. Default one slot." }
+                },
+                "required": ["people", "start", "end"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "start": { "type": "string" },
+                    "end": { "type": "string" },
+                    "interval_minutes": { "type": "integer" },
+                    "people": { "type": "array", "items": { "type": "object", "properties": {
+                        "address": { "type": "string" },
+                        "availability": { "type": "string" },
+                        "busy": { "type": "array", "items": { "type": "object" } },
+                        "error": { "type": ["string", "null"], "description": "Why this person's time is not known." }
+                    } } },
+                    "free_slots": { "type": "array", "items": { "type": "object" }, "description": "UTC. Each a time when everyone whose time is known is free." }
+                },
+                "required": ["people", "free_slots"]
+            }),
+            examples: vec![json!({ "people": ["robin@example.test"], "start": "2026-10-20T00:00:00Z", "end": "2026-10-20T06:00:00Z" })],
+        },
+        handler(&mailboxes, free_busy),
     )?;
 
     registry.register(

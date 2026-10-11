@@ -15,8 +15,9 @@ events can be made, changed and deleted, repeating ones too: one occurrence,
 that one and the rest, or the whole series. Meetings can be called, with
 people invited and a Teams link, their answers seen, and cancelled with a
 message. Mail has been run against a real Microsoft 365 mailbox; changing the
-calendar has so far only been run against the stand-in server. The scheduling
-assistant and room finder are not built yet.
+calendar has so far only been run against the stand-in server. When writing
+a meeting, everyone's free and busy times can be seen and a time that suits
+all taken. The room finder is not built yet.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 

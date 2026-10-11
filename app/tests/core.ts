@@ -178,6 +178,8 @@ export interface FakeCore {
     asking?: { id: number; client: string; command: string; args: Record<string, unknown> }[];
     /** Microsoft 365 cannot be reached. */
     offline?: boolean;
+    /** When people are busy, for the free and busy lookup: an address, and a digit for each half hour of the day from midnight. */
+    busy?: Record<string, string>;
     /** What agents have asked for, the latest first. */
     agentLog?: { at: string; client: string; command: string; args: unknown; outcome: string; detail: string }[];
     /** Why automatic replies cannot be read, if they cannot. */
@@ -541,6 +543,25 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     return !also;
                 });
                 return { deleted: true };
+            },
+            "calendar.free_busy": (args) => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached. Free and busy times are only known while it can be." };
+                // A day in half hours. Whoever has nothing said of them is free all day.
+                const people = (args.people as string[]).map((address) =>
+                    address.startsWith("nobody")
+                        ? { address, availability: "", busy: [], error: "The recipient was not found." }
+                        : { address, availability: (core.busy?.[address] ?? "").padEnd(48, "0"), busy: [], error: null },
+                );
+                const from = +new Date(args.start as string);
+                const needed = Math.ceil(((args.duration_minutes as number) ?? 30) / 30);
+                const free = (slot: number) => people.every((each) => each.error || each.availability[slot] === "0");
+                const free_slots = [];
+                for (let first = 0; first + needed <= 48; first++) {
+                    if (Array.from({ length: needed }, (_, i) => first + i).every(free)) {
+                        free_slots.push({ start: new Date(from + first * 1_800_000).toISOString(), end: new Date(from + (first + needed) * 1_800_000).toISOString() });
+                    }
+                }
+                return { start: args.start, end: args.end, interval_minutes: 30, people, free_slots };
             },
             "calendar.events.cancel": (args) => {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, and the meeting was not cancelled. Nothing was sent; try again." };

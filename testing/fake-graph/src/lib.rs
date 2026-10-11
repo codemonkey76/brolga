@@ -120,6 +120,10 @@ impl FakeGraph {
                 "/v1.0/me/calendars/{calendar}/calendarView",
                 get(calendar_view),
             )
+            .route(
+                "/v1.0/me/calendar/getSchedule",
+                axum::routing::post(get_schedule),
+            )
             .route("/v1.0/me/events", axum::routing::post(create_event))
             .route(
                 "/v1.0/me/calendars/{calendar}/events",
@@ -277,6 +281,19 @@ impl FakeGraph {
 
     /// The next move is made, but the answer to it is an error: the case
     /// of a request that reached the server and an answer that did not come back.
+    /// Say when someone else is busy: each a (start, end, status) in UTC.
+    pub fn set_busy(&self, address: &str, times: &[(&str, &str, &str)]) {
+        lock(&self.shared).calendars().busy.insert(
+            address.to_owned(),
+            times
+                .iter()
+                .map(|(start, end, status)| {
+                    ((*start).to_owned(), (*end).to_owned(), (*status).to_owned())
+                })
+                .collect(),
+        );
+    }
+
     /// Every message a meeting's organiser has had sent: (event, to whom, what, words).
     pub fn meeting_mail(&self) -> Vec<(String, String, String, String)> {
         lock(&self.shared).calendars().sent.clone()
@@ -623,6 +640,17 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// "calendar: getSchedule" (SOURCES.md).
+async fn get_schedule(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    match lock(&shared).calendars().schedules(&body) {
+        Some(found) => axum::Json(found).into_response(),
+        None => event_refused("ErrorInvalidRequest"),
+    }
 }
 
 fn event_refused(code: &str) -> Response {

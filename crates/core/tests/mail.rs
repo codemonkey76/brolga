@@ -2803,3 +2803,78 @@ async fn a_meeting_invites_tells_only_who_it_must_and_is_cancelled_with_a_word()
         .unwrap_err();
     assert!(refused.to_string().contains("decline"), "{refused}");
 }
+
+#[tokio::test]
+async fn free_and_busy_times_are_asked_for_and_a_time_everyone_is_free_is_found() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    let main = f.graph.default_calendar();
+    // The owner is busy nine to ten; Sam ten to eleven, and tentative at half past eleven.
+    f.graph.add_event(
+        &main,
+        FakeEvent::new("Dentist", "2027-05-10T09:00:00Z", "2027-05-10T10:00:00Z"),
+    );
+    f.graph.set_busy(
+        "sam@example.test",
+        &[
+            ("2027-05-10T10:00:00Z", "2027-05-10T11:00:00Z", "busy"),
+            ("2027-05-10T11:30:00Z", "2027-05-10T12:00:00Z", "tentative"),
+        ],
+    );
+    f.sync().await;
+
+    let found = f
+        .run(
+            "calendar.free_busy",
+            json!({
+                "people": ["robin@example.test", "Sam@Example.test", "nobody@example.test"],
+                "start": "2027-05-10T19:00:00+10:00", "end": "2027-05-10T22:00:00+10:00", "duration_minutes": 60
+            }),
+        )
+        .await;
+    assert_eq!(found["people"][0]["availability"], "220000");
+    assert_eq!(found["people"][1]["availability"], "002201");
+    assert_eq!(
+        found["people"][1]["busy"][0],
+        json!({ "status": "busy", "start": "2027-05-10T10:00:00Z", "end": "2027-05-10T11:00:00Z" })
+    );
+    // Someone there is no knowing about is said so, and does not stop the others.
+    assert_eq!(found["people"][2]["error"], "The recipient was not found.");
+    // An hour when both are free: only from eleven would be, but Sam is tentative at half past.
+    assert_eq!(found["free_slots"], json!([]));
+    let half = f
+        .run(
+            "calendar.free_busy",
+            json!({ "people": ["robin@example.test", "sam@example.test"], "start": "2027-05-10T09:00:00Z", "end": "2027-05-10T12:00:00Z" }),
+        )
+        .await;
+    assert_eq!(
+        half["free_slots"],
+        json!([{ "start": "2027-05-10T11:00:00Z", "end": "2027-05-10T11:30:00Z" }])
+    );
+
+    for bad in [
+        json!({ "people": ["sam"], "start": "2027-05-10T09:00:00Z", "end": "2027-05-10T12:00:00Z" }),
+        json!({ "people": ["sam@example.test"], "start": "2027-05-10T12:00:00Z", "end": "2027-05-10T09:00:00Z" }),
+        json!({ "people": ["sam@example.test"], "start": "2027-01-01T00:00:00Z", "end": "2027-05-10T09:00:00Z" }),
+    ] {
+        assert!(
+            f.registry
+                .execute("calendar.free_busy", bad.clone())
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 40));
+    let offline = f
+        .registry
+        .execute("calendar.free_busy", json!({ "people": ["sam@example.test"], "start": "2027-05-10T09:00:00Z", "end": "2027-05-10T12:00:00Z" }))
+        .await
+        .unwrap_err();
+    assert!(
+        offline.to_string().contains("could not be reached"),
+        "{offline}"
+    );
+}

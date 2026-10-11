@@ -136,6 +136,9 @@ struct Stored {
 pub struct Calendars {
     calendars: Vec<FakeCalendar>,
     events: BTreeMap<String, Stored>,
+    /// When other people are busy, for "calendar: getSchedule": each
+    /// address, and its (start, end, status) in UTC.
+    pub busy: BTreeMap<String, Vec<(String, String, String)>>,
     /// Every message a meeting's organiser has had sent, oldest first:
     /// (event, to whom, what: `invitation`, `update` or `cancellation`, and
     /// the organiser's words with a cancellation).
@@ -326,6 +329,12 @@ fn wider(moment: Timestamp, days: i64) -> Timestamp {
         .unwrap_or(moment)
 }
 
+fn wider_minutes(moment: Timestamp, minutes: i64) -> Timestamp {
+    moment
+        .checked_add(jiff::Span::new().minutes(minutes))
+        .unwrap_or(moment)
+}
+
 fn utc(moment: Timestamp) -> String {
     moment.strftime("%Y-%m-%dT%H:%M:%S.0000000").to_string()
 }
@@ -398,6 +407,85 @@ impl Calendars {
             stored.deleted = true;
             self.touched(id);
         }
+    }
+
+    /// "calendar: getSchedule" (SOURCES.md): for each address, what it has
+    /// on between two moments, and a digit for each slot of the time: 0
+    /// free, 1 tentative, 2 busy, 3 out of office. The owner's own is read
+    /// from the default calendar; an address nobody has gives an error.
+    pub fn schedules(&self, body: &Value) -> Option<Value> {
+        let moment = |at: &Value| {
+            stamp(&brolga_calendar::utc(
+                at["dateTime"].as_str()?,
+                at["timeZone"].as_str()?,
+            )?)
+        };
+        let (after, before) = (moment(&body["startTime"])?, moment(&body["endTime"])?);
+        let interval = body["availabilityViewInterval"]
+            .as_i64()
+            .unwrap_or(30)
+            .clamp(5, 1440);
+        let slots = (before.duration_since(after).as_mins() / interval).max(0);
+        let default = self.default_calendar();
+
+        let all: Vec<Value> = body["schedules"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|address| {
+                let on: Vec<(Timestamp, Timestamp, String)> = if address == "robin@example.test" {
+                    self.events
+                        .iter()
+                        .filter(|(_, stored)| stored.calendar == default && !stored.deleted)
+                        .flat_map(|(id, _)| self.instances(id, after, before))
+                        .filter_map(|v| {
+                            let at = |name: &str| stamp(&format!("{}Z", v[name]["dateTime"].as_str()?.split('.').next()?));
+                            Some((at("start")?, at("end")?, v["showAs"].as_str()?.to_owned()))
+                        })
+                        .collect()
+                } else if let Some(busy) = self.busy.get(address) {
+                    busy.iter()
+                        .filter_map(|(start, end, status)| Some((stamp(start)?, stamp(end)?, status.clone())))
+                        .filter(|(start, end, _)| *start < before && *end > after)
+                        .collect()
+                } else {
+                    return json!({
+                        "scheduleId": address,
+                        "availabilityView": "",
+                        "scheduleItems": [],
+                        "error": { "message": "The recipient was not found.", "responseCode": "ErrorMailRecipientNotFound" }
+                    });
+                };
+                let digit = |status: &str| match status {
+                    "tentative" => '1',
+                    "busy" => '2',
+                    "oof" => '3',
+                    _ => '0',
+                };
+                let view: String = (0..slots)
+                    .map(|slot| {
+                        let from = wider_minutes(after, slot * interval);
+                        let to = wider_minutes(after, (slot + 1) * interval);
+                        on.iter()
+                            .filter(|(start, end, _)| *start < to && *end > from)
+                            .map(|(_, _, status)| digit(status))
+                            .max()
+                            .unwrap_or('0')
+                    })
+                    .collect();
+                json!({
+                    "scheduleId": address,
+                    "availabilityView": view,
+                    "scheduleItems": on.iter().map(|(start, end, status)| json!({
+                        "status": status,
+                        "start": { "dateTime": utc(*start), "timeZone": "UTC" },
+                        "end": { "dateTime": utc(*end), "timeZone": "UTC" }
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+
+        Some(json!({ "value": all }))
     }
 
     /// "Create event" (SOURCES.md): the id of the event made, or of the

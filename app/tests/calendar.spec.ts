@@ -599,3 +599,41 @@ test("a meeting is called, its answers counted, people changed, and cancelled wi
     expect(await last("calendar.events.cancel")).toEqual({ account_id: "tenant-1.robin", event_id: "made-1", comment: "Postponed to next week." });
     await expect(calendar.getByRole("button", { name: /Kick-off/ })).toHaveCount(0);
 });
+
+test("when people are free is shown for a meeting, and a time everyone is free can be taken", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    // Robin is busy until ten; Sam is busy from ten to eleven and away from two.
+    const busy = {
+        "robin@example.test": "0".repeat(16) + "2222",
+        "sam.taylor@example.test": "0".repeat(20) + "22" + "0".repeat(6) + "3333",
+    };
+    await withCore(page, { accounts: [robin], events: [], busy });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    await page.getByRole("button", { name: "New event" }).click();
+    const form = page.getByRole("form", { name: "New event" });
+    await form.getByLabel("Start day").fill("2026-10-15");
+    await form.getByLabel("Start time").fill("09:00");
+    await form.getByLabel("End time").fill("10:00");
+    // With nobody invited there is nobody's time to look at.
+    await expect(form.getByRole("button", { name: "See when people are free" })).toHaveCount(0);
+
+    await form.getByRole("combobox", { name: "Invite" }).fill("sam.taylor@example.test, nobody@example.test");
+    await form.getByRole("button", { name: "See when people are free" }).click();
+    const view = form.getByRole("region", { name: "Availability" });
+    await expect(view.getByRole("row", { name: /^robin/ }).locator("td.busy")).toHaveCount(4);
+    await expect(view.getByRole("row", { name: /^sam/ }).locator("td.busy")).toHaveCount(2);
+    await expect(view.getByRole("row", { name: /^sam/ }).locator("td.away")).toHaveCount(4);
+    await expect(view.getByRole("row", { name: /^nobody/ })).toContainText("Not known");
+    expect((await ran(page)).filter((r) => r.command === "calendar.free_busy").at(-1)?.args).toMatchObject({
+        people: ["robin@example.test", "sam.taylor@example.test", "nobody@example.test"],
+        start: "2026-10-14T14:00:00.000Z",
+        duration_minutes: 60,
+    });
+    if (process.env.SCREENSHOTS) await page.screenshot({ path: "../docs/screenshots/calendar-availability.png" });
+
+    // An hour both are free: from eleven, the first.
+    await expect(view.getByText("Everyone is free at")).toBeVisible();
+    await view.getByRole("button", { name: "11:00 AM" }).click();
+    await expect(form.getByLabel("Start time")).toHaveValue("11:00");
+    await expect(form.getByLabel("End time")).toHaveValue("12:00");
+});

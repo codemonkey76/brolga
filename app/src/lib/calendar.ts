@@ -115,6 +115,17 @@ export const updateEvent = async (account_id: string, event_id: string, fields: 
 export const deleteEvent = (account_id: string, event_id: string, scope: Scope = "occurrence") =>
     execute("calendar.events.delete", { account_id, event_id, ...(scope === "occurrence" ? {} : { scope }) });
 
+export interface FreeBusy {
+    interval_minutes: number;
+    people: { address: string; availability: string; busy: { status: string; start: string; end: string }[]; error: string | null }[];
+    /** UTC: when everyone whose time is known is free. */
+    free_slots: { start: string; end: string }[];
+}
+
+/** When people are free and busy between two moments, and when all of them are free at once. */
+export const freeBusy = (account_id: string, people: string[], start: Date, end: Date, interval_minutes: number, duration_minutes: number) =>
+    execute<FreeBusy>("calendar.free_busy", { account_id, people, start: start.toISOString(), end: end.toISOString(), interval_minutes, duration_minutes });
+
 /** Cancel a meeting one organised, with words to everyone invited. */
 export const cancelEvent = (account_id: string, event_id: string, comment: string, scope: Scope = "occurrence") =>
     execute("calendar.events.cancel", { account_id, event_id, ...(comment ? { comment } : {}), ...(scope === "series" ? { scope } : {}) });

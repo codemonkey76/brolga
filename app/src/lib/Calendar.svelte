@@ -392,6 +392,7 @@
             {#key editing + scope + (selected?.id ?? "")}
                 <EventEditor
                     accountId={accountId ?? ""}
+                    me={accounts.find((each) => each.id === accountId)?.username ?? ""}
                     event={editing === "change" ? selected : null}
                     description={editing === "change" ? (description?.complete ? description.text : null) : ""}
                     startAt={newStart()}

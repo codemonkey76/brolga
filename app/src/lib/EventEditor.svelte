@@ -1,9 +1,12 @@
 <script lang="ts">
     import { type Calendar, type CalendarEvent, type EventFields, type Repeat, type Scope, addDays, invitedFrom, invitedLine, placeInMonth, span } from "./calendar";
+    import Availability from "./Availability.svelte";
     import Recipients from "./Recipients.svelte";
 
     interface Props {
         accountId: string;
+        /** The owner's own address, to count their time when a time is looked for. */
+        me: string;
         /** The event being changed. None, and a new one is being made. */
         event: CalendarEvent | null;
         /** What the event says, where one is being changed and it is known. */
@@ -20,7 +23,7 @@
         onCancel: () => void;
     }
 
-    let { accountId, event, description, startAt, calendars, scope = "occurrence", repeat = null, onSave, onCancel }: Props = $props();
+    let { accountId, me, event, description, startAt, calendars, scope = "occurrence", repeat = null, onSave, onCancel }: Props = $props();
 
     const pad = (n: number) => String(n).padStart(2, "0");
     const dayOf = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
@@ -72,6 +75,17 @@
     let optional = $state(was.optional);
     let showOptional = $state(was.optional !== "");
     let online = $state(false);
+    /** Whether everyone's free and busy times are shown. */
+    let finding = $state(false);
+    /** Those whose time is looked at: the owner, and everyone invited whose address reads as one. */
+    const asked = $derived([
+        ...new Set(
+            [me, ...[...invitedFrom(required, "required"), ...invitedFrom(optional, "optional")].map((each) => each.address)]
+                .map((each) => each.toLowerCase())
+                .filter((each) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(each)),
+        ),
+    ]);
+    const length = $derived(Math.max(30, Math.round((+new Date(`${endDay}T${endTime}`) - +new Date(`${startDay}T${startTime}`)) / 60_000) || 30));
     // svelte-ignore state_referenced_locally
     let calendarId = $state(event?.calendar_id ?? calendars.find((c) => c.is_default && c.can_edit)?.id ?? calendars.find((c) => c.can_edit)?.id ?? null);
     // svelte-ignore state_referenced_locally
@@ -280,6 +294,12 @@
     {#if showOptional}
         <div class="people"><span>Optional</span><Recipients {accountId} label="Optional" bind:value={optional} /></div>
     {/if}
+    {#if asked.length > 1 && !allDay}
+        <button type="button" class="link find" aria-expanded={finding} onclick={() => (finding = !finding)}>{finding ? "Hide when people are free" : "See when people are free"}</button>
+        {#if finding}
+            <Availability {accountId} people={asked} day={startDay} minutes={length} onPick={(start) => startMoved(dayOf(start), timeOf(start))} />
+        {/if}
+    {/if}
     {#if event?.join_url}
         <p class="muted small">A Teams meeting. It stays one.</p>
     {:else}
@@ -390,6 +410,10 @@
     .people span {
         display: flex;
         justify-content: space-between;
+    }
+
+    .find {
+        align-self: flex-start;
     }
 
     .link {
