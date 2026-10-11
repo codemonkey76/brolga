@@ -18,8 +18,100 @@ impl SystemSecrets {
     }
 }
 
-impl SecretStore for SystemSecrets {
-    fn get(&self, key: &str) -> Result<Option<String>, SecretError> {
+/// The longest secret kept in one entry. Windows Credential Manager holds
+/// 2,560 bytes an entry, which as UTF-16 is 1,280 characters, and a
+/// Microsoft 365 refresh token is longer than that. A longer secret is kept
+/// as several entries, all of them in the system's store.
+const LONGEST_ENTRY: usize = if cfg!(windows) { 1000 } else { usize::MAX };
+
+/// How the first entry of a secret kept in several begins, followed by how
+/// many there are. No token starts with a control character.
+const IN_PARTS: &str = "\u{1}brolga-parts:";
+
+/// One named place in a secret store.
+trait Entries {
+    fn read(&self, key: &str) -> Result<Option<String>, SecretError>;
+    fn write(&self, key: &str, secret: &str) -> Result<(), SecretError>;
+    fn remove(&self, key: &str) -> Result<(), SecretError>;
+}
+
+fn part(key: &str, number: usize) -> String {
+    format!("{key}.part{number}")
+}
+
+/// How many parts the entry under this key says it is kept in.
+fn parts_of(head: Option<&str>) -> usize {
+    head.and_then(|h| h.strip_prefix(IN_PARTS))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+fn get_whole(entries: &impl Entries, key: &str) -> Result<Option<String>, SecretError> {
+    let Some(head) = entries.read(key)? else {
+        return Ok(None);
+    };
+    if !head.starts_with(IN_PARTS) {
+        return Ok(Some(head));
+    }
+
+    let mut whole = String::new();
+    for number in 0..parts_of(Some(&head)) {
+        match entries.read(&part(key, number))? {
+            Some(piece) => whole.push_str(&piece),
+            // Part of it is gone, so there is no secret: the person signs in again.
+            None => return Ok(None),
+        }
+    }
+
+    Ok(Some(whole))
+}
+
+fn set_whole(
+    entries: &impl Entries,
+    key: &str,
+    secret: &str,
+    longest: usize,
+) -> Result<(), SecretError> {
+    let before = parts_of(entries.read(key)?.as_deref());
+    let characters: Vec<char> = secret.chars().collect();
+    let pieces: Vec<String> = if characters.len() <= longest {
+        Vec::new()
+    } else {
+        characters
+            .chunks(longest.max(1))
+            .map(|piece| piece.iter().collect())
+            .collect()
+    };
+
+    // The parts first and the entry that counts them last, so that what
+    // is read is always a whole secret: the old one or the new.
+    for (number, piece) in pieces.iter().enumerate() {
+        entries.write(&part(key, number), piece)?;
+    }
+    if pieces.is_empty() {
+        entries.write(key, secret)?;
+    } else {
+        entries.write(key, &format!("{IN_PARTS}{}", pieces.len()))?;
+    }
+    for number in pieces.len()..before {
+        entries.remove(&part(key, number))?;
+    }
+
+    Ok(())
+}
+
+fn delete_whole(entries: &impl Entries, key: &str) -> Result<(), SecretError> {
+    let before = parts_of(entries.read(key)?.as_deref());
+    entries.remove(key)?;
+    for number in 0..before {
+        entries.remove(&part(key, number))?;
+    }
+
+    Ok(())
+}
+
+impl Entries for SystemSecrets {
+    fn read(&self, key: &str) -> Result<Option<String>, SecretError> {
         match Self::entry(key)?.get_password() {
             Ok(secret) => Ok(Some(secret)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -27,15 +119,29 @@ impl SecretStore for SystemSecrets {
         }
     }
 
-    fn set(&self, key: &str, secret: &str) -> Result<(), SecretError> {
+    fn write(&self, key: &str, secret: &str) -> Result<(), SecretError> {
         Self::entry(key)?.set_password(secret).map_err(unavailable)
     }
 
-    fn delete(&self, key: &str) -> Result<(), SecretError> {
+    fn remove(&self, key: &str) -> Result<(), SecretError> {
         match Self::entry(key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(unavailable(e)),
         }
+    }
+}
+
+impl SecretStore for SystemSecrets {
+    fn get(&self, key: &str) -> Result<Option<String>, SecretError> {
+        get_whole(self, key)
+    }
+
+    fn set(&self, key: &str, secret: &str) -> Result<(), SecretError> {
+        set_whole(self, key, secret, LONGEST_ENTRY)
+    }
+
+    fn delete(&self, key: &str) -> Result<(), SecretError> {
+        delete_whole(self, key)
     }
 }
 
@@ -64,6 +170,76 @@ pub fn open_in_browser(url: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// A store that holds only so much in an entry, as Windows does.
+    struct Small(
+        std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+        usize,
+    );
+
+    impl Entries for Small {
+        fn read(&self, key: &str) -> Result<Option<String>, SecretError> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
+        }
+
+        fn write(&self, key: &str, secret: &str) -> Result<(), SecretError> {
+            if secret.encode_utf16().count() > self.1 {
+                return Err(SecretError::Unavailable(
+                    "longer than the platform limit".to_owned(),
+                ));
+            }
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), secret.to_owned());
+            Ok(())
+        }
+
+        fn remove(&self, key: &str) -> Result<(), SecretError> {
+            self.0.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_secret_longer_than_an_entry_holds_is_kept_in_parts_and_comes_back_whole() {
+        let store = Small(Default::default(), 1280);
+        let token: String = (0..5000)
+            .map(|n| char::from(b'a' + (n % 26) as u8))
+            .collect();
+
+        // As it failed on Windows: too long for one entry.
+        assert!(store.write("account", &token).is_err());
+
+        set_whole(&store, "account", &token, 1000).unwrap();
+        assert_eq!(
+            get_whole(&store, "account").unwrap().as_deref(),
+            Some(token.as_str())
+        );
+        assert_eq!(store.0.lock().unwrap().len(), 6);
+
+        // A shorter one after it leaves no parts of the longer behind.
+        set_whole(&store, "account", &token[..1500], 1000).unwrap();
+        assert_eq!(
+            get_whole(&store, "account").unwrap().as_deref(),
+            Some(&token[..1500])
+        );
+        assert_eq!(store.0.lock().unwrap().len(), 3);
+        set_whole(&store, "account", "short", 1000).unwrap();
+        assert_eq!(
+            get_whole(&store, "account").unwrap().as_deref(),
+            Some("short")
+        );
+        assert_eq!(store.0.lock().unwrap().len(), 1);
+
+        // Forgotten, parts and all; and a secret missing a part is no secret.
+        set_whole(&store, "account", &token, 1000).unwrap();
+        store.remove("account.part2").unwrap();
+        assert_eq!(get_whole(&store, "account").unwrap(), None);
+        delete_whole(&store, "account").unwrap();
+        assert!(store.0.lock().unwrap().is_empty());
+        assert_eq!(get_whole(&store, "account").unwrap(), None);
+    }
+
     /// Against the real secret store of whoever runs it, so it is not part
     /// of the ordinary run: `cargo test -p brolga-platform -- --ignored`.
     #[test]
@@ -80,5 +256,17 @@ mod tests {
         assert_eq!(store.get(&key).unwrap(), None);
         // Forgetting what is not there is not an error.
         store.delete(&key).unwrap();
+
+        // As long as a Microsoft 365 refresh token, which is longer than
+        // Windows keeps in one entry.
+        let long: String = (0..5000)
+            .map(|n| char::from(b'a' + (n % 26) as u8))
+            .collect();
+        store.set(&key, &long).unwrap();
+        assert_eq!(store.get(&key).unwrap().as_deref(), Some(long.as_str()));
+        store.set(&key, "short again").unwrap();
+        assert_eq!(store.get(&key).unwrap().as_deref(), Some("short again"));
+        store.delete(&key).unwrap();
+        assert_eq!(store.get(&key).unwrap(), None);
     }
 }

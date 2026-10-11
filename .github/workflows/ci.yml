@@ -70,6 +70,12 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      # Windows keeps less in one entry of its secret store than a sign-in
+      # token is long. This writes one that long to the runner's own store.
+      - name: The real secret store holds a long token
+        if: runner.os == 'Windows'
+        run: cargo test -p brolga-platform --locked -- --ignored
+
       # A debug build, so it reuses what the tests just compiled. Optimised,
       # packaged builds belong to the release workflow.
       - name: Build the app
