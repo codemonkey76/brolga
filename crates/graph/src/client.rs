@@ -380,6 +380,21 @@ impl GraphClient {
         }
     }
 
+    /// Delete a message for good ("message: permanentDelete", SOURCES.md):
+    /// it goes where no mail program can reach it, and is purged in time.
+    /// A message already gone counts as deleted, so asking twice is safe.
+    pub async fn delete_permanently(&self, message_id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/messages/{message_id}/permanentDelete", self.base);
+
+        match self
+            .send(reqwest::Method::POST, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
     /// The id of the folder a message is in now.
     pub async fn message_folder(&self, message_id: &str) -> Result<Option<String>, GraphError> {
         let url = format!(

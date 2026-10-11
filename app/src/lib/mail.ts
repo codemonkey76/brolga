@@ -188,6 +188,10 @@ export const setFlag = (account_id: string, message_ids: string[], flag: FlagSta
 export const moveMessages = (account_id: string, message_ids: string[], folder_id: string) =>
     execute<Edited>("mail.messages.move", { account_id, message_ids, folder_id });
 
+/** Delete for good. It cannot be undone, and is done before this answers. */
+export const deletePermanently = (account_id: string, message_ids: string[]) =>
+    execute<{ deleted: number }>("mail.messages.delete_permanently", { account_id, message_ids });
+
 export const undo = (account_id: string, undo_id: string) => execute<{ undone: number }>("mail.undo", { account_id, undo_id });
 
 export interface Refused {

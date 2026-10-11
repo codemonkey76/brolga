@@ -508,7 +508,7 @@ test("deleting moves the message away, opens the next, and can be undone", async
     await rows.first().click();
     await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
 
-    await pane.getByRole("button", { name: "Delete" }).click();
+    await pane.getByRole("button", { name: "Delete", exact: true }).click();
 
     await expect(rows).toHaveCount(3);
     await expect(pane.getByRole("heading")).toHaveText("Your October newsletter");
@@ -528,7 +528,7 @@ test("deleting moves the message away, opens the next, and can be undone", async
     await expect(rows).toHaveCount(1);
     await rows.first().click();
     await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
-    await expect(pane.getByRole("button", { name: "Delete" })).toHaveCount(0);
+    await expect(pane.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
 });
 
 test("a message can be archived by key and moved to any folder", async ({ page }) => {
@@ -845,4 +845,47 @@ test("people are suggested as an address is typed, and chosen by key or click", 
     await form.getByRole("button", { name: "Send" }).click();
     await expect(form).toHaveCount(0);
     expect(((await sent(page))[0].to as { address: string }[]).map((p) => p.address)).toEqual(["sam.taylor@example.test", "alex.chen@example.test"]);
+});
+
+test("in Deleted Items a message is deleted for good, after asking twice", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox.map((m) => ({ ...m, folder_id: "deleted" })) });
+    await folder(page, "Deleted Items").click();
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await rows.first().click();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+
+    await pane.getByRole("button", { name: "Delete permanently" }).click();
+    await expect(rows).toHaveCount(4);
+    await pane.getByRole("button", { name: "Keep" }).click();
+    await expect(pane.getByRole("button", { name: "Delete permanently" })).toBeVisible();
+
+    await pane.getByRole("button", { name: "Delete permanently" }).click();
+    await pane.getByRole("button", { name: /Delete for good/ }).click();
+
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByText("Deleted permanently.")).toBeVisible();
+    // There is nothing to undo.
+    await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+    // The next message is not left half-way to being deleted.
+    await expect(pane.getByRole("button", { name: "Delete permanently" })).toBeVisible();
+});
+
+test("a message can be sent to junk and brought back", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await rows.nth(3).click();
+    await expect(pane.getByRole("heading")).toHaveText("Action needed: confirm your password");
+
+    await pane.getByRole("button", { name: "Junk", exact: true }).click();
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByText("Moved to Junk Email")).toBeVisible();
+
+    await folder(page, "Junk Email").click();
+    await rows.first().click();
+    await pane.getByRole("button", { name: "Not junk" }).click();
+    await expect(page.getByText("Moved to the inbox")).toBeVisible();
+    await folder(page, "Inbox").click();
+    await expect(rows).toHaveCount(4);
 });

@@ -120,6 +120,10 @@ impl FakeGraph {
                 "/v1.0/me/messages/{message}/move",
                 axum::routing::post(move_message),
             )
+            .route(
+                "/v1.0/me/messages/{message}/permanentDelete",
+                axum::routing::post(permanent_delete),
+            )
             .route("/v1.0/me/messages", axum::routing::post(create_draft))
             .route(
                 "/v1.0/me/messages/{message}/attachments/createUploadSession",
@@ -1068,6 +1072,22 @@ async fn send_draft(State(shared): State<Shared>, Path(message): Path<String>) -
     }
 
     StatusCode::ACCEPTED.into_response()
+}
+
+/// "message: permanentDelete" (SOURCES.md): gone from every folder a mail
+/// program can see, answered 204.
+async fn permanent_delete(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
+    let mut inner = lock(&shared);
+    if inner.mailbox.message(&message).is_none() {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        );
+    }
+    inner.mailbox.delete_message(&message);
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// "message: move" (SOURCES.md): to a folder by id or well-known name,

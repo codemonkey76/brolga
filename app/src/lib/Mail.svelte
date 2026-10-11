@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, dismissRefused, getConversation, listAttachments, listDrafts, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, deletePermanently, dismissRefused, getConversation, listAttachments, listDrafts, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -185,9 +185,39 @@
         }
     }
 
+    /** Delete the message being read for good. There is no undo, so there is no offer of one. */
+    async function purge() {
+        if (!accountId || !opened) return;
+        const id = opened.message.id;
+        const at = rows.findIndex((row) => row?.id === id);
+        try {
+            await deletePermanently(accountId, [id]);
+            if (searching) {
+                rows = rows.filter((row) => row?.id !== id);
+                total = rows.length;
+            } else {
+                await refresh();
+            }
+            folders = await listFolders(accountId);
+            const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
+            if (next) {
+                await open(next);
+            } else {
+                opened = null;
+                selectedId = null;
+                thread = [];
+            }
+            tell("Deleted permanently.");
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
     /** The standard folder the message being read is in, if it is in one. */
     const within = $derived(opened ? (folders.find((f) => f.id === opened?.message.folder_id)?.well_known ?? null) : null);
     const remove = () => within !== "deleteditems" && moveTo("deleteditems", "Moved to Deleted Items");
+    const junk = () => within !== "junkemail" && folders.some((f) => f.well_known === "junkemail") && moveTo("junkemail", "Moved to Junk Email");
+    const notJunk = () => within === "junkemail" && moveTo("inbox", "Moved to the inbox");
     const archive = () => within !== "archive" && folders.some((f) => f.well_known === "archive") && moveTo("archive", "Archived");
 
     /** Tell of any change Microsoft 365 would not take. Each has already been put back. */
@@ -733,6 +763,9 @@
             {folders}
             {within}
             onDelete={remove}
+        onPurge={purge}
+        onJunk={junk}
+        onNotJunk={notJunk}
             onArchive={archive}
             onMove={(folder) => moveTo(folder.id, `Moved to ${folder.name}`)}
             onRead={(message) => read(message)}

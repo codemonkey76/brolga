@@ -24,6 +24,10 @@
         /** The standard folder the message is in, if it is in one. */
         within: string | null;
         onDelete: () => void;
+        /** Delete for good. Offered only where a message has already been deleted once. */
+        onPurge: () => void;
+        onJunk: () => void;
+        onNotJunk: () => void;
         onArchive: () => void;
         onMove: (folder: Folder) => void;
         /** Always show this sender's remote pictures, or stop. */
@@ -32,8 +36,10 @@
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onWrite, onSetRead, onSetFlag, folders, within, onDelete, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onWrite, onSetRead, onSetFlag, folders, within, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
+    /** The message being asked about, once "Delete permanently" has been pressed once. */
+    let sureOf = $state<string | null>(null);
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
     let mismatch = $state(false);
@@ -181,6 +187,16 @@
                 <button type="button" title="Ctrl+F" onclick={() => onWrite("forward")}>Forward</button>
                 {#if within !== "deleteditems"}
                     <button type="button" title="Delete" onclick={onDelete}>Delete</button>
+                {:else if sureOf === opened.message.id}
+                    <button type="button" class="danger" onclick={() => ((sureOf = null), onPurge())}>Delete for good? It cannot be undone</button>
+                    <button type="button" onclick={() => (sureOf = null)}>Keep</button>
+                {:else}
+                    <button type="button" onclick={() => (sureOf = opened.message.id)}>Delete permanently</button>
+                {/if}
+                {#if within === "junkemail"}
+                    <button type="button" onclick={onNotJunk}>Not junk</button>
+                {:else if within !== "deleteditems" && within !== "sentitems" && within !== "drafts" && folders.some((f) => f.well_known === "junkemail")}
+                    <button type="button" onclick={onJunk}>Junk</button>
                 {/if}
                 {#if within !== "archive" && folders.some((f) => f.well_known === "archive")}
                     <button type="button" title="Backspace" onclick={onArchive}>Archive</button>
@@ -310,6 +326,11 @@
 
     .flagged {
         color: var(--danger);
+    }
+
+    .danger {
+        color: var(--danger);
+        border-color: var(--danger);
     }
 
     .plain {

@@ -39,6 +39,12 @@ struct Move {
 }
 
 #[derive(Deserialize)]
+struct Purge {
+    account_id: Option<String>,
+    message_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct Undo {
     account_id: Option<String>,
     undo_id: String,
@@ -110,6 +116,25 @@ async fn move_messages(mailboxes: Arc<Mailboxes>, args: Move) -> Result<Value, C
         MessageEdit::Move(folder),
     )
     .await
+}
+
+/// Delete for good. This is not queued: it cannot be undone, so it is done
+/// while the person waits and they are told at once whether it happened.
+async fn purge(mailboxes: Arc<Mailboxes>, args: Purge) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let mut deleted = 0;
+    for id in &args.message_ids {
+        mailbox.graph.delete_permanently(id).await.map_err(|e| {
+            failed(format!(
+                "{deleted} of {} were deleted before this went wrong, and the rest are untouched. {e}",
+                args.message_ids.len()
+            ))
+        })?;
+        mailbox.db.forget_message(id).map_err(failed)?;
+        deleted += 1;
+    }
+
+    Ok(json!({ "deleted": deleted }))
 }
 
 async fn undo(mailboxes: Arc<Mailboxes>, args: Undo) -> Result<Value, CommandError> {
@@ -295,6 +320,34 @@ pub(crate) fn register(
             examples: vec![json!({ "message_ids": ["message-000008"], "folder_id": "archive" })],
         },
         handler(&mailboxes, move_messages),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.messages.delete_permanently".to_owned(),
+            title: "Delete permanently".to_owned(),
+            description: "Delete messages for good. They leave every folder, Deleted Items included, and cannot be had back from here or from Outlook; \
+                          mail.undo does not bring them back. Ordinary deleting is mail.messages.move to `deleteditems`, which can be undone. \
+                          This is done at once and needs Microsoft 365 in reach."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id(), "message_ids": message_ids() },
+                "required": ["message_ids"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "deleted": { "type": "integer" } },
+                "required": ["deleted"]
+            }),
+            // A message that is not there is already as deleted as it can be.
+            examples: vec![json!({ "message_ids": ["no-such-message"] })],
+        },
+        handler(&mailboxes, purge),
     )?;
 
     registry.register(

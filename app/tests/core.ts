@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** Microsoft 365 cannot be reached. */
+    offline?: boolean;
     /** What agents have asked for, the latest first. */
     agentLog?: { at: string; client: string; command: string; args: unknown; outcome: string; detail: string }[];
     /** Why automatic replies cannot be read, if they cannot. */
@@ -308,6 +310,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     folder("sent", "Sent Items", "sentitems"),
                     folder("deleted", "Deleted Items", "deleteditems"),
                     folder("archive", "Archive", "archive"),
+                    folder("junk", "Junk Email", "junkemail"),
                     folder("projects", "Projects", null),
                     folder("harbour", "Harbour upgrade", null, "projects", 1),
                     folder("surveys", "Surveys", null, "harbour", 2),
@@ -471,7 +474,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     return () => flags.set(m.id, was);
                 }),
             "mail.messages.move": (args) => {
-                const named: Record<string, string> = { deleteditems: "deleted", sentitems: "sent" };
+                const named: Record<string, string> = { deleteditems: "deleted", sentitems: "sent", junkemail: "junk" };
                 const to = named[args.folder_id as string] ?? (args.folder_id as string);
                 return acted(args.message_ids, (m) => {
                     if (m.folder_id === to) return null;
@@ -479,6 +482,15 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     m.folder_id = to;
                     return () => (m.folder_id = was);
                 });
+            },
+            "mail.messages.delete_permanently": (args) => {
+                const ids = args.message_ids as string[];
+                if (core.offline) throw { code: "failed", message: "0 of 1 were deleted before this went wrong, and the rest are untouched. Microsoft 365 could not be reached." };
+                for (const id of ids) {
+                    const at = mail.findIndex((each) => each.id === id);
+                    if (at >= 0) mail.splice(at, 1);
+                }
+                return { deleted: ids.length };
             },
             "mail.undo": (args) => {
                 const back = actions.get(args.undo_id as string);

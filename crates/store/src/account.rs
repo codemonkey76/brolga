@@ -676,6 +676,35 @@ impl AccountDb {
         Ok(())
     }
 
+    /// Take a message off this computer, with everything kept about it,
+    /// because it is gone from the server for good. Its folder's counts
+    /// follow. False if it was not here.
+    pub fn forget_message(&self, id: &str) -> Result<bool, StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE folders SET
+                 total = max(0, total - 1),
+                 unread = max(0, unread - (SELECT NOT is_read FROM messages WHERE id = ?1))
+             WHERE id = (SELECT folder_id FROM messages WHERE id = ?1)",
+            [id],
+        )?;
+        let here: bool = transaction.query_row(
+            "SELECT EXISTS (SELECT 1 FROM messages WHERE id = ?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        // Anything still queued for it has nothing left to change.
+        transaction.execute(
+            "DELETE FROM ops WHERE message_id = ?1 AND state = 'queued'",
+            [id],
+        )?;
+        delete_messages(&transaction, "id = ?1", params![id])?;
+        transaction.commit()?;
+
+        Ok(here)
+    }
+
     /// A folder's id, given its id or, for a standard folder, its
     /// well-known name.
     pub fn folder_id(&self, folder: &str) -> Result<Option<String>, StoreError> {

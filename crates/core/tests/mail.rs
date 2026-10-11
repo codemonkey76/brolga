@@ -1318,3 +1318,60 @@ async fn a_formatted_message_is_cleaned_when_kept_and_sent_with_its_formatting()
         "{sent}"
     );
 }
+
+#[tokio::test]
+async fn deleting_permanently_takes_a_message_from_the_server_and_from_here() {
+    let f = Fixture::signed_in().await;
+    let deleted = f.graph.folder_id("deleteditems");
+    let id = f.graph.add_message(
+        &deleted,
+        message("Old", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    let kept = f.graph.add_message(
+        &deleted,
+        message("Keep", "Sam Taylor", "2026-10-02T09:00:00Z"),
+    );
+    f.sync().await;
+
+    let gone = f
+        .run(
+            "mail.messages.delete_permanently",
+            json!({ "message_ids": [id] }),
+        )
+        .await;
+
+    assert_eq!(gone["deleted"], 1);
+    assert!(!f.graph.messages().contains_key(&id));
+    assert!(f.graph.messages().contains_key(&kept));
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": deleted }))
+        .await;
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["messages"][0]["subject"], "Keep");
+    // A later sync does not bring it back, or trip over it.
+    assert_eq!(f.sync().await["ok"], true);
+    assert_eq!(
+        f.run("mail.messages.list", json!({ "folder_id": deleted }))
+            .await["total"],
+        1
+    );
+
+    // With the server out of reach nothing is deleted, here or there.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    let offline = f
+        .registry
+        .execute(
+            "mail.messages.delete_permanently",
+            json!({ "message_ids": [kept] }),
+        )
+        .await;
+    assert!(offline.is_err());
+    f.graph.clear_faults();
+    assert!(f.graph.messages().contains_key(&kept));
+    assert_eq!(
+        f.run("mail.messages.list", json!({ "folder_id": deleted }))
+            .await["total"],
+        1
+    );
+}
