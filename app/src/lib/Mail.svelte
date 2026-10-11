@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { say } from "./commands";
-    import { type Folder, type Message, type Opened, listFolders, listMessages, openLink, openMessage, searchMail, setFavourite, syncNow } from "./mail";
+    import { type Folder, type Message, type Opened, type Sort, type View, getConversation, listFolders, listMessages, openLink, openMessage, searchMail, setFavourite, syncNow } from "./mail";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
 
@@ -25,6 +25,36 @@
     let searching = $state(false);
     let opened = $state<Opened | null>(null);
     let selectedId = $state<string | null>(null);
+    /** The message being read, which in a conversation need not be the one selected in the list. */
+    let readingId: string | null = null;
+    /** The whole conversation of the selected line, oldest first, when it has more than one message. */
+    let thread = $state<Message[]>([]);
+
+    /** How the list is laid out. This window's business only. */
+    let view = $state<View>({ sort: "newest", conversations: false });
+    const SORTS: Sort[] = ["newest", "oldest", "sender", "subject"];
+    try {
+        const kept: unknown = JSON.parse(localStorage.getItem("brolga.view") ?? "null");
+        if (kept && typeof kept === "object") {
+            const { sort, conversations } = kept as Partial<View>;
+            view = { sort: SORTS.includes(sort as Sort) ? (sort as Sort) : "newest", conversations: conversations === true };
+        }
+    } catch {
+        // Nothing kept: newest first, a line for each message.
+    }
+
+    async function lay(next: View) {
+        view = next;
+        try {
+            localStorage.setItem("brolga.view", JSON.stringify(next));
+        } catch {
+            // It still holds for as long as the window is open.
+        }
+        if (folderId && !searching) {
+            reset();
+            await need(0);
+        }
+    }
     let opening = $state(false);
     let readingProblem = $state<string | null>(null);
     let imagesShown = $state(false);
@@ -116,7 +146,7 @@
 
         const mine = listing;
         try {
-            const page = await listMessages(accountId, folderId, offset, PAGE);
+            const page = await listMessages(accountId, folderId, offset, PAGE, view);
             if (mine !== listing) return;
             total = page.total;
             const next = rows.slice();
@@ -135,7 +165,7 @@
         const next = rows.slice();
         let now = total;
         for (const offset of [...asked].sort((a, b) => a - b)) {
-            const page = await listMessages(accountId, folderId, offset, PAGE);
+            const page = await listMessages(accountId, folderId, offset, PAGE, view);
             if (mine !== listing) return;
             now = page.total;
             for (let i = 0; i < PAGE; i++) next[offset + i] = page.messages[i];
@@ -164,17 +194,33 @@
         }
     }
 
-    async function open(message: Message, withImages = false) {
-        if (!accountId) return;
+    /** Choose a line of the list. For a conversation, its other messages are fetched to read beside it. */
+    async function open(message: Message) {
         selectedId = message.id;
+        thread = [];
+        const reading = read(message);
+        if (accountId && view.conversations && !searching && message.conversation_id) {
+            try {
+                const all = await getConversation(accountId, message.conversation_id);
+                if (selectedId === message.id && all.length > 1) thread = all;
+            } catch {
+                // The message itself still opens; it is only shown on its own.
+            }
+        }
+        await reading;
+    }
+
+    async function read(message: Message, withImages = false) {
+        if (!accountId) return;
+        readingId = message.id;
         imagesShown = withImages;
         opening = true;
         readingProblem = null;
         try {
             const result = await openMessage(accountId, message.id, withImages);
-            if (selectedId === message.id) opened = result;
+            if (readingId === message.id) opened = result;
         } catch (failure) {
-            if (selectedId === message.id) {
+            if (readingId === message.id) {
                 opened = null;
                 readingProblem = say(failure);
             }
@@ -320,9 +366,33 @@
             {#if searching}
                 {total === 1 ? "1 result" : `${total} results`} for “{query}”
             {:else if folder}
-                {folder.name} <span class="muted">· {total === 1 ? "1 message" : `${total.toLocaleString()} messages`}</span>
+                {@const things = view.conversations ? "conversation" : "message"}
+                {folder.name} <span class="muted">· {total === 1 ? `1 ${things}` : `${total.toLocaleString()} ${things}s`}</span>
             {/if}
         </p>
+
+        {#if !searching}
+            <div class="view">
+                <label>
+                    <input type="checkbox" checked={view.conversations} onchange={(event) => lay({ ...view, conversations: event.currentTarget.checked })} />
+                    Conversations
+                </label>
+                <label>
+                    Sort
+                    <select
+                        value={view.conversations ? "newest" : view.sort}
+                        disabled={view.conversations}
+                        title={view.conversations ? "Conversations are always newest first" : undefined}
+                        onchange={(event) => lay({ ...view, sort: event.currentTarget.value as Sort })}
+                    >
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
+                        <option value="sender">By sender</option>
+                        <option value="subject">By subject</option>
+                    </select>
+                </label>
+            </div>
+        {/if}
 
         {#if total === 0}
             <p class="empty muted">{searching ? "Nothing matches." : syncing ? "Fetching your mail…" : "Nothing here."}</p>
@@ -338,7 +408,9 @@
         loading={opening}
         problem={readingProblem}
         {imagesShown}
-        onShowImages={() => opened && open(opened.message, true)}
+        {thread}
+        onRead={(message) => read(message)}
+        onShowImages={() => opened && read(opened.message, true)}
         onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}
     />
 </div>
@@ -451,6 +523,27 @@
     .count {
         font-weight: 700;
         font-size: 0.8rem;
+    }
+
+    .view {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.4rem 0.75rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+    }
+
+    .view label {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+    }
+
+    .view select {
+        font-size: 0.8rem;
+        padding: 0.1rem 0.25rem;
     }
 
     .list {

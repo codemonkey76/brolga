@@ -85,6 +85,14 @@ const STEPS: &[&str] = &[
     -- Kept on this computer only: Graph has no documented favourites.
     ALTER TABLE folders ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0;
 ",
+    "
+    -- A folder as conversations, and a conversation's messages.
+    CREATE INDEX messages_by_conversation ON messages (conversation_id, received_at, id);
+    CREATE INDEX messages_by_folder_conversation ON messages (folder_id, conversation_id, received_at DESC, id);
+    -- A folder sorted by who sent it, and by subject.
+    CREATE INDEX messages_by_folder_sender ON messages (folder_id, from_name COLLATE NOCASE, received_at DESC, id);
+    CREATE INDEX messages_by_folder_subject ON messages (folder_id, subject COLLATE NOCASE, received_at DESC, id);
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +144,38 @@ pub struct MessageRow {
     /// JSON: an array of strings.
     pub categories: String,
     pub inference: String,
+}
+
+/// The order a folder's messages are listed in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Order {
+    #[default]
+    Newest,
+    Oldest,
+    /// By the sender's name, and newest first for each sender.
+    Sender,
+    /// By subject, and newest first for each subject.
+    Subject,
+}
+
+impl Order {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Newest => "received_at DESC, id",
+            Self::Oldest => "received_at ASC, id DESC",
+            Self::Sender => "from_name COLLATE NOCASE, received_at DESC, id",
+            Self::Subject => "subject COLLATE NOCASE, received_at DESC, id",
+        }
+    }
+}
+
+/// A conversation as one line of a folder: its newest message there, and
+/// how many of the folder's messages belong to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationRow {
+    pub latest: MessageRow,
+    pub count: u32,
+    pub unread: u32,
 }
 
 /// What a sync learned about a message. As with a folder, `None` leaves
@@ -432,12 +472,87 @@ impl AccountDb {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<MessageRow>, StoreError> {
+        self.messages_in_order(folder_id, Order::Newest, offset, limit)
+    }
+
+    /// A window of a folder's messages, in the order asked for.
+    pub fn messages_in_order(
+        &self,
+        folder_id: &str,
+        order: Order,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<MessageRow>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(&format!(
-            "SELECT {COLUMNS} FROM messages WHERE folder_id = ?1 ORDER BY received_at DESC, id LIMIT ?3 OFFSET ?2"
+            "SELECT {COLUMNS} FROM messages WHERE folder_id = ?1 ORDER BY {} LIMIT ?3 OFFSET ?2",
+            order.sql()
         ))?;
         let rows = statement
             .query_map(params![folder_id, offset, limit], read_message)?
+            .collect::<Result<_, _>>()?;
+
+        Ok(rows)
+    }
+
+    /// A window of a folder's conversations, the one with the newest message
+    /// first. A conversation is counted within the folder: its messages in
+    /// other folders (the replies in Sent Items, say) are not this folder's.
+    pub fn conversations(
+        &self,
+        folder_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<ConversationRow>, StoreError> {
+        let connection = self.connection();
+        // A message stands for its conversation when it is the newest of it
+        // in the folder. One without a conversation stands for itself.
+        let mut statement = connection.prepare(&format!(
+            "SELECT {COLUMNS},
+                 CASE WHEN m.conversation_id IS NULL THEN 1 ELSE (
+                     SELECT count(*) FROM messages c
+                     WHERE c.folder_id = m.folder_id AND c.conversation_id = m.conversation_id) END,
+                 CASE WHEN m.conversation_id IS NULL THEN NOT m.is_read ELSE (
+                     SELECT count(*) FROM messages c
+                     WHERE c.folder_id = m.folder_id AND c.conversation_id = m.conversation_id AND c.is_read = 0) END
+             FROM messages m
+             WHERE m.folder_id = ?1 AND (m.conversation_id IS NULL OR m.id = (
+                 SELECT l.id FROM messages l
+                 WHERE l.folder_id = m.folder_id AND l.conversation_id = m.conversation_id
+                 ORDER BY l.received_at DESC, l.id LIMIT 1))
+             ORDER BY m.received_at DESC, m.id LIMIT ?3 OFFSET ?2"
+        ))?;
+        let rows = statement
+            .query_map(params![folder_id, offset, limit], |row| {
+                Ok(ConversationRow {
+                    latest: read_message(row)?,
+                    count: row.get(18)?,
+                    unread: row.get(19)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(rows)
+    }
+
+    pub fn conversation_count(&self, folder_id: &str) -> Result<u32, StoreError> {
+        Ok(self.connection().query_row(
+            "SELECT count(DISTINCT conversation_id) + count(*) FILTER (WHERE conversation_id IS NULL)
+             FROM messages WHERE folder_id = ?1",
+            [folder_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Every message of a conversation, in whichever folders they are,
+    /// oldest first: the order it was written in.
+    pub fn conversation(&self, conversation_id: &str) -> Result<Vec<MessageRow>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(&format!(
+            "SELECT {COLUMNS} FROM messages WHERE conversation_id = ?1 ORDER BY received_at, id"
+        ))?;
+        let rows = statement
+            .query_map([conversation_id], read_message)?
             .collect::<Result<_, _>>()?;
 
         Ok(rows)
@@ -895,5 +1010,136 @@ mod tests {
         db.apply_folders(&[], &["projects".to_owned()], "next", Round::Finished)
             .unwrap();
         assert!(db.folders().unwrap().is_empty());
+    }
+
+    fn mail(
+        id: &str,
+        conversation: Option<&str>,
+        from: &str,
+        subject: &str,
+        received: &str,
+        read: bool,
+    ) -> MessageChange {
+        MessageChange {
+            id: id.to_owned(),
+            conversation_id: conversation.map(str::to_owned),
+            from_name: Some(from.to_owned()),
+            subject: Some(subject.to_owned()),
+            received_at: Some(received.to_owned()),
+            is_read: Some(read),
+            ..MessageChange::default()
+        }
+    }
+
+    fn with_mail() -> AccountDb {
+        let db = AccountDb::in_memory().unwrap();
+        db.apply_messages(
+            "inbox",
+            &[
+                mail(
+                    "1",
+                    Some("lunch"),
+                    "Sam",
+                    "Lunch?",
+                    "2026-10-01T09:00:00Z",
+                    true,
+                ),
+                mail(
+                    "2",
+                    Some("budget"),
+                    "alex",
+                    "Budget",
+                    "2026-10-02T09:00:00Z",
+                    true,
+                ),
+                mail(
+                    "3",
+                    Some("lunch"),
+                    "Robin",
+                    "RE: Lunch?",
+                    "2026-10-03T09:00:00Z",
+                    false,
+                ),
+                mail("4", None, "Zoe", "apples", "2026-10-04T09:00:00Z", false),
+                mail(
+                    "5",
+                    Some("lunch"),
+                    "Sam",
+                    "RE: Lunch?",
+                    "2026-10-05T09:00:00Z",
+                    false,
+                ),
+            ],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        db.apply_messages(
+            "sent",
+            &[mail(
+                "6",
+                Some("lunch"),
+                "Me",
+                "RE: Lunch?",
+                "2026-10-04T12:00:00Z",
+                true,
+            )],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        db
+    }
+
+    fn ids(rows: &[MessageRow]) -> Vec<&str> {
+        rows.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_folder_can_be_listed_in_each_order() {
+        let db = with_mail();
+        let listed = |order| db.messages_in_order("inbox", order, 0, 10).unwrap();
+
+        assert_eq!(ids(&listed(Order::Newest)), ["5", "4", "3", "2", "1"]);
+        assert_eq!(ids(&listed(Order::Oldest)), ["1", "2", "3", "4", "5"]);
+        assert_eq!(ids(&listed(Order::Sender)), ["2", "3", "5", "1", "4"]);
+        assert_eq!(ids(&listed(Order::Subject)), ["4", "2", "1", "5", "3"]);
+    }
+
+    #[test]
+    fn a_folder_as_conversations_has_one_line_for_each() {
+        let db = with_mail();
+
+        let lines = db.conversations("inbox", 0, 10).unwrap();
+        let shape: Vec<(&str, u32, u32)> = lines
+            .iter()
+            .map(|c| (c.latest.id.as_str(), c.count, c.unread))
+            .collect();
+
+        // The lunch conversation has a fourth message, in Sent, which is
+        // not the inbox's to count.
+        assert_eq!(shape, [("5", 3, 2), ("4", 1, 1), ("2", 1, 0)]);
+        assert_eq!(db.conversation_count("inbox").unwrap(), 3);
+        assert_eq!(
+            ids(&db
+                .conversations("inbox", 1, 1)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.latest)
+                .collect::<Vec<_>>()),
+            ["4"]
+        );
+    }
+
+    #[test]
+    fn a_conversation_is_read_across_folders_in_the_order_it_was_written() {
+        let db = with_mail();
+
+        assert_eq!(
+            ids(&db.conversation("lunch").unwrap()),
+            ["1", "3", "6", "5"]
+        );
     }
 }

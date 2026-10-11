@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { bulk, inbox, ran, robin, sam, withCore } from "./core";
+import { bulk, inbox, lunch, ran, robin, sam, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -225,4 +225,64 @@ test("a pinned folder is kept at the top, and can be unpinned", async ({ page })
     await favourites.getByRole("button", { name: "Unpin Archive" }).click();
     await expect(favourites.getByRole("listitem")).toHaveCount(1);
     expect((await ran(page)).filter((r) => r.command === "mail.folders.set_favourite")).toHaveLength(2);
+});
+
+test("as conversations, a thread is one line and opens with all its messages", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...lunch] });
+    const rows = messages(page).getByRole("option");
+    await expect(rows).toHaveCount(6);
+
+    await page.getByRole("checkbox", { name: "Conversations" }).check();
+
+    await expect(rows).toHaveCount(5);
+    await expect(page.getByText("5 conversations")).toBeVisible();
+    await expect(rows.first()).toContainText("Jo Nguyen");
+    await expect(rows.first().getByLabel("2 messages")).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Sort" })).toBeDisabled();
+
+    await rows.first().click();
+    const thread = page.getByRole("list", { name: "Conversation" }).getByRole("button");
+    // The answer from Sent Items is part of what was said, though not of the inbox.
+    await expect(thread).toHaveCount(3);
+    await expect(thread.nth(1)).toContainText("Robin Example");
+    await expect(thread.nth(2)).toHaveAttribute("aria-current", "true");
+    await expect(body(page).getByText("Booked for four of us")).toBeVisible();
+    await picture(page, "conversation");
+
+    await thread.nth(1).click();
+    await expect(body(page).getByText("Half past twelve?")).toBeVisible();
+    await expect(thread.nth(1)).toHaveAttribute("aria-current", "true");
+    await expect(rows.first()).toHaveAttribute("aria-selected", "true");
+
+    await page.reload();
+    await expect(page.getByRole("checkbox", { name: "Conversations" })).toBeChecked();
+    await expect(rows).toHaveCount(5);
+});
+
+test("a message on its own has no conversation list", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("checkbox", { name: "Conversations" }).check();
+
+    await messages(page).getByRole("option").first().click();
+
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await expect(page.getByRole("list", { name: "Conversation" })).toHaveCount(0);
+});
+
+test("the list can be sorted by sender, by subject and oldest first", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    const sort = page.getByRole("combobox", { name: "Sort" });
+
+    await sort.selectOption("sender");
+    await expect(first).toContainText("Alex Chen");
+
+    await sort.selectOption("subject");
+    await expect(first).toContainText("Action needed");
+
+    await sort.selectOption("oldest");
+    await expect(first).toContainText("IT Support");
+
+    await sort.selectOption("newest");
+    await expect(first).toContainText("Sam Taylor");
 });

@@ -27,6 +27,8 @@ pub struct FakeMessage {
     pub is_read: bool,
     pub has_attachments: bool,
     pub body_html: String,
+    /// The conversation it belongs to. Left out, it is one of its own.
+    pub conversation: Option<String>,
 }
 
 impl FakeMessage {
@@ -39,11 +41,17 @@ impl FakeMessage {
             is_read: false,
             has_attachments: false,
             body_html: format!("<html><body><p>{subject}</p></body></html>"),
+            conversation: None,
         }
     }
 
     pub fn body(mut self, html: &str) -> Self {
         self.body_html = html.to_owned();
+        self
+    }
+
+    pub fn conversation(mut self, id: &str) -> Self {
+        self.conversation = Some(id.to_owned());
         self
     }
 
@@ -311,7 +319,7 @@ impl Mailbox {
         let mut value = json!({
             "id": id,
             "parentFolderId": stored.folder,
-            "conversationId": format!("conversation-{id}"),
+            "conversationId": m.conversation.clone().unwrap_or_else(|| format!("conversation-{id}")),
             "subject": m.subject,
             "bodyPreview": preview,
             "from": { "emailAddress": { "name": m.from_name, "address": m.from_address } },

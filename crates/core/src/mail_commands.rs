@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use brolga_commands::{CommandError, CommandKind, CommandSpec, Handler, Registry, RegistryError};
 use brolga_mail::{RemoteContent, html_to_text, sanitise_html, text_to_html};
-use brolga_store::{Body, MessageRow};
+use brolga_store::{Body, MessageRow, Order};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -101,6 +101,14 @@ struct Messages {
     folder_id: String,
     offset: Option<u32>,
     limit: Option<u32>,
+    sort: Option<String>,
+    conversations: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct Conversation {
+    account_id: Option<String>,
+    conversation_id: String,
 }
 
 #[derive(Deserialize)]
@@ -220,15 +228,57 @@ async fn messages(context: Context, args: Messages) -> Result<Value, CommandErro
         .map_err(failed)?;
     let mailbox = context.open(&account).await.map_err(failed)?;
     let limit = args.limit.unwrap_or(50).min(MAX_PAGE);
+    let offset = args.offset.unwrap_or(0);
+
+    if args.conversations.unwrap_or(false) {
+        let lines = mailbox
+            .db
+            .conversations(&args.folder_id, offset, limit)
+            .map_err(failed)?;
+        let total = mailbox
+            .db
+            .conversation_count(&args.folder_id)
+            .map_err(failed)?;
+        let messages: Vec<Value> = lines
+            .iter()
+            .map(|line| {
+                let mut message = shown(&line.latest);
+                message["conversation"] = json!({ "count": line.count, "unread": line.unread });
+                message
+            })
+            .collect();
+
+        return Ok(json!({ "total": total, "messages": messages, "note": UNTRUSTED }));
+    }
+
+    let order = match args.sort.as_deref() {
+        None | Some("newest") => Order::Newest,
+        Some("oldest") => Order::Oldest,
+        Some("sender") => Order::Sender,
+        _ => Order::Subject,
+    };
     let rows = mailbox
         .db
-        .messages(&args.folder_id, args.offset.unwrap_or(0), limit)
+        .messages_in_order(&args.folder_id, order, offset, limit)
         .map_err(failed)?;
     let total = mailbox.db.message_count(&args.folder_id).map_err(failed)?;
 
     Ok(
         json!({ "total": total, "messages": rows.iter().map(shown).collect::<Vec<_>>(), "note": UNTRUSTED }),
     )
+}
+
+async fn conversation(context: Context, args: Conversation) -> Result<Value, CommandError> {
+    let account = context
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = context.open(&account).await.map_err(failed)?;
+    let rows = mailbox
+        .db
+        .conversation(&args.conversation_id)
+        .map_err(failed)?;
+
+    Ok(json!({ "messages": rows.iter().map(shown).collect::<Vec<_>>(), "note": UNTRUSTED }))
 }
 
 async fn get_message(context: Context, args: GetMessage) -> Result<Value, CommandError> {
@@ -379,7 +429,13 @@ fn message_schema() -> Value {
             "importance": { "type": "string" },
             "flag_status": { "type": "string" },
             "categories": { "type": "array", "items": { "type": "string" } },
-            "focused": { "type": "boolean", "description": "False for mail Microsoft 365 sorted into Other." }
+            "focused": { "type": "boolean", "description": "False for mail Microsoft 365 sorted into Other." },
+            "conversation": {
+                "type": "object",
+                "description": "Only when listing by conversation: how many of the folder's messages belong to this one's conversation, and how many of those are unread.",
+                "properties": { "count": { "type": "integer" }, "unread": { "type": "integer" } },
+                "required": ["count", "unread"]
+            }
         },
         "required": ["id", "folder_id", "subject", "preview", "from", "received_at", "is_read", "has_attachments"]
     })
@@ -571,8 +627,10 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
         CommandSpec {
             id: "mail.messages.list".to_owned(),
             title: "List messages".to_owned(),
-            description: "The messages in a folder as last synced, newest first, without their bodies. Page through with offset and limit; \
-                          `total` is how many the folder holds."
+            description: "The messages in a folder as last synced, newest first unless `sort` says otherwise, without their bodies. Page through with offset and limit; \
+                          `total` is how many the folder holds. With `conversations` true there is one entry for each conversation instead: its newest message in the folder, \
+                          with `conversation.count` and `conversation.unread` for how many of the folder's messages belong to it, and `total` counts conversations. \
+                          Read a whole conversation with mail.conversations.get."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -583,7 +641,12 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                     "account_id": account_id_property(),
                     "folder_id": { "type": "string", "description": "A folder's id, from mail.folders.list." },
                     "offset": { "type": "integer", "minimum": 0, "description": "How many messages to skip. Default 0." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_PAGE, "description": "How many to return. Default 50." }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_PAGE, "description": "How many to return. Default 50." },
+                    "sort": {
+                        "enum": ["newest", "oldest", "sender", "subject"],
+                        "description": "Default newest. By sender or subject, each sender's or subject's messages are newest first. Not used with conversations, which are always newest first."
+                    },
+                    "conversations": { "type": "boolean", "description": "One entry for each conversation, not each message. Default false." }
                 },
                 "required": ["folder_id"],
                 "additionalProperties": false
@@ -597,9 +660,45 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                 },
                 "required": ["total", "messages", "note"]
             }),
-            examples: vec![json!({ "folder_id": "no-such-folder" })],
+            examples: vec![
+                json!({ "folder_id": "no-such-folder" }),
+                json!({ "folder_id": "no-such-folder", "sort": "sender" }),
+                json!({ "folder_id": "no-such-folder", "conversations": true }),
+            ],
         },
         handler(&context, messages),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.conversations.get".to_owned(),
+            title: "Read a conversation".to_owned(),
+            description: "Every message of a conversation that is on this computer, whichever folders they are in, oldest first, without their bodies. \
+                          `conversation_id` comes from a message. Read each message's body with mail.messages.get."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: Some("get_conversation".to_owned()),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "conversation_id": { "type": "string" }
+                },
+                "required": ["conversation_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "messages": { "type": "array", "items": message_schema() },
+                    "note": { "type": "string" }
+                },
+                "required": ["messages", "note"]
+            }),
+            examples: vec![json!({ "conversation_id": "conversation-message-000008" })],
+        },
+        handler(&context, conversation),
     )?;
 
     registry.register(

@@ -32,7 +32,8 @@ argument `mcp`.
 | `list_accounts` | The signed-in accounts, and whether each still has a working sign-in. |
 | `sync_now` | Fetch new and changed mail into this computer's copy. Changes nothing in the mailbox. |
 | `list_folders` | An account's mail folders as a tree, with unread and total counts. |
-| `list_messages` | The messages in a folder, newest first, without bodies. |
+| `list_messages` | The messages in a folder without bodies: newest first, in another order, or one entry for each conversation. |
+| `get_conversation` | Every message of a conversation, across folders, oldest first. |
 | `get_message` | One message with its body, as plain text or as HTML made safe. |
 | `search_mail` | Search synced mail: words, phrases, `from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `after:`, `before:`. |
 | `get_sync_status` | For each account: syncing or not, needing sign-in or not, how much is on this computer and when it was last brought up to date. |

@@ -73,7 +73,7 @@
             <div
                 class="row"
                 class:selected={message?.id === selectedId}
-                class:unread={message && !message.is_read}
+                class:unread={message && (message.conversation ? message.conversation.unread > 0 : !message.is_read)}
                 style:transform="translateY({index * ROW}px)"
                 role="option"
                 aria-selected={message?.id === selectedId}
@@ -89,6 +89,9 @@
                     <span class="subject">
                         {#if message.has_attachments}<span class="clip" title="Has attachments" aria-label="Has attachments">📎</span>{/if}
                         {message.subject || "(No subject)"}
+                        {#if message.conversation && message.conversation.count > 1}
+                            <span class="many" aria-label="{message.conversation.count} messages">{message.conversation.count}</span>
+                        {/if}
                     </span>
                     <span class="preview">{message.preview}</span>
                 {:else}
@@ -161,5 +164,14 @@
 
     .preview {
         color: var(--muted);
+    }
+
+    .many {
+        margin-left: 0.25rem;
+        padding: 0 0.35rem;
+        border-radius: 0.6rem;
+        background: var(--line);
+        font-size: 0.7rem;
+        font-weight: 600;
     }
 </style>

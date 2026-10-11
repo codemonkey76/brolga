@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use brolga_fake_graph::{FakeGraph, FakeMessage, Fault};
 use brolga_graph::{GraphClient, GraphError, RetryPolicy, TokenSource};
-use brolga_store::AccountDb;
+use brolga_store::{AccountDb, Order};
 use brolga_sync::{MailSync, SyncError};
 use futures::future::BoxFuture;
 
@@ -571,6 +571,23 @@ async fn a_hundred_thousand_messages_sync_resumably_and_stay_fast() {
     });
     time("scroll to the end", 100, &|| {
         db.messages(&inbox, 99_950, 50).unwrap().len()
+    });
+    time("sorted by sender, first screen", 100, &|| {
+        db.messages_in_order(&inbox, Order::Sender, 0, 50)
+            .unwrap()
+            .len()
+    });
+    time("sorted by subject, the end", 100, &|| {
+        db.messages_in_order(&inbox, Order::Subject, 99_950, 50)
+            .unwrap()
+            .len()
+    });
+    time("as conversations, first screen", 100, &|| {
+        db.conversations(&inbox, 0, 50).unwrap().len()
+            + db.conversation_count(&inbox).unwrap() as usize
+    });
+    time("as conversations, the end", 100, &|| {
+        db.conversations(&inbox, 99_950, 50).unwrap().len()
     });
     time("open a message", 100, &|| {
         usize::from(db.message(&local[70_000].id).unwrap().is_some())

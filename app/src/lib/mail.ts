@@ -22,6 +22,9 @@ export interface Person {
 export interface Message {
     id: string;
     folder_id: string;
+    conversation_id: string | null;
+    /** Only in a list of conversations: how many of the folder's messages are in this one's. */
+    conversation?: { count: number; unread: number };
     subject: string;
     preview: string;
     from: Person;
@@ -53,8 +56,19 @@ export const listFolders = async (account_id: string) =>
 export const setFavourite = (account_id: string, folder_id: string, favourite: boolean) =>
     execute<{ favourite: boolean }>("mail.folders.set_favourite", { account_id, folder_id, favourite });
 
-export const listMessages = (account_id: string, folder_id: string, offset: number, limit: number) =>
-    execute<{ total: number; messages: Message[] }>("mail.messages.list", { account_id, folder_id, offset, limit });
+export type Sort = "newest" | "oldest" | "sender" | "subject";
+
+/** How a folder is laid out in the list. */
+export interface View {
+    sort: Sort;
+    conversations: boolean;
+}
+
+export const listMessages = (account_id: string, folder_id: string, offset: number, limit: number, view: View) =>
+    execute<{ total: number; messages: Message[] }>("mail.messages.list", { account_id, folder_id, offset, limit, ...view });
+
+export const getConversation = async (account_id: string, conversation_id: string) =>
+    (await execute<{ messages: Message[] }>("mail.conversations.get", { account_id, conversation_id })).messages;
 
 export const openMessage = (account_id: string, message_id: string, allow_remote_content: boolean) =>
     execute<Opened>("mail.messages.get", { account_id, message_id, format: "html", allow_remote_content });

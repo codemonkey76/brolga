@@ -17,6 +17,8 @@ is called out before you click it.
 
 ![Folders as a tree, with a pinned folder under Favourites](docs/screenshots/folders.png)
 
+![A folder shown as conversations, with a thread's messages listed above the one being read](docs/screenshots/conversation.png)
+
 ![A message whose remote pictures were not loaded](docs/screenshots/remote-pictures-blocked.png)
 
 ![A link whose words name one site while it goes to another, with the warning shown](docs/screenshots/deceptive-link.png)

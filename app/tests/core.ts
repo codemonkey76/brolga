@@ -38,6 +38,8 @@ export interface FakeMail {
     received_at: string;
     is_read: boolean;
     has_attachments: boolean;
+    /** The conversation it belongs to. Left out, it is one of its own. */
+    conversation?: string;
     /** HTML as the core would hand it over: already cleaned. */
     body: string;
     /** How many remote pictures the core left out of `body`. */
@@ -99,6 +101,46 @@ export const inbox: FakeMail[] = [
     },
 ];
 
+/** A conversation: a question in the inbox, the answer in Sent Items, and the reply to that. */
+export const lunch: FakeMail[] = [
+    {
+        id: "c1",
+        folder_id: "inbox",
+        conversation: "lunch",
+        subject: "Lunch on Friday?",
+        preview: "Are you free on Friday? The place by the harbour has reopened.",
+        from: person("Jo Nguyen"),
+        received_at: "2026-10-09T00:10:00Z",
+        is_read: true,
+        has_attachments: false,
+        body: "<p>Are you free on Friday? The place by the harbour has reopened.</p>",
+    },
+    {
+        id: "c2",
+        folder_id: "sent",
+        conversation: "lunch",
+        subject: "RE: Lunch on Friday?",
+        preview: "Yes. Half past twelve?",
+        from: person("Robin Example"),
+        received_at: "2026-10-09T01:00:00Z",
+        is_read: true,
+        has_attachments: false,
+        body: "<p>Yes. Half past twelve?</p>",
+    },
+    {
+        id: "c3",
+        folder_id: "inbox",
+        conversation: "lunch",
+        subject: "RE: Lunch on Friday?",
+        preview: "Booked for four of us. See you there.",
+        from: person("Jo Nguyen"),
+        received_at: "2026-10-09T04:30:00Z",
+        is_read: false,
+        has_attachments: false,
+        body: "<p>Booked for four of us. See you there.</p>",
+    },
+];
+
 /** A long folder, for scrolling. */
 export const bulk = (count: number): FakeMail[] =>
     Array.from({ length: count }, (_, n) => ({
@@ -156,7 +198,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const shown = (m: (typeof mail)[number]) => ({
             id: m.id,
             folder_id: m.folder_id,
-            conversation_id: null,
+            conversation_id: m.conversation ?? `conversation-${m.id}`,
             subject: m.subject,
             preview: m.preview,
             from: m.from,
@@ -221,10 +263,35 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { account_id: args.account_id, folder_id: args.folder_id, favourite: args.favourite };
             },
             "mail.messages.list": (args) => {
-                const all = inFolder(args.folder_id);
+                const newest = (a: (typeof mail)[number], b: (typeof mail)[number]) => b.received_at.localeCompare(a.received_at);
+                const orders: Record<string, (a: (typeof mail)[number], b: (typeof mail)[number]) => number> = {
+                    newest,
+                    oldest: (a, b) => newest(b, a),
+                    sender: (a, b) => (a.from.name ?? "").localeCompare(b.from.name ?? "") || newest(a, b),
+                    subject: (a, b) => a.subject.localeCompare(b.subject) || newest(a, b),
+                };
+                const all = inFolder(args.folder_id).sort(orders[(args.sort as string) ?? "newest"]);
                 const offset = (args.offset as number) ?? 0;
-                return { total: all.length, messages: all.slice(offset, offset + ((args.limit as number) ?? 50)).map(shown), note: "" };
+                const limit = (args.limit as number) ?? 50;
+                if (args.conversations === true) {
+                    const of = (m: (typeof mail)[number]) => shown(m).conversation_id;
+                    const lines = all
+                        .filter((m, at) => all.findIndex((each) => of(each) === of(m)) === at)
+                        .map((m) => {
+                            const same = all.filter((each) => of(each) === of(m));
+                            return { ...shown(m), conversation: { count: same.length, unread: same.filter((each) => !each.is_read).length } };
+                        });
+                    return { total: lines.length, messages: lines.slice(offset, offset + limit), note: "" };
+                }
+                return { total: all.length, messages: all.slice(offset, offset + limit).map(shown), note: "" };
             },
+            "mail.conversations.get": (args) => ({
+                messages: mail
+                    .filter((m) => shown(m).conversation_id === args.conversation_id)
+                    .sort((a, b) => a.received_at.localeCompare(b.received_at))
+                    .map(shown),
+                note: "",
+            }),
             "mail.messages.get": (args) => {
                 const m = mail.find((each) => each.id === args.message_id);
                 if (!m) throw { code: "failed", message: "There is no such message on this computer." };

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Opened, who } from "./mail";
+    import { type Message, type Opened, when, who } from "./mail";
 
     interface Props {
         opened: Opened | null;
@@ -7,11 +7,14 @@
         problem: string | null;
         /** True once the person has asked for this message's remote images. */
         imagesShown: boolean;
+        /** The conversation this message is part of, oldest first. Empty when it is on its own. */
+        thread: Message[];
+        onRead: (message: Message) => void;
         onShowImages: () => void;
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
@@ -128,6 +131,20 @@
     {:else if !opened}
         <p class="empty muted">Select a message to read it.</p>
     {:else}
+        {#if thread.length > 1}
+            <ol class="thread" aria-label="Conversation">
+                {#each thread as each (each.id)}
+                    <li>
+                        <button type="button" class:unread={!each.is_read} aria-current={each.id === opened.message.id} onclick={() => onRead(each)}>
+                            <span class="who">{who(each.from)}</span>
+                            <span class="said">{each.preview}</span>
+                            <span class="muted">{when(each.received_at)}</span>
+                        </button>
+                    </li>
+                {/each}
+            </ol>
+        {/if}
+
         <header>
             <h2>{opened.message.subject || "(No subject)"}</h2>
             <p>
@@ -178,6 +195,47 @@
 </section>
 
 <style>
+    .thread {
+        flex: none;
+        margin: 0;
+        padding: 0.25rem;
+        list-style: none;
+        max-height: 30%;
+        overflow-y: auto;
+        border-bottom: 1px solid var(--line);
+        background: var(--raised);
+    }
+
+    .thread button {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 9rem minmax(0, 1fr) auto;
+        gap: 0.75rem;
+        padding: 0.3rem 0.5rem;
+        border: 0;
+        background: none;
+        text-align: left;
+        font-size: 0.85rem;
+    }
+
+    .thread button[aria-current="true"] {
+        background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    }
+
+    .thread button.unread .who {
+        font-weight: 700;
+    }
+
+    .thread span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .said {
+        color: var(--muted);
+    }
+
     .pane {
         height: 100%;
         display: flex;

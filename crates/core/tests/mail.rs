@@ -162,6 +162,70 @@ async fn a_folder_can_be_pinned_and_unpinned() {
 }
 
 #[tokio::test]
+async fn a_folder_can_be_read_as_conversations() {
+    let f = Fixture::signed_in().await;
+    let sent = f.graph.folder_id("sentitems");
+    f.graph.add_message(
+        &f.inbox,
+        message("Lunch?", "Sam Taylor", "2026-10-01T09:00:00Z")
+            .conversation("lunch")
+            .read(),
+    );
+    f.graph.add_message(
+        &sent,
+        message("RE: Lunch?", "Robin Example", "2026-10-01T10:00:00Z")
+            .conversation("lunch")
+            .read(),
+    );
+    f.graph.add_message(
+        &f.inbox,
+        message("RE: Lunch?", "Sam Taylor", "2026-10-01T11:00:00Z").conversation("lunch"),
+    );
+    f.graph.add_message(
+        &f.inbox,
+        message("Invoice", "Alex Chen", "2026-10-02T09:00:00Z"),
+    );
+    f.sync().await;
+
+    let lines = f
+        .run(
+            "mail.messages.list",
+            json!({ "folder_id": f.inbox, "conversations": true }),
+        )
+        .await;
+    let whole = f
+        .run(
+            "mail.conversations.get",
+            json!({ "conversation_id": "lunch" }),
+        )
+        .await;
+    let by_sender = f
+        .run(
+            "mail.messages.list",
+            json!({ "folder_id": f.inbox, "sort": "sender" }),
+        )
+        .await;
+
+    assert_eq!(lines["total"], 2);
+    assert_eq!(lines["messages"][0]["subject"], "Invoice");
+    assert_eq!(lines["messages"][1]["subject"], "RE: Lunch?");
+    assert_eq!(
+        lines["messages"][1]["conversation"],
+        json!({ "count": 2, "unread": 1 })
+    );
+    let subjects: Vec<&str> = whole["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["subject"].as_str().unwrap())
+        .collect();
+    assert_eq!(subjects, ["Lunch?", "RE: Lunch?", "RE: Lunch?"]);
+    assert_eq!(whole["messages"][1]["folder_id"], sent);
+    assert_eq!(by_sender["messages"][0]["from"]["name"], "Alex Chen");
+    assert_eq!(by_sender["total"], 3);
+}
+
+#[tokio::test]
 async fn a_long_folder_is_paged() {
     let f = Fixture::signed_in().await;
     f.graph.add_messages(&f.inbox, 130);
