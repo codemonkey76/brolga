@@ -452,6 +452,21 @@ impl AccountDb {
             .optional()?)
     }
 
+    /// Messages received since a date whose bodies are not here yet, newest first.
+    pub fn missing_bodies(&self, since: &str, limit: u32) -> Result<Vec<String>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT m.id FROM messages m
+             WHERE m.received_at >= ?1 AND NOT EXISTS (SELECT 1 FROM bodies b WHERE b.message_id = m.id)
+             ORDER BY m.received_at DESC, m.id LIMIT ?2",
+        )?;
+        let ids = statement
+            .query_map(params![since, limit], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+
+        Ok(ids)
+    }
+
     /// Keep a message's body, and index its text for search. `text` is the
     /// body as plain words.
     pub fn save_body(&self, message_id: &str, body: &Body, text: &str) -> Result<(), StoreError> {

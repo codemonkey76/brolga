@@ -3,7 +3,8 @@ use std::sync::Arc;
 use brolga_graph::{
     DeltaItem, GraphClient, GraphError, MailFolder, Message, Next, Recipient, WELL_KNOWN_FOLDERS,
 };
-use brolga_store::{AccountDb, FolderChange, MessageChange, Round};
+use brolga_mail::html_to_text;
+use brolga_store::{AccountDb, Body, FolderChange, MessageChange, Round};
 use serde_json::json;
 
 use crate::SyncError;
@@ -158,6 +159,38 @@ impl MailSync {
                 return Ok(synced);
             }
         }
+    }
+
+    /// Fetch the bodies of recent messages that are not here yet, newest
+    /// first, so they can be read and searched with no connection. At most
+    /// `limit` in one go: the rest wait for the next sync, which keeps any
+    /// one sync short and well inside what Graph allows.
+    ///
+    /// `since` is a date, `YYYY-MM-DD`: messages received before it are left
+    /// until they are opened.
+    pub async fn download_bodies(&self, since: &str, limit: u32) -> Result<u32, SyncError> {
+        let mut fetched = 0;
+
+        for id in self.db.missing_bodies(since, limit)? {
+            let body = match self.graph.message_body(&id).await {
+                Ok(body) => Body {
+                    content_type: body.content_type.to_ascii_lowercase(),
+                    content: body.content,
+                },
+                // Deleted or moved out of the mailbox since it was listed.
+                Err(GraphError::Refused { status: 404, .. }) => continue,
+                Err(other) => return Err(other.into()),
+            };
+            let text = if body.content_type == "html" {
+                html_to_text(&body.content)
+            } else {
+                body.content.clone()
+            };
+            self.db.save_body(&id, &body, &text)?;
+            fetched += 1;
+        }
+
+        Ok(fetched)
     }
 
     fn restarted(&self, synced: &mut Synced, what: &str) -> Result<(), SyncError> {

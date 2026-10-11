@@ -11,6 +11,43 @@ use serde_json::{Value, json};
 
 use crate::mailboxes::Mailboxes;
 
+/// Mail from this many days back is downloaded in full, to be read and
+/// searched offline. Older mail is fetched when it is opened.
+const OFFLINE_DAYS: u64 = 90;
+/// How many bodies one sync downloads. The rest follow on later syncs.
+const BODIES_PER_SYNC: u32 = 200;
+
+/// The date this many days ago, `YYYY-MM-DD`, in UTC.
+fn days_ago(days: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    civil_date((now / 86_400).saturating_sub(days))
+}
+
+/// Days since 1 January 1970 as a calendar date. The arithmetic is Howard
+/// Hinnant's `civil_from_days`, for dates from 1970 on.
+fn civil_date(days: u64) -> String {
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let day_of_era = z % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// The most messages one call will return.
 const MAX_PAGE: u32 = 200;
 
@@ -92,15 +129,26 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
         let outcome = async {
             let mailbox = context.open(&account).await?;
             let _one_at_a_time = mailbox.syncing.lock().await;
-            mailbox.sync.sync_all().await.map_err(|e| e.to_string())
+            let synced = mailbox.sync.sync_all().await.map_err(|e| e.to_string())?;
+            // Then the bodies of recent mail, a batch at a time. Failing to
+            // get these is not a failed sync: they are fetched when opened.
+            let bodies = mailbox
+                .sync
+                .download_bodies(&days_ago(OFFLINE_DAYS), BODIES_PER_SYNC)
+                .await
+                .unwrap_or(0);
+            Ok::<_, String>((synced, bodies))
         }
         .await;
 
         results.push(match outcome {
-            Ok(synced) => json!({
-                "account_id": account.id, "ok": true, "changed": synced.changed, "removed": synced.removed, "error": null
+            Ok((synced, bodies)) => json!({
+                "account_id": account.id, "ok": true, "changed": synced.changed, "removed": synced.removed,
+                "bodies_downloaded": bodies, "error": null
             }),
-            Err(error) => json!({ "account_id": account.id, "ok": false, "changed": 0, "removed": 0, "error": error }),
+            Err(error) => json!({
+                "account_id": account.id, "ok": false, "changed": 0, "removed": 0, "bodies_downloaded": 0, "error": error
+            }),
         });
     }
 
@@ -358,6 +406,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "ok": { "type": "boolean" },
                                 "changed": { "type": "integer", "description": "Folders and messages added or updated." },
                                 "removed": { "type": "integer" },
+                                "bodies_downloaded": { "type": "integer", "description": "Recent messages whose full text was fetched for reading offline." },
                                 "error": { "type": ["string", "null"], "description": "Why this account did not sync, in plain words." }
                             },
                             "required": ["account_id", "ok", "changed", "removed", "error"]
@@ -572,4 +621,20 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::civil_date;
+
+    #[test]
+    fn days_since_1970_are_calendar_dates() {
+        assert_eq!(civil_date(0), "1970-01-01");
+        assert_eq!(civil_date(59), "1970-03-01");
+        assert_eq!(civil_date(11_016), "2000-02-29");
+        assert_eq!(civil_date(11_017), "2000-03-01");
+        assert_eq!(civil_date(20_454), "2026-01-01");
+        assert_eq!(civil_date(20_737), "2026-10-11");
+        assert_eq!(civil_date(20_818), "2026-12-31");
+    }
 }

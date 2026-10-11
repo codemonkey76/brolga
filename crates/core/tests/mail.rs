@@ -283,28 +283,53 @@ async fn search_finds_by_word_sender_and_filter() {
 }
 
 #[tokio::test]
-async fn search_reaches_the_body_once_a_message_has_been_opened() {
+async fn recent_mail_is_downloaded_in_full_so_it_reads_and_searches_offline() {
     let f = Fixture::signed_in().await;
     let filler = "word ".repeat(80);
-    let id = f.graph.add_message(
+    let recent = f.graph.add_message(
         &f.inbox,
         message("Notes", "Sam Taylor", "2026-10-01T09:00:00Z").body(&format!(
             "<p>{filler}</p><p>The password hint is pineapple.</p>"
         )),
     );
-    f.sync().await;
-
-    let before = f.run("mail.search", json!({ "query": "pineapple" })).await;
-    f.run("mail.messages.get", json!({ "message_id": id }))
-        .await;
-    let after = f.run("mail.search", json!({ "query": "pineapple" })).await;
-
-    assert_eq!(
-        before["messages"],
-        json!([]),
-        "only the preview is indexed until the body is fetched"
+    let old = f.graph.add_message(
+        &f.inbox,
+        message("Old notes", "Sam Taylor", "2019-03-01T09:00:00Z")
+            .body(&format!("<p>{filler}</p><p>An old hint: quince.</p>")),
     );
-    assert_eq!(after["messages"][0]["id"], id);
+
+    let synced = f.sync().await;
+    let fetches = |f: &Fixture| {
+        f.graph
+            .requests()
+            .iter()
+            .filter(|r| r.contains("/me/messages/"))
+            .count()
+    };
+    let after_sync = fetches(&f);
+
+    // The recent one is found by words past its preview, and opens with no request made.
+    assert_eq!(synced["bodies_downloaded"], 1);
+    assert_eq!(
+        f.run("mail.search", json!({ "query": "pineapple" })).await["messages"][0]["id"],
+        recent
+    );
+    f.run("mail.messages.get", json!({ "message_id": recent }))
+        .await;
+    assert_eq!(fetches(&f), after_sync);
+
+    // The old one is fetched when it is opened, and searchable from then on.
+    assert_eq!(
+        f.run("mail.search", json!({ "query": "quince" })).await["messages"],
+        json!([])
+    );
+    f.run("mail.messages.get", json!({ "message_id": old }))
+        .await;
+    assert_eq!(fetches(&f), after_sync + 1);
+    assert_eq!(
+        f.run("mail.search", json!({ "query": "quince" })).await["messages"][0]["id"],
+        old
+    );
 }
 
 #[tokio::test]

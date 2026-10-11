@@ -679,6 +679,7 @@ version = "0.0.1"
 dependencies = [
  "brolga-fake-graph",
  "brolga-graph",
+ "brolga-mail",
  "brolga-store",
  "futures",
  "serde_json",
