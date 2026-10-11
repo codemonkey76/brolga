@@ -93,6 +93,11 @@
     /** Start a new message, or an answer to the one being read. */
     async function write(kind: Starting) {
         if (!accountId) return;
+        // An archive has no server to send through.
+        if (account?.archive) {
+            problem = "An archive can be read and searched, but nothing can be sent from it. Choose one of your accounts to write.";
+            return;
+        }
         if (kind !== "new" && !opened) return;
         try {
             // Formatted unless the last message written was switched to plain text.
@@ -734,7 +739,7 @@
         {#if accounts.length > 1}
             <select aria-label="Account" value={accountId} onchange={(event) => chooseAccount(event.currentTarget.value)}>
                 {#each accounts as each (each.id)}
-                    <option value={each.id}>{each.shared_with ? `↳ ${each.username} (shared)` : each.username}</option>
+                    <option value={each.id}>{each.archive ? `${each.username} (archive)` : each.shared_with ? `↳ ${each.username} (shared)` : each.username}</option>
                 {/each}
             </select>
         {:else if account}

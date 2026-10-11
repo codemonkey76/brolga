@@ -470,3 +470,54 @@ test("the calendar is shared with someone, what they see is changed, and the sha
     await section.getByRole("button", { name: "Stop sharing with sam@example.test" }).click();
     await expect(rows).toHaveCount(1);
 });
+
+test("a PST file is read into an archive, with how far it has got, and then is read in Mail", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, pickFiles: ["/home/robin/Old mail.pst"] });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    const section = page.getByRole("region", { name: "Archives" });
+    await expect(section.getByRole("listitem")).toHaveCount(0);
+
+    await section.getByRole("button", { name: "Import a PST file…" }).click();
+    const row = section.getByRole("listitem");
+    await expect(row).toContainText("Old mail");
+    // While it is read, how far it has got is said and it can be stopped.
+    await expect(row.getByRole("status")).toContainText(/Reading: [\d,]+ of 1,500 messages/);
+    await expect(row.getByRole("progressbar", { name: "Reading Old mail" })).toBeVisible();
+    await expect(row.getByRole("button", { name: "Stop reading Old mail" })).toBeVisible();
+    await picture(page, "archive-importing");
+    // Then it is done, and says how much is in it.
+    await expect(row).toContainText("1,500 messages", { timeout: 8000 });
+    await expect(row.getByRole("progressbar")).toHaveCount(0);
+    expect((await ran(page)).find((r) => r.command === "archives.import")?.args).toMatchObject({ path: "/home/robin/Old mail.pst" });
+
+    // It is in Mail beside the account, and what is asked for is asked of it.
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    const picker = page.getByRole("combobox", { name: "Account" });
+    await expect(picker.getByRole("option")).toHaveText(["robin@example.test", "Old mail (archive)"]);
+    await picker.selectOption({ label: "Old mail (archive)" });
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.folders.list").at(-1)?.args).toMatchObject({ account_id: "archive:1" });
+    // Nothing can be written from an archive, and it says where to instead.
+    await page.getByRole("button", { name: "New message" }).click();
+    await expect(page.getByRole("alert")).toContainText("nothing can be sent from it");
+    expect((await ran(page)).some((r) => r.command === "mail.drafts.create" && r.args?.account_id === "archive:1")).toBe(false);
+
+    // Removing asks first.
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await section.getByRole("button", { name: "Remove Old mail" }).click();
+    expect((await ran(page)).some((r) => r.command === "archives.remove")).toBe(false);
+    await section.getByRole("button", { name: "Remove it?" }).click();
+    await expect(section.getByRole("listitem")).toHaveCount(0);
+});
+
+test("an import can be stopped, and one that failed says why", async ({ page }) => {
+    const failed = { id: "archive:9", name: "Broken", source: "Broken.pst", state: "failed", messages: 0, messages_done: null, messages_total: null, skipped: 0, error: "this is not a PST or OST file, or it is damaged" };
+    await withCore(page, { accounts: [robin], archives: [failed], pickFiles: ["/home/robin/Huge.pst"] });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    const section = page.getByRole("region", { name: "Archives" });
+    await expect(section.getByRole("listitem").filter({ hasText: "Broken" })).toContainText("Failed: this is not a PST or OST file");
+
+    await section.getByRole("button", { name: "Import a PST file…" }).click();
+    await section.getByRole("button", { name: "Stop reading Huge" }).click();
+    await expect(section.getByRole("listitem").filter({ hasText: "Huge" })).toContainText(/Stopped: [\d,]+ messages? were read/);
+    expect((await ran(page)).find((r) => r.command === "archives.cancel")?.args).toMatchObject({ archive_id: "archive:2" });
+});

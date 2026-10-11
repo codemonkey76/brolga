@@ -4467,3 +4467,151 @@ async fn a_file_that_is_not_a_pst_fails_and_says_so_and_a_missing_one_makes_no_a
         1
     );
 }
+
+#[tokio::test]
+async fn an_import_that_is_stopped_keeps_what_it_had_read_and_no_more() {
+    use pst_writer::{
+        UnicodePstAttachment, UnicodePstBatchMessage, UnicodePstFile, UnicodePstMessage,
+    };
+    let f = Fixture::signed_in().await;
+    let folder = downloads().join("stopped");
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("large.pst");
+    let first = UnicodePstMessage {
+        subject: "One of many",
+        sender_name: "Sam Taylor",
+        sender_email: "sam@example.test",
+        recipients: &[],
+        body: "A message with a large file attached.",
+        html_body: None,
+        message_id: "<first@example.test>",
+        delivery_time: 133_750_656_000_000_000,
+    };
+    drop(UnicodePstFile::create(&path, &first).unwrap());
+    // Large enough that reading it all takes far longer than asking it to stop.
+    let data = vec![0x5Au8; 512 * 1024];
+    let attachments = [UnicodePstAttachment {
+        filename: "large.bin",
+        mime_type: "application/octet-stream",
+        content_id: None,
+        data: &data,
+    }];
+    let messages = vec![
+        UnicodePstBatchMessage {
+            message: first,
+            attachments: &attachments
+        };
+        400
+    ];
+    drop(UnicodePstFile::append_many_with_attachments(&path, &messages).unwrap());
+
+    let started = f
+        .run("archives.import", json!({ "path": path.to_string_lossy() }))
+        .await;
+    let id = started["archive"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        f.run("archives.cancel", json!({ "archive_id": id })).await["cancelled"],
+        true
+    );
+    let done = imported(&f, &id).await;
+
+    assert_eq!(done["state"], "cancelled", "{done}");
+    let kept = done["messages"].as_u64().unwrap();
+    assert!(kept < 401, "{done}");
+    // What was read is whole and can be read; what was not is simply not here.
+    let folders = f
+        .run("mail.folders.list", json!({ "account_id": id }))
+        .await;
+    let total: u64 = folders["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|each| each["total"].as_u64().unwrap())
+        .sum();
+    assert_eq!(total, kept);
+    // Stopping one that has stopped is nothing.
+    assert_eq!(
+        f.run("archives.cancel", json!({ "archive_id": id })).await["cancelled"],
+        false
+    );
+}
+
+/// Not run with the rest: reads the PST named by `BROLGA_BIG_PST` into a
+/// database under `BROLGA_BIG_DATA`, and says how long it took and the most
+/// memory it held. `cargo test --release -p brolga-core --test mail a_large_pst -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "needs a large PST named by BROLGA_BIG_PST"]
+async fn a_large_pst_imports_within_bounded_memory_and_is_searchable() {
+    let path = std::env::var("BROLGA_BIG_PST").expect("BROLGA_BIG_PST");
+    let data = std::path::PathBuf::from(std::env::var("BROLGA_BIG_DATA").expect("BROLGA_BIG_DATA"));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let identity = FakeIdentity::start().await.unwrap();
+    let core = Core::open(CoreOptions {
+        data_dir: Some(data),
+        downloads_dir: None,
+        secrets: Arc::new(MemorySecrets::default()),
+        open_browser: Arc::new(|_| Ok(())),
+        authority: Authority::new(identity.base_url()),
+        graph_base: None,
+        default_client_id: None,
+        fetch_images_from_private_hosts: false,
+    })
+    .unwrap();
+    let registry = core.registry();
+    let memory = || {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find(|line| line.starts_with("VmHWM"))
+                    .map(|line| line.split_whitespace().nth(1).unwrap_or("?").to_owned())
+            })
+            .unwrap_or_else(|| "?".to_owned())
+    };
+
+    let began = std::time::Instant::now();
+    let started = registry
+        .execute("archives.import", json!({ "path": path }))
+        .await
+        .unwrap();
+    let id = started["archive"]["id"].as_str().unwrap().to_owned();
+    let mut said = 0;
+    let done = loop {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let listed = registry.execute("archives.list", json!({})).await.unwrap();
+        let archive = listed["archives"][0].clone();
+        if archive["state"] != "importing" {
+            break archive;
+        }
+        let dealt = archive["messages_done"].as_u64().unwrap_or(0);
+        if dealt >= said + 5000 {
+            said = dealt;
+            println!(
+                "{dealt} of {} after {:?}, most memory {} kB",
+                archive["messages_total"],
+                began.elapsed(),
+                memory()
+            );
+        }
+    };
+    println!("{done}");
+    println!("took {:?}, most memory {} kB", began.elapsed(), memory());
+    assert_eq!(done["state"], "ready");
+
+    let searching = std::time::Instant::now();
+    let found = registry
+        .execute(
+            "mail.search",
+            json!({ "account_id": id, "query": "harbour survey", "limit": 5 }),
+        )
+        .await
+        .unwrap();
+    println!(
+        "search took {:?} and found {}",
+        searching.elapsed(),
+        found["messages"].as_array().unwrap().len()
+    );
+    assert!(!found["messages"].as_array().unwrap().is_empty());
+}

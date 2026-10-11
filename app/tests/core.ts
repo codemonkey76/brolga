@@ -190,6 +190,8 @@ export interface FakeCore {
     agentLog?: { at: string; client: string; command: string; args: unknown; outcome: string; detail: string }[];
     /** Calendars beside the two every test has: other people's, shared or delegated. */
     otherCalendars?: { id: string; name: string; color: string; hex_color: string; is_default: boolean; can_edit: boolean; shown: boolean; owner_name?: string; owner_address?: string }[];
+    /** Archives already read in from files. */
+    archives?: { id: string; name: string; source: string; state: string; messages: number; messages_done: number | null; messages_total: number | null; skipped: number; error: string | null }[];
     /** The inbox's rules, as `mail.rules.list` gives them, less the sentence. */
     rules?: Record<string, unknown>[];
     /** Why automatic replies cannot be read, if they cannot. */
@@ -330,6 +332,9 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             { name: "Plain", color: "none" },
         ];
         let rules: Record<string, unknown>[] = [...(core.rules ?? [])];
+        let archived: { id: string; name: string; source: string; state: string; messages: number; messages_done: number | null; messages_total: number | null; skipped: number; error: string | null }[] = [
+            ...(core.archives ?? []),
+        ];
         let sharing: { id: string; name: string; address: string | null; role: string; allowed_roles: string[]; removable: boolean }[] = [
             { id: "org", name: "My Organization", address: null, role: "freeBusyRead", allowed_roles: ["none", "freeBusyRead", "limitedRead", "read", "write"], removable: false },
         ];
@@ -617,6 +622,30 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 const changed = contactOf((core.contacts ?? [])[at], args);
                 (core.contacts ?? [])[at] = changed;
                 return { contact: changed, note: "" };
+            },
+            "archives.list": () => {
+                // Each time it is asked, an import still going has read a little more, and then is done.
+                archived = archived.map((each) => {
+                    if (each.state !== "importing") return each;
+                    const done = Math.min((each.messages_done ?? 0) + 600, each.messages_total ?? 0);
+                    return done === each.messages_total ? { ...each, state: "ready", messages: done, messages_done: null, messages_total: null } : { ...each, messages: done, messages_done: done };
+                });
+                return { archives: archived };
+            },
+            "archives.import": (args) => {
+                const path = String(args.path);
+                if (!path.endsWith(".pst")) throw { code: "failed", message: "The file could not be opened: there is no such file." };
+                const made = { id: `archive:${archived.length + 1}`, name: path.split("/").pop()!.replace(/\.pst$/, ""), source: path.split("/").pop()!, state: "importing", messages: 0, messages_done: 0, messages_total: 1500, skipped: 0, error: null as string | null };
+                archived.push(made);
+                return { archive: made };
+            },
+            "archives.cancel": (args) => {
+                archived = archived.map((each) => (each.id === args.archive_id ? { ...each, state: "cancelled", messages_done: null, messages_total: null } : each));
+                return { cancelled: true };
+            },
+            "archives.remove": (args) => {
+                archived = archived.filter((each) => each.id !== args.archive_id);
+                return { removed: true };
             },
             "calendar.sharing.list": () => ({ shares: sharing }),
             "calendar.sharing.set": (args) => {

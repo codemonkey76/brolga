@@ -1,6 +1,6 @@
 <script lang="ts">
     import { Bot, CalendarDays, CircleUser, Mail as MailIcon, Users } from "@lucide/svelte";
-    import { type Account, type SharedMailbox, listAccounts, listShared, mailboxes } from "./lib/accounts";
+    import { type Account, type Archive, type SharedMailbox, listAccounts, listArchives, listShared, mailboxes } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
     import Agents from "./lib/Agents.svelte";
     import Calendar from "./lib/Calendar.svelte";
@@ -19,10 +19,16 @@
 
     /** Mailboxes other people have shared, which are read beside the accounts' own. */
     let shared = $state<SharedMailbox[]>([]);
-    const reload = () =>
+    /** Mail read in from files, which is read beside the accounts' own. */
+    let archives = $state<Archive[]>([]);
+    const reload = () => {
         listShared()
             .then((found) => (shared = found))
             .catch(() => {});
+        listArchives()
+            .then((found) => (archives = found))
+            .catch(() => {});
+    };
 
     // With an account, the window opens on its mail. Without one, on adding one.
     listAccounts()
@@ -86,7 +92,7 @@
             <p class="muted starting" role="status">Starting…</p>
         {:else if view === "mail" && accounts.length > 0}
             <Mail
-                accounts={mailboxes(accounts, shared)}
+                accounts={mailboxes(accounts, shared, false, archives)}
                 onCalendar={(day) => {
                     calendarDay = day;
                     view = "calendar";
@@ -99,7 +105,7 @@
         {:else if view === "agents"}
             <div class="scroll"><Agents /></div>
         {:else}
-            <div class="scroll"><Accounts onChanged={changed} /></div>
+            <div class="scroll"><Accounts onChanged={changed} onArchives={reload} /></div>
         {/if}
     </main>
 </div>

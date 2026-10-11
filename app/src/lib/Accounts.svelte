@@ -1,5 +1,6 @@
 <script lang="ts">
     import AccountRow from "./AccountRow.svelte";
+    import Archives from "./Archives.svelte";
     import {
         type Account,
         type CodeSignIn,
@@ -16,9 +17,11 @@
     interface Props {
         /** Told whenever the list of accounts may have changed. */
         onChanged: (accounts: Account[]) => void;
+        /** Told whenever an archive is added, finishes or goes. */
+        onArchives?: () => void;
     }
 
-    let { onChanged }: Props = $props();
+    let { onChanged, onArchives }: Props = $props();
     let accounts = $state<Account[]>([]);
     let loaded = $state(false);
     let needsClientId = $state(false);
@@ -156,6 +159,8 @@
                 {/if}
             {/if}
         </section>
+
+        <Archives onChanged={onArchives} />
     {/if}
 </div>
 

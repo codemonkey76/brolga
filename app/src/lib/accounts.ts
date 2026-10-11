@@ -3,6 +3,8 @@ import { execute } from "./commands";
 export interface Account {
     /** The account this mailbox was shared with, where it is a shared mailbox and not an account. */
     shared_with?: string;
+    /** It is mail read in from a file, kept on this computer, with no server behind it. */
+    archive?: boolean;
     id: string;
     username: string;
     display_name: string | null;
@@ -60,12 +62,41 @@ export const addShared = async (account_id: string, address: string) =>
 
 export const removeShared = (mailbox_id: string) => execute("accounts.shared.remove", { mailbox_id });
 
-/** Every mailbox there is to read mail in: each account, followed by those shared with it. For calendars, those of which only the calendar was shared are among them. */
-export function mailboxes(accounts: Account[], shared: SharedMailbox[], calendars = false): Account[] {
-    return accounts.flatMap((account) => [
-        account,
-        ...shared
-            .filter((each) => each.account_id === account.id && (calendars || !each.calendar_only))
-            .map((each) => ({ ...account, id: each.id, username: each.address, display_name: each.name || null, shared_with: account.id })),
-    ]);
+/** Mail read in from a PST or OST file. */
+export interface Archive {
+    id: string;
+    name: string;
+    source: string;
+    state: "importing" | "ready" | "cancelled" | "failed";
+    /** Messages kept so far. */
+    messages: number;
+    messages_done: number | null;
+    messages_total: number | null;
+    skipped: number;
+    error: string | null;
+}
+
+export const listArchives = async () => (await execute<{ archives: Archive[] }>("archives.list")).archives;
+
+export const importArchive = async (path: string) => (await execute<{ archive: Archive }>("archives.import", { path })).archive;
+
+export const cancelArchive = (archive_id: string) => execute("archives.cancel", { archive_id });
+
+export const removeArchive = (archive_id: string) => execute("archives.remove", { archive_id });
+
+/**
+ * Every mailbox there is to read mail in: each account, followed by those
+ * shared with it, and then the archives. For calendars, those of which only
+ * the calendar was shared are among them, and archives are not.
+ */
+export function mailboxes(accounts: Account[], shared: SharedMailbox[], calendars = false, archives: Archive[] = []): Account[] {
+    return [
+        ...accounts.flatMap((account) => [
+            account,
+            ...shared
+                .filter((each) => each.account_id === account.id && (calendars || !each.calendar_only))
+                .map((each) => ({ ...account, id: each.id, username: each.address, display_name: each.name || null, shared_with: account.id })),
+        ]),
+        ...(calendars ? [] : archives).map((each) => ({ id: each.id, username: each.name, display_name: each.name, tenant_id: "", needs_sign_in: false, added_at: "", archive: true })),
+    ];
 }
