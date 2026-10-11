@@ -50,6 +50,11 @@ pub fn data_dir() -> Option<PathBuf> {
         .map(|dirs| dirs.data_dir().to_path_buf())
 }
 
+/// Where this user's downloads go, for saved attachments.
+pub fn downloads_dir() -> Option<PathBuf> {
+    directories::UserDirs::new().and_then(|dirs| dirs.download_dir().map(PathBuf::from))
+}
+
 /// Hand a link to the system's default browser.
 pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     open::that_detached(url)

@@ -10,7 +10,7 @@ use brolga_auth::Authority;
 use brolga_commands::{CommandError, Registry};
 use brolga_control::{Server, default_endpoint};
 use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID};
-use brolga_platform::{SystemSecrets, data_dir, open_in_browser};
+use brolga_platform::{SystemSecrets, data_dir, downloads_dir, open_in_browser};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
@@ -53,6 +53,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         data_dir: Some(
             data_dir().ok_or("this computer has no home folder to keep Brolga's data in")?,
         ),
+        downloads_dir: downloads_dir(),
         secrets: Arc::new(SystemSecrets),
         open_browser: Arc::new(open_in_browser),
         authority: Authority::default(),

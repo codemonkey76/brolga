@@ -23,6 +23,9 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | mailFolder resource type | https://learn.microsoft.com/graph/api/resources/mailfolder | Folder properties and the well-known folder names. v1.0 has no property naming a folder's role, so each is fetched by name |
 | message resource type | https://learn.microsoft.com/graph/api/resources/message | Message properties, with followupFlag, recipient, emailAddress and itemBody |
 | Get message | https://learn.microsoft.com/graph/api/message-get | Fetching a body with `$select=body` |
+| List attachments | https://learn.microsoft.com/graph/api/message-list-attachments | `GET /me/messages/{id}/attachments`, with `$select` so the list comes without the files' contents |
+| Get attachment | https://learn.microsoft.com/graph/api/attachment-get | `…/attachments/{id}/$value` for the raw contents; MIME for an attached message, event or contact; 405 for a reference attachment |
+| fileAttachment resource type | https://learn.microsoft.com/graph/api/resources/fileattachment | Attachment properties, and `size` being in bytes |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
 
 ## Microsoft identity platform (Microsoft Learn)

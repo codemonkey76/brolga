@@ -53,6 +53,41 @@ pub struct ItemBody {
     pub content: String,
 }
 
+/// Something attached to a message, without its contents ("fileAttachment
+/// resource type" and "Get attachment", SOURCES.md).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    /// `#microsoft.graph.fileAttachment`, `…itemAttachment` or `…referenceAttachment`.
+    #[serde(rename = "@odata.type")]
+    pub odata_type: Option<String>,
+    /// What is shown for it, which need not be a file name.
+    pub name: Option<String>,
+    pub content_type: Option<String>,
+    /// In bytes.
+    pub size: Option<i64>,
+    /// Shown within the body, as a picture in a signature is.
+    pub is_inline: Option<bool>,
+}
+
+impl Attachment {
+    /// `file`, `item` (a message, event or contact) or `reference` (a link
+    /// to a file kept elsewhere, which has no contents to fetch).
+    pub fn kind(&self) -> &'static str {
+        let kind = self.odata_type.as_deref().unwrap_or_default();
+        if kind.ends_with("itemAttachment") {
+            "item"
+        } else if kind.ends_with("referenceAttachment") {
+            "reference"
+        } else {
+            "file"
+        }
+    }
+}
+
+pub(crate) const ATTACHMENT_SELECT: &str = "id,name,contentType,size,isInline";
+
 /// A message, as far as the list needs it. The body is fetched on its own.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]

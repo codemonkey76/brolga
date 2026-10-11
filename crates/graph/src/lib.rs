@@ -15,5 +15,7 @@ mod retry;
 pub use client::{GraphClient, TokenSource};
 pub use delta::{DeltaItem, DeltaPage, Next};
 pub use error::GraphError;
-pub use mail::{EmailAddress, Flag, ItemBody, MailFolder, Message, Recipient, WELL_KNOWN_FOLDERS};
+pub use mail::{
+    Attachment, EmailAddress, Flag, ItemBody, MailFolder, Message, Recipient, WELL_KNOWN_FOLDERS,
+};
 pub use retry::RetryPolicy;

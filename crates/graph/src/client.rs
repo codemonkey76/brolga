@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 use tokio::sync::Semaphore;
 
 use crate::delta::read_page;
-use crate::mail::{FOLDER_SELECT, MESSAGE_SELECT};
-use crate::{DeltaPage, GraphError, ItemBody, MailFolder, Message, RetryPolicy};
+use crate::mail::{ATTACHMENT_SELECT, FOLDER_SELECT, MESSAGE_SELECT};
+use crate::{Attachment, DeltaPage, GraphError, ItemBody, MailFolder, Message, RetryPolicy};
 
 /// How many requests may be in flight for one mailbox at once. Low on
 /// purpose: Graph throttles a mailbox on concurrency as well as on volume.
@@ -121,6 +121,41 @@ impl GraphClient {
             .ok_or_else(|| GraphError::Decode("a message with no body".to_owned()))
     }
 
+    /// What is attached to a message, without the contents. The contents
+    /// are left out by naming the other properties: a list would otherwise
+    /// carry every file whole.
+    pub async fn attachments(&self, message_id: &str) -> Result<Vec<Attachment>, GraphError> {
+        let mut url = format!(
+            "{}/me/messages/{message_id}/attachments?$select={ATTACHMENT_SELECT}",
+            self.base
+        );
+        let mut all = Vec::new();
+        loop {
+            let page: AttachmentPage = decode(&self.get(&url, None).await?)?;
+            all.extend(page.value);
+            match page.next_link {
+                Some(next) => url = next,
+                None => return Ok(all),
+            }
+        }
+    }
+
+    /// The contents of a file attachment as they were attached, or of an
+    /// attached message, event or contact in its MIME form. A reference
+    /// attachment has none, and Graph refuses with 405.
+    pub async fn attachment_content(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<u8>, GraphError> {
+        let url = format!(
+            "{}/me/messages/{message_id}/attachments/{attachment_id}/$value",
+            self.base
+        );
+
+        self.get(&url, None).await
+    }
+
     /// GET a URL, waiting and trying again while Graph says to. A GET
     /// changes nothing, so it is always safe to send again.
     async fn get(&self, url: &str, page_size: Option<u32>) -> Result<Vec<u8>, GraphError> {
@@ -194,6 +229,14 @@ impl GraphClient {
             return Err(refusal(response).await);
         }
     }
+}
+
+#[derive(Deserialize)]
+struct AttachmentPage {
+    #[serde(default)]
+    value: Vec<Attachment>,
+    #[serde(rename = "@odata.nextLink")]
+    next_link: Option<String>,
 }
 
 /// Turn a response that is neither a success nor a "wait" into its error.

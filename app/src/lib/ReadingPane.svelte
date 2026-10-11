@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Message, type Opened, when, who } from "./mail";
+    import { type Attachment, type Message, type Opened, size, when, who } from "./mail";
 
     interface Props {
         opened: Opened | null;
@@ -10,11 +10,15 @@
         /** The conversation this message is part of, oldest first. Empty when it is on its own. */
         thread: Message[];
         onRead: (message: Message) => void;
+        attachments: Attachment[];
+        /** What became of the last attachment saved: where it went, or why it did not. */
+        saved: string | null;
+        onSave: (attachment: Attachment) => void;
         onShowImages: () => void;
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
@@ -159,6 +163,27 @@
             </p>
         </header>
 
+        {#if attachments.length > 0}
+            <ul class="attachments" aria-label="Attachments">
+                {#each attachments as each (each.id)}
+                    <li>
+                        {#if each.kind === "reference"}
+                            <span class="attachment" title="A link to a file kept elsewhere. It cannot be saved from here.">
+                                🔗 {each.name || "Linked file"}
+                            </span>
+                        {:else}
+                            <button type="button" class="attachment" title="Save to your downloads folder" onclick={() => onSave(each)}>
+                                📎 {each.name || "Attachment"} <span class="muted">{size(each.size)}</span>
+                            </button>
+                        {/if}
+                    </li>
+                {/each}
+            </ul>
+        {/if}
+        {#if saved}
+            <p class="note" role="status">{saved}</p>
+        {/if}
+
         {#if opened.body.blocked_remote_content > 0}
             <p class="note" role="status">
                 {#if imagesShown}
@@ -195,6 +220,30 @@
 </section>
 
 <style>
+    .attachments {
+        flex: none;
+        margin: 0;
+        padding: 0.5rem 1rem;
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .attachment {
+        display: inline-block;
+        max-width: 20rem;
+        padding: 0.25rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        background: var(--raised);
+        font-size: 0.85rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
     .thread {
         flex: none;
         margin: 0;

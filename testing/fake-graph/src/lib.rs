@@ -13,7 +13,7 @@ mod identity;
 mod mailbox;
 
 pub use identity::FakeIdentity;
-pub use mailbox::FakeMessage;
+pub use mailbox::{FakeAttachment, FakeMessage};
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -71,6 +71,11 @@ impl FakeGraph {
                 get(messages_delta),
             )
             .route("/v1.0/me/messages/{message}", get(message))
+            .route("/v1.0/me/messages/{message}/attachments", get(attachments))
+            .route(
+                "/v1.0/me/messages/{message}/attachments/{attachment}/$value",
+                get(attachment_content),
+            )
             .fallback(not_built)
             // Outermost last: a request is logged, then faulted, then checked for a token.
             .layer(middleware::from_fn(require_token))
@@ -392,6 +397,49 @@ async fn message(State(shared): State<Shared>, Path(message): Path<String>) -> R
             StatusCode::NOT_FOUND,
             "itemNotFound",
             "There is no such message.",
+        ),
+    }
+}
+
+async fn attachments(
+    State(shared): State<Shared>,
+    Path(message): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let with_content = query
+        .get("$select")
+        .is_none_or(|select| select.split(',').any(|each| each == "contentBytes"));
+
+    match lock(&shared).mailbox.attachments(&message, with_content) {
+        Some(listed) => axum::Json(listed).into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        ),
+    }
+}
+
+async fn attachment_content(
+    State(shared): State<Shared>,
+    Path((message, attachment)): Path<(String, String)>,
+) -> Response {
+    match lock(&shared).mailbox.attachment(&message, &attachment) {
+        // "Get attachment" (SOURCES.md): a reference attachment has no value.
+        Some(found) if found.kind == "reference" => error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "fakeGraphNoValue",
+            "A reference attachment has no contents.",
+        ),
+        Some(found) => (
+            [(axum::http::header::CONTENT_TYPE, found.content_type)],
+            found.content,
+        )
+            .into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such attachment.",
         ),
     }
 }

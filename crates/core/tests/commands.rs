@@ -9,6 +9,11 @@ use serde_json::json;
 
 const CLIENT_ID: &str = "11111111-2222-4333-8444-555555555555";
 
+/// A folder of this test run's own to save attachments into.
+fn downloads() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("brolga-commands-{}", std::process::id()))
+}
+
 /// A core signed in to nothing, pointed at the fake identity platform, whose
 /// "browser" opens the page and follows it back as a person's would.
 fn core(identity: &FakeIdentity, default_client_id: Option<&str>) -> Core {
@@ -22,6 +27,7 @@ fn core_with_mail(
 ) -> Core {
     Core::open(CoreOptions {
         data_dir: None,
+        downloads_dir: Some(downloads()),
         secrets: Arc::new(MemorySecrets::default()),
         open_browser: Arc::new(|url| {
             // The example link is not the sign-in page, and goes nowhere.
@@ -55,7 +61,8 @@ async fn every_command_is_described_and_its_examples_run() {
             "Sam Taylor",
             "sam@example.test",
             "2026-10-01T09:00:00Z",
-        ),
+        )
+        .attach("notes.txt", "text/plain", b"Some notes."),
     );
     let registry = core_with_mail(&identity, Some(&graph), Some(CLIENT_ID)).registry();
     // The mail examples need an account with mail in it, which no example

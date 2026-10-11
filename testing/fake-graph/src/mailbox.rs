@@ -29,6 +29,17 @@ pub struct FakeMessage {
     pub body_html: String,
     /// The conversation it belongs to. Left out, it is one of its own.
     pub conversation: Option<String>,
+    pub attachments: Vec<FakeAttachment>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FakeAttachment {
+    pub name: String,
+    pub content_type: String,
+    pub content: Vec<u8>,
+    pub inline: bool,
+    /// `file`, `item` or `reference`.
+    pub kind: &'static str,
 }
 
 impl FakeMessage {
@@ -42,11 +53,38 @@ impl FakeMessage {
             has_attachments: false,
             body_html: format!("<html><body><p>{subject}</p></body></html>"),
             conversation: None,
+            attachments: Vec::new(),
         }
     }
 
     pub fn body(mut self, html: &str) -> Self {
         self.body_html = html.to_owned();
+        self
+    }
+
+    /// Attach a file.
+    pub fn attach(mut self, name: &str, content_type: &str, content: &[u8]) -> Self {
+        self.attachments.push(FakeAttachment {
+            name: name.to_owned(),
+            content_type: content_type.to_owned(),
+            content: content.to_vec(),
+            inline: false,
+            kind: "file",
+        });
+        self.has_attachments = true;
+        self
+    }
+
+    /// Attach a link to a file kept elsewhere, which has no contents.
+    pub fn attach_link(mut self, name: &str) -> Self {
+        self.attachments.push(FakeAttachment {
+            name: name.to_owned(),
+            content_type: "application/octet-stream".to_owned(),
+            content: Vec::new(),
+            inline: false,
+            kind: "reference",
+        });
+        self.has_attachments = true;
         self
     }
 
@@ -344,6 +382,49 @@ impl Mailbox {
 
     pub fn message(&self, id: &str) -> Option<Value> {
         self.message_json(id, true)
+    }
+
+    /// A message's attachments as Graph lists them. The contents are given
+    /// only when they were not left out by `$select`, as Graph does.
+    pub fn attachments(&self, message: &str, with_content: bool) -> Option<Value> {
+        use base64::Engine;
+
+        let stored = self.messages.get(message)?;
+        let listed: Vec<Value> = stored
+            .message
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(at, a)| {
+                let mut value = json!({
+                    "@odata.type": format!("#microsoft.graph.{}Attachment", a.kind),
+                    "id": format!("attachment-{at}"),
+                    "name": a.name,
+                    "contentType": a.content_type,
+                    "size": a.content.len(),
+                    "isInline": a.inline,
+                });
+                if with_content && a.kind == "file" {
+                    value["contentBytes"] =
+                        json!(base64::engine::general_purpose::STANDARD.encode(&a.content));
+                }
+                value
+            })
+            .collect();
+
+        Some(json!({ "value": listed }))
+    }
+
+    /// One attachment: its kind, content type and contents.
+    pub fn attachment(&self, message: &str, attachment: &str) -> Option<FakeAttachment> {
+        let at: usize = attachment.strip_prefix("attachment-")?.parse().ok()?;
+
+        self.messages
+            .get(message)?
+            .message
+            .attachments
+            .get(at)
+            .cloned()
     }
 
     pub fn folders_delta(&self, token: Option<&str>, page_size: usize, link: &str) -> Answer {

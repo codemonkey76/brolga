@@ -11,6 +11,7 @@ mod link_commands;
 mod mail_commands;
 mod mailboxes;
 mod remote_images;
+mod saving;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,6 +31,8 @@ pub type OpenBrowser = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
 pub struct CoreOptions {
     /// The folder the databases live in. `None` keeps everything in memory, for tests.
     pub data_dir: Option<PathBuf>,
+    /// Where a saved attachment goes. `None` and nothing can be saved.
+    pub downloads_dir: Option<PathBuf>,
     pub secrets: Arc<dyn SecretStore>,
     pub open_browser: OpenBrowser,
     pub authority: Authority,
@@ -78,7 +81,14 @@ impl Core {
         let images = Arc::new(remote_images::RemoteImages::new(
             options.fetch_images_from_private_hosts,
         ));
-        mail_commands::register(&mut registry, mail_commands::Context { mailboxes, images })?;
+        mail_commands::register(
+            &mut registry,
+            mail_commands::Context {
+                mailboxes,
+                images,
+                downloads: options.downloads_dir.clone(),
+            },
+        )?;
         link_commands::register(&mut registry, options.open_browser.clone())?;
         account_commands::register(
             &mut registry,

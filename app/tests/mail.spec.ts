@@ -286,3 +286,26 @@ test("the list can be sorted by sender, by subject and oldest first", async ({ p
     await sort.selectOption("newest");
     await expect(first).toContainText("Sam Taylor");
 });
+
+test("attachments are listed on the message and saved when asked", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+
+    await messages(page).getByRole("option").filter({ hasText: "Invoice 2041" }).click();
+    const attached = page.getByRole("list", { name: "Attachments" });
+
+    // The picture within the body is not offered as a file.
+    await expect(attached.getByRole("listitem")).toHaveCount(2);
+    await expect(attached.getByRole("button", { name: /Invoice 2041\.pdf/ })).toContainText("180 KB");
+    // A link to a file kept elsewhere has nothing to save.
+    await expect(attached.getByRole("button", { name: /Statement/ })).toHaveCount(0);
+    await expect(attached).toContainText("Statement.xlsx");
+
+    await attached.getByRole("button", { name: /Invoice 2041\.pdf/ }).click();
+    await expect(page.getByText("Saved to /home/robin/Downloads/Invoice 2041.pdf")).toBeVisible();
+    await picture(page, "attachments");
+
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await expect(attached).toHaveCount(0);
+    await expect(page.getByText("Saved to")).toHaveCount(0);
+});

@@ -37,6 +37,17 @@ export interface Message {
     flag_status: string;
 }
 
+export interface Attachment {
+    id: string;
+    name: string;
+    content_type: string;
+    /** In bytes. */
+    size: number;
+    /** Shown within the body, as a picture in a signature is. */
+    is_inline: boolean;
+    kind: "file" | "item" | "reference";
+}
+
 export interface Opened {
     message: Message;
     body: { format: "html" | "text"; content: string; blocked_remote_content: number };
@@ -75,6 +86,19 @@ export const openMessage = (account_id: string, message_id: string, allow_remote
 
 export const searchMail = async (account_id: string, query: string) =>
     (await execute<{ messages: Message[] }>("mail.search", { account_id, query, limit: 200 })).messages;
+
+export const listAttachments = async (account_id: string, message_id: string) =>
+    (await execute<{ attachments: Attachment[] }>("mail.attachments.list", { account_id, message_id })).attachments;
+
+export const saveAttachment = (account_id: string, message_id: string, attachment_id: string) =>
+    execute<{ path: string; size: number }>("mail.attachments.save", { account_id, message_id, attachment_id });
+
+/** A size in bytes as a person would say it. */
+export function size(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export const syncNow = async () => (await execute<{ accounts: SyncResult[] }>("mail.sync")).accounts;
 

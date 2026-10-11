@@ -12,7 +12,7 @@ use brolga_commands::CommandSpec;
 use brolga_control::{Client, default_endpoint};
 use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID};
 use brolga_mcp::{Backend, McpServer, serve_stdio};
-use brolga_platform::{SystemSecrets, data_dir, open_in_browser};
+use brolga_platform::{SystemSecrets, data_dir, downloads_dir, open_in_browser};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
@@ -168,6 +168,7 @@ fn core() -> Result<Core, Failure> {
 
     Core::open(CoreOptions {
         data_dir: Some(data_dir),
+        downloads_dir: downloads_dir(),
         secrets: Arc::new(SystemSecrets),
         open_browser: Arc::new(open_in_browser),
         authority: Authority::default(),

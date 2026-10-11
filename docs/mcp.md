@@ -35,6 +35,7 @@ argument `mcp`.
 | `list_messages` | The messages in a folder without bodies: newest first, in another order, or one entry for each conversation. |
 | `get_conversation` | Every message of a conversation, across folders, oldest first. |
 | `get_message` | One message with its body, as plain text or as HTML made safe. |
+| `list_attachments` | What is attached to a message: names, types and sizes, without the contents. |
 | `search_mail` | Search synced mail: words, phrases, `from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `after:`, `before:`. |
 | `get_sync_status` | For each account: syncing or not, needing sign-in or not, how much is on this computer and when it was last brought up to date. |
 | `list_commands` | Every command, with its id, description and argument schema. |

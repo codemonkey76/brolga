@@ -7,8 +7,16 @@ use std::sync::Arc;
 use brolga_auth::{Authority, MemorySecrets};
 use brolga_commands::Registry;
 use brolga_core::{Core, CoreOptions};
-use brolga_fake_graph::{FakeGraph, FakeIdentity, FakeMessage};
+use brolga_fake_graph::{FakeGraph, FakeIdentity, FakeMessage, Fault};
 use serde_json::{Value, json};
+
+/// A folder of this test's own to save attachments into.
+fn downloads() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    std::env::temp_dir().join(format!("brolga-mail-{}-{n}", std::process::id()))
+}
 
 struct Fixture {
     identity: FakeIdentity,
@@ -23,6 +31,7 @@ impl Fixture {
         let graph = FakeGraph::start().await.unwrap();
         let core = Core::open(CoreOptions {
             data_dir: None,
+            downloads_dir: Some(downloads()),
             secrets: Arc::new(MemorySecrets::default()),
             open_browser: Arc::new(|url| {
                 let url = url.to_owned();
@@ -223,6 +232,76 @@ async fn a_folder_can_be_read_as_conversations() {
     assert_eq!(whole["messages"][1]["folder_id"], sent);
     assert_eq!(by_sender["messages"][0]["from"]["name"], "Alex Chen");
     assert_eq!(by_sender["total"], 3);
+}
+
+#[tokio::test]
+async fn attachments_are_listed_without_their_contents_and_kept() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Invoice", "Alex Chen", "2026-10-02T09:00:00Z")
+            .attach("invoice.pdf", "application/pdf", b"%PDF-1.7 not really")
+            .attach_link("Budget.xlsx"),
+    );
+    f.sync().await;
+
+    let listed = f
+        .run("mail.attachments.list", json!({ "message_id": id }))
+        .await;
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 50));
+    let again = f
+        .run("mail.attachments.list", json!({ "message_id": id }))
+        .await;
+
+    assert_eq!(listed["attachments"][0]["name"], "invoice.pdf");
+    assert_eq!(listed["attachments"][0]["size"], 19);
+    assert_eq!(listed["attachments"][0]["kind"], "file");
+    assert_eq!(listed["attachments"][1]["kind"], "reference");
+    assert!(listed["attachments"][0].get("contentBytes").is_none());
+    // The second time it is answered from this computer.
+    assert_eq!(again["attachments"], listed["attachments"]);
+}
+
+#[tokio::test]
+async fn an_attachment_is_saved_under_a_safe_name_and_never_over_another() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Files", "Alex Chen", "2026-10-02T09:00:00Z")
+            .attach(
+                "../../.config/autostart/run.desktop",
+                "text/plain",
+                b"[Desktop Entry]",
+            )
+            .attach_link("Budget.xlsx"),
+    );
+    f.sync().await;
+    let save = |attachment: &'static str| {
+        f.registry.execute(
+            "mail.attachments.save",
+            json!({ "message_id": id, "attachment_id": attachment }),
+        )
+    };
+
+    let first = save("attachment-0").await.unwrap();
+    let second = save("attachment-0").await.unwrap();
+    let link = save("attachment-1").await;
+    let missing = save("attachment-9").await;
+
+    let first = std::path::PathBuf::from(first["path"].as_str().unwrap());
+    let second = std::path::PathBuf::from(second["path"].as_str().unwrap());
+    assert_eq!(
+        first.file_name().unwrap(),
+        "_.._.config_autostart_run.desktop"
+    );
+    assert_eq!(first.parent(), second.parent());
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read(&first).unwrap(), b"[Desktop Entry]");
+    assert!(link.unwrap_err().to_string().contains("link to a file"));
+    assert!(missing.is_err());
+
+    let _ = std::fs::remove_dir_all(first.parent().unwrap());
 }
 
 #[tokio::test]

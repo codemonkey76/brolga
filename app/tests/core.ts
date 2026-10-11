@@ -40,6 +40,7 @@ export interface FakeMail {
     has_attachments: boolean;
     /** The conversation it belongs to. Left out, it is one of its own. */
     conversation?: string;
+    attachments?: { id: string; name: string; content_type: string; size: number; is_inline: boolean; kind: string }[];
     /** HTML as the core would hand it over: already cleaned. */
     body: string;
     /** How many remote pictures the core left out of `body`. */
@@ -86,6 +87,11 @@ export const inbox: FakeMail[] = [
         received_at: "2026-10-08T05:02:00Z",
         is_read: true,
         has_attachments: true,
+        attachments: [
+            { id: "a1", name: "Invoice 2041.pdf", content_type: "application/pdf", size: 184_320, is_inline: false, kind: "file" },
+            { id: "a2", name: "logo.png", content_type: "image/png", size: 2_048, is_inline: true, kind: "file" },
+            { id: "a3", name: "Statement.xlsx", content_type: "application/octet-stream", size: 0, is_inline: false, kind: "reference" },
+        ],
         body: "<p>Please find attached the invoice for September. Payment is due in 14 days.</p>",
     },
     {
@@ -301,6 +307,15 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     body: { format: "html", content: pictures ? m.bodyWithPictures : m.body, blocked_remote_content: pictures ? 0 : (m.blocked ?? 0) },
                     note: "",
                 };
+            },
+            "mail.attachments.list": (args) => ({
+                attachments: mail.find((each) => each.id === args.message_id)?.attachments ?? [],
+                note: "",
+            }),
+            "mail.attachments.save": (args) => {
+                const found = mail.find((each) => each.id === args.message_id)?.attachments?.find((each) => each.id === args.attachment_id);
+                if (!found) throw { code: "failed", message: "This message has no such attachment." };
+                return { path: `/home/robin/Downloads/${found.name}`, size: found.size };
             },
             "mail.search": (args) => {
                 const words = String(args.query).toLowerCase().split(/\s+/).filter(Boolean);

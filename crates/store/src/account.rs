@@ -93,6 +93,27 @@ const STEPS: &[&str] = &[
     CREATE INDEX messages_by_folder_sender ON messages (folder_id, from_name COLLATE NOCASE, received_at DESC, id);
     CREATE INDEX messages_by_folder_subject ON messages (folder_id, subject COLLATE NOCASE, received_at DESC, id);
 ",
+    "
+    -- What is attached to a message, without the contents. A message is in
+    -- attachment_lists once its list has been fetched, so one with nothing
+    -- attached is not asked about again.
+    CREATE TABLE attachment_lists (
+        message_id TEXT PRIMARY KEY NOT NULL REFERENCES messages (id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE attachments (
+        message_id TEXT NOT NULL REFERENCES attachment_lists (message_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        id TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        content_type TEXT NOT NULL DEFAULT '',
+        size INTEGER NOT NULL DEFAULT 0,
+        is_inline INTEGER NOT NULL DEFAULT 0,
+        -- file, item or reference.
+        kind TEXT NOT NULL DEFAULT 'file',
+        PRIMARY KEY (message_id, position)
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +165,19 @@ pub struct MessageRow {
     /// JSON: an array of strings.
     pub categories: String,
     pub inference: String,
+}
+
+/// Something attached to a message, without its contents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentRow {
+    pub id: String,
+    pub name: String,
+    pub content_type: String,
+    /// In bytes.
+    pub size: i64,
+    pub is_inline: bool,
+    /// `file`, `item` or `reference`.
+    pub kind: String,
 }
 
 /// The order a folder's messages are listed in.
@@ -591,6 +625,70 @@ impl AccountDb {
                 },
             )
             .optional()?)
+    }
+
+    /// What is attached to a message, or nothing if that has not been
+    /// fetched yet.
+    pub fn attachments(&self, message_id: &str) -> Result<Option<Vec<AttachmentRow>>, StoreError> {
+        let connection = self.connection();
+        let listed: bool = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM attachment_lists WHERE message_id = ?1)",
+            [message_id],
+            |row| row.get(0),
+        )?;
+        if !listed {
+            return Ok(None);
+        }
+
+        let mut statement = connection.prepare(
+            "SELECT id, name, content_type, size, is_inline, kind FROM attachments
+             WHERE message_id = ?1 ORDER BY position",
+        )?;
+        let rows = statement
+            .query_map([message_id], |row| {
+                Ok(AttachmentRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    content_type: row.get(2)?,
+                    size: row.get(3)?,
+                    is_inline: row.get(4)?,
+                    kind: row.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(Some(rows))
+    }
+
+    /// Keep what is attached to a message. Nothing is kept for a message
+    /// deleted while the list was on its way.
+    pub fn save_attachments(
+        &self,
+        message_id: &str,
+        attachments: &[AttachmentRow],
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM attachment_lists WHERE message_id = ?1",
+            [message_id],
+        )?;
+        let known = transaction.execute(
+            "INSERT INTO attachment_lists (message_id) SELECT ?1 WHERE EXISTS (SELECT 1 FROM messages WHERE id = ?1)",
+            [message_id],
+        )?;
+        if known > 0 {
+            for (position, each) in (0i64..).zip(attachments) {
+                transaction.execute(
+                    "INSERT INTO attachments (message_id, position, id, name, content_type, size, is_inline, kind)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![message_id, position, each.id, each.name, each.content_type, each.size, each.is_inline, each.kind],
+                )?;
+            }
+        }
+        transaction.commit()?;
+
+        Ok(())
     }
 
     /// Messages received since a date whose bodies are not here yet, newest first.

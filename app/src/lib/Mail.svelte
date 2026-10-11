@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { say } from "./commands";
-    import { type Folder, type Message, type Opened, type Sort, type View, getConversation, listFolders, listMessages, openLink, openMessage, searchMail, setFavourite, syncNow } from "./mail";
+    import { type Attachment, type Folder, type Message, type Opened, type Sort, type View, getConversation, listAttachments, listFolders, listMessages, openLink, openMessage, saveAttachment, searchMail, setFavourite, syncNow } from "./mail";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
 
@@ -29,6 +29,22 @@
     let readingId: string | null = null;
     /** The whole conversation of the selected line, oldest first, when it has more than one message. */
     let thread = $state<Message[]>([]);
+
+    /** What is attached to the message being read, apart from pictures within its body. */
+    let attachments = $state<Attachment[]>([]);
+    /** What became of the last attachment saved. */
+    let saved = $state<string | null>(null);
+
+    async function save(attachment: Attachment) {
+        if (!accountId || !opened) return;
+        saved = null;
+        try {
+            const result = await saveAttachment(accountId, opened.message.id, attachment.id);
+            saved = `Saved to ${result.path}`;
+        } catch (failure) {
+            saved = say(failure);
+        }
+    }
 
     /** How the list is laid out. This window's business only. */
     let view = $state<View>({ sort: "newest", conversations: false });
@@ -214,11 +230,24 @@
         if (!accountId) return;
         readingId = message.id;
         imagesShown = withImages;
+        if (opened?.message.id !== message.id) {
+            attachments = [];
+            saved = null;
+        }
         opening = true;
         readingProblem = null;
         try {
             const result = await openMessage(accountId, message.id, withImages);
-            if (readingId === message.id) opened = result;
+            if (readingId !== message.id) return;
+            opened = result;
+            if (result.message.has_attachments && attachments.length === 0) {
+                try {
+                    const all = await listAttachments(accountId, message.id);
+                    if (readingId === message.id) attachments = all.filter((each) => !each.is_inline);
+                } catch (failure) {
+                    if (readingId === message.id) saved = say(failure);
+                }
+            }
         } catch (failure) {
             if (readingId === message.id) {
                 opened = null;
@@ -409,6 +438,9 @@
         problem={readingProblem}
         {imagesShown}
         {thread}
+        {attachments}
+        {saved}
+        onSave={save}
         onRead={(message) => read(message)}
         onShowImages={() => opened && read(opened.message, true)}
         onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}
