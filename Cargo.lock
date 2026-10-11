@@ -532,6 +532,12 @@ dependencies = [
 [[package]]
 name = "brolga-calendar"
 version = "0.0.1"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "brolga-cli"
@@ -2566,6 +2572,7 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "log",
  "portable-atomic",

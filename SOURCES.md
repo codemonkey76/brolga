@@ -42,6 +42,8 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Get MIME content of a message | https://learn.microsoft.com/graph/outlook-get-mime-message | `GET /me/messages/{id}/$value`, the message whole as a `.eml` file holds it, for forwarding as an attachment |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
 
+| recurrencePattern and recurrenceRange resource types | https://learn.microsoft.com/graph/api/resources/recurrencepattern | The six ways an event repeats, what each needs, and the three ways a series ends, in `crates/calendar` |
+
 ## Microsoft identity platform (Microsoft Learn)
 
 | Document | URL | Used for |
@@ -67,6 +69,13 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | RFC 8252, OAuth 2.0 for Native Apps | https://www.rfc-editor.org/rfc/rfc8252 | Signing in through the system browser with a loopback redirect |
 | RFC 8628, OAuth 2.0 Device Authorization Grant | https://www.rfc-editor.org/rfc/rfc8628 | Waiting five seconds longer after `slow_down` (section 3.5) |
 | OpenID Connect Core 1.0 | https://openid.net/specs/openid-connect-core-1_0.html | Section 3.1.3.7: an ID token received straight from the token endpoint over TLS need not have its signature checked |
+
+## Data
+
+| Data | URL | Used for |
+|---|---|---|
+| Unicode CLDR `windowsZones.xml` | https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.xml | Which IANA time zone a Windows zone name means. Shipped unchanged in `crates/calendar/data`, under the Unicode License v3 |
+| IANA Time Zone Database, through the `jiff` crate | https://www.iana.org/time-zones | The rules of every zone, built in so they are the same on every computer |
 
 ## Libraries
 
