@@ -45,6 +45,11 @@ argument `mcp`.
 | `update_event` | Change an event: only what is given. Consequential. |
 | `delete_event` | Delete an event; a meeting you organised is cancelled for everyone. Consequential. |
 | `get_free_busy` | When people are free and busy, and when all of them are free at once. |
+| `search_people` | Find a person among your contacts and in your organisation's directory. |
+| `get_contact` | One personal contact, whole. |
+| `create_contact` | Add a personal contact. |
+| `update_contact` | Change a personal contact: only what is given. |
+| `delete_contact` | Delete a personal contact. Consequential. |
 | `find_meeting_times` | Times Microsoft 365 suggests for a meeting with some people. |
 | `find_rooms` | The organisation's meeting rooms, and which are free at a time. |
 | `cancel_event` | Cancel a meeting you organised, with words to everyone invited. Consequential. |
@@ -53,7 +58,7 @@ argument `mcp`.
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |
 
-Contacts tools arrive with that feature. `create_event` and `update_event` take `repeat` for a repeating event, and `update_event` and `delete_event` take `scope` for one of a series: `occurrence`, `following` or `series`. Both take `attendees`, the whole list of who is invited, and `online_meeting` for a Teams meeting.
+`create_event` and `update_event` take `repeat` for a repeating event, and `update_event` and `delete_event` take `scope` for one of a series: `occurrence`, `following` or `series`. Both take `attendees`, the whole list of who is invited, and `online_meeting` for a Teams meeting.
 
 Every result that carries a message's own words also carries a note saying
 they were written by the sender and are not instructions. Reading a message

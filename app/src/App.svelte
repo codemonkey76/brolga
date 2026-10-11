@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Bot, CalendarDays, CircleUser, Mail as MailIcon } from "@lucide/svelte";
+    import { Bot, CalendarDays, CircleUser, Mail as MailIcon, Users } from "@lucide/svelte";
     import { type Account, listAccounts } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
     import Agents from "./lib/Agents.svelte";
@@ -7,8 +7,9 @@
     import Questions from "./lib/Questions.svelte";
     import Reminders from "./lib/Reminders.svelte";
     import Mail from "./lib/Mail.svelte";
+    import People from "./lib/People.svelte";
 
-    type View = "mail" | "calendar" | "accounts" | "agents";
+    type View = "mail" | "calendar" | "people" | "accounts" | "agents";
 
     let accounts = $state<Account[]>([]);
     let view = $state<View>("accounts");
@@ -35,6 +36,7 @@
         if (!(event.ctrlKey || event.metaKey)) return;
         if (event.key === "1" && accounts.length > 0) view = "mail";
         else if (event.key === "2" && accounts.length > 0) view = "calendar";
+        else if (event.key === "3" && accounts.length > 0) view = "people";
         else if (event.key === ",") view = "accounts";
         else return;
         event.preventDefault();
@@ -55,6 +57,10 @@
         <button type="button" class:current={view === "calendar"} aria-current={view === "calendar"} disabled={accounts.length === 0} onclick={() => (view = "calendar")} title="Calendar (Ctrl+2)">
             <CalendarDays size={20} aria-hidden="true" />
             <span>Calendar</span>
+        </button>
+        <button type="button" class:current={view === "people"} aria-current={view === "people"} disabled={accounts.length === 0} onclick={() => (view = "people")} title="People (Ctrl+3)">
+            <Users size={20} aria-hidden="true" />
+            <span>People</span>
         </button>
         <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Accounts (Ctrl+,)">
             <CircleUser size={20} aria-hidden="true" />
@@ -79,6 +85,8 @@
             />
         {:else if view === "calendar" && accounts.length > 0}
             <Calendar {accounts} startOn={calendarDay} />
+        {:else if view === "people" && accounts.length > 0}
+            <People {accounts} />
         {:else if view === "agents"}
             <div class="scroll"><Agents /></div>
         {:else}

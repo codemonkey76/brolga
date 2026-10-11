@@ -178,6 +178,10 @@ export interface FakeCore {
     asking?: { id: number; client: string; command: string; args: Record<string, unknown> }[];
     /** Microsoft 365 cannot be reached. */
     offline?: boolean;
+    /** Personal contacts. */
+    contacts?: Record<string, unknown>[];
+    /** People of the organisation, for looking up. */
+    directory?: { name: string; address: string; job_title?: string; department?: string }[];
     /** When people are busy, for the free and busy lookup: an address, and a digit for each half hour of the day from midnight. */
     busy?: Record<string, string>;
     /** What agents have asked for, the latest first. */
@@ -298,6 +302,19 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 e.end = e.is_all_day ? `${args.end}T00:00:00Z` : new Date(args.end).toISOString();
                 if (typeof args.time_zone === "string") e.time_zone = args.time_zone;
             }
+        };
+        /** A contact with what a command gives written into it, as the core does. */
+        const contactOf = (was: Record<string, unknown>, args: Record<string, unknown>) => {
+            const all: Record<string, unknown> = {
+                given_name: "", surname: "", nickname: "", company: "", job_title: "", department: "", office: "",
+                emails: [], business_phones: [], home_phones: [], mobile: "", notes: "", birthday: null, ...was,
+            };
+            for (const name of ["given_name", "surname", "company", "job_title", "department", "mobile", "notes", "business_phones", "home_phones"]) {
+                if (name in args) all[name] = args[name];
+            }
+            if (Array.isArray(args.emails)) all.emails = (args.emails as string[]).map((address) => ({ address, name: address }));
+            all.name = `${all.given_name} ${all.surname}`.trim() || String(all.company) || ((all.emails as { address: string }[])[0]?.address ?? "");
+            return all;
         };
         const asking = [...(core.asking ?? [])];
         let replies: Record<string, unknown> = {
@@ -553,6 +570,44 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     return !also;
                 });
                 return { deleted: true };
+            },
+            "contacts.folders.list": () => ({ folders: [{ id: "", name: "Contacts", is_default: true }, { id: "suppliers", name: "Suppliers", is_default: false }] }),
+            "contacts.list": (args) => {
+                const words = String(args.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+                return {
+                    contacts: (core.contacts ?? [])
+                        .filter((each) => args.folder_id === undefined || each.folder_id === args.folder_id)
+                        .filter((each) => words.every((word) => JSON.stringify(each).toLowerCase().includes(word)))
+                        .sort((a, b) => String(a.name).localeCompare(String(b.name))),
+                    more: false,
+                    note: "",
+                };
+            },
+            "contacts.create": (args) => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so your contacts were not changed. Sync before trying again, in case they were." };
+                core.contacts ??= [];
+                const made = contactOf({ id: `made-${core.contacts.length + 1}`, folder_id: args.folder_id ?? "" }, args);
+                core.contacts.push(made);
+                return { contact: made, note: "" };
+            },
+            "contacts.update": (args) => {
+                const at = (core.contacts ?? []).findIndex((each) => each.id === args.contact_id);
+                const changed = contactOf((core.contacts ?? [])[at], args);
+                (core.contacts ?? [])[at] = changed;
+                return { contact: changed, note: "" };
+            },
+            "contacts.delete": (args) => {
+                core.contacts = (core.contacts ?? []).filter((each) => each.id !== args.contact_id);
+                return { deleted: true };
+            },
+            "people.search": (args) => {
+                const typed = String(args.query).toLowerCase();
+                const directory = core.offline ? [] : (core.directory ?? []).filter((each) => each.name.toLowerCase().split(" ").some((word) => word.startsWith(typed)));
+                return {
+                    people: directory.map((each) => ({ job_title: "", department: "", company: "", phones: [], ...each, source: "directory" })),
+                    directory_searched: !core.offline,
+                    note: "",
+                };
             },
             "calendar.rooms.list": () => {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so there is no way to list meeting rooms just now." };
