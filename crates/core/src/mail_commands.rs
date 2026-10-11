@@ -89,6 +89,13 @@ struct Folders {
 }
 
 #[derive(Deserialize)]
+struct Favourite {
+    account_id: Option<String>,
+    folder_id: String,
+    favourite: bool,
+}
+
+#[derive(Deserialize)]
 struct Messages {
     account_id: Option<String>,
     folder_id: String,
@@ -184,6 +191,27 @@ async fn folders(context: Context, args: Folders) -> Result<Value, CommandError>
     let folders = mailbox.db.folders().map_err(failed)?;
 
     Ok(json!({ "account_id": account.id, "folders": folders }))
+}
+
+async fn set_favourite(context: Context, args: Favourite) -> Result<Value, CommandError> {
+    let account = context
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = context.open(&account).await.map_err(failed)?;
+    if !mailbox
+        .db
+        .set_favourite(&args.folder_id, args.favourite)
+        .map_err(failed)?
+    {
+        return Err(failed(format!(
+            "there is no folder `{}` in this account",
+            args.folder_id
+        )));
+    }
+
+    Ok(
+        json!({ "account_id": account.id, "folder_id": args.folder_id, "favourite": args.favourite }),
+    )
 }
 
 async fn messages(context: Context, args: Messages) -> Result<Value, CommandError> {
@@ -463,8 +491,10 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
         CommandSpec {
             id: "mail.folders.list".to_owned(),
             title: "List mail folders".to_owned(),
-            description: "An account's mail folders as last synced, the inbox and the other standard folders first, each with its unread and total counts. \
-                          `well_known` names a standard folder: inbox, drafts, sentitems, deleteditems, archive, junkemail or outbox."
+            description: "An account's mail folders as last synced, each with its unread and total counts. They come as a tree read from the top down: \
+                          a folder is followed by the folders inside it, and `depth` says how far down it is (0 at the top). At each level the standard folders come first. \
+                          `well_known` names a standard folder: inbox, drafts, sentitems, deleteditems, archive, junkemail or outbox. \
+                          `favourite` is a pin kept on this computer only."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -488,9 +518,11 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "name": { "type": "string" },
                                 "well_known": { "type": ["string", "null"] },
                                 "unread": { "type": "integer" },
-                                "total": { "type": "integer" }
+                                "total": { "type": "integer" },
+                                "favourite": { "type": "boolean" },
+                                "depth": { "type": "integer", "minimum": 0 }
                             },
-                            "required": ["id", "name", "unread", "total"]
+                            "required": ["id", "name", "unread", "total", "favourite", "depth"]
                         }
                     }
                 },
@@ -499,6 +531,40 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             examples: vec![json!({})],
         },
         handler(&context, folders),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.folders.set_favourite".to_owned(),
+            title: "Pin or unpin a folder".to_owned(),
+            description: "Pin a folder to the top of the folder list, or take the pin off. The pin is kept on this computer only and changes nothing in the mailbox. \
+                          `folder_id` is a folder's id from mail.folders.list, or the well-known name of a standard folder such as inbox."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "folder_id": { "type": "string" },
+                    "favourite": { "type": "boolean" }
+                },
+                "required": ["folder_id", "favourite"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": { "type": "string" },
+                    "folder_id": { "type": "string" },
+                    "favourite": { "type": "boolean" }
+                },
+                "required": ["account_id", "folder_id", "favourite"]
+            }),
+            examples: vec![json!({ "folder_id": "inbox", "favourite": true })],
+        },
+        handler(&context, set_favourite),
     )?;
 
     registry.register(

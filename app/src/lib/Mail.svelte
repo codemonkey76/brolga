@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { say } from "./commands";
-    import { type Folder, type Message, type Opened, listFolders, listMessages, openLink, openMessage, searchMail, syncNow } from "./mail";
+    import { type Folder, type Message, type Opened, listFolders, listMessages, openLink, openMessage, searchMail, setFavourite, syncNow } from "./mail";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
 
@@ -34,6 +34,54 @@
 
     const account = $derived(accounts.find((a) => a.id === accountId) ?? null);
     const folder = $derived(folders.find((f) => f.id === folderId) ?? null);
+    const favourites = $derived(folders.filter((f) => f.favourite));
+
+    /** Folders closed up in the tree. Which ones is this window's business only. */
+    let collapsed = $state<string[]>([]);
+    const collapsedKey = (id: string) => `brolga.collapsed.${id}`;
+
+    function recallCollapsed() {
+        collapsed = [];
+        if (!accountId) return;
+        try {
+            const kept: unknown = JSON.parse(localStorage.getItem(collapsedKey(accountId)) ?? "[]");
+            if (Array.isArray(kept)) collapsed = kept.filter((each) => typeof each === "string");
+        } catch {
+            // Nothing kept, or nowhere to keep it: every folder starts open.
+        }
+    }
+
+    function toggle(id: string) {
+        collapsed = collapsed.includes(id) ? collapsed.filter((each) => each !== id) : [...collapsed, id];
+        try {
+            if (accountId) localStorage.setItem(collapsedKey(accountId), JSON.stringify(collapsed));
+        } catch {
+            // It still works for as long as the window is open.
+        }
+    }
+
+    /** The tree as it shows: nothing inside a closed folder, and which folders have something inside. */
+    const tree = $derived.by(() => {
+        const shown: { folder: Folder; parent: boolean; open: boolean }[] = [];
+        let closedAt: number | null = null;
+        folders.forEach((each, index) => {
+            if (closedAt !== null && each.depth > closedAt) return;
+            const open = !collapsed.includes(each.id);
+            closedAt = open ? null : each.depth;
+            shown.push({ folder: each, parent: (folders[index + 1]?.depth ?? 0) > each.depth, open });
+        });
+        return shown;
+    });
+
+    async function pin(each: Folder) {
+        if (!accountId) return;
+        try {
+            await setFavourite(accountId, each.id, !each.favourite);
+            folders = await listFolders(accountId);
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
 
     async function loadFolders() {
         if (!accountId) return;
@@ -181,6 +229,7 @@
 
     async function chooseAccount(id: string) {
         accountId = id;
+        recallCollapsed();
         folderId = null;
         opened = null;
         selectedId = null;
@@ -211,14 +260,39 @@
             <p class="account" title={account.username}>{account.username}</p>
         {/if}
 
-        <ul>
-            {#each folders as each (each.id)}
-                <li>
-                    <button type="button" class:current={each.id === folderId && !searching} aria-current={each.id === folderId && !searching} onclick={() => showFolder(each.id)}>
-                        <span class="name">{each.name}</span>
-                        {#if each.unread > 0}<span class="count" aria-label="{each.unread} unread">{each.unread}</span>{/if}
+        {#snippet row(each: Folder, parent: boolean, open: boolean, indent: number)}
+            <li style:padding-left="{indent * 0.9}rem">
+                {#if parent}
+                    <button type="button" class="twist" aria-expanded={open} aria-label="{open ? 'Collapse' : 'Expand'} {each.name}" onclick={() => toggle(each.id)}>
+                        {open ? "▾" : "▸"}
                     </button>
-                </li>
+                {:else}
+                    <span class="twist"></span>
+                {/if}
+                <button type="button" class="folder" class:current={each.id === folderId && !searching} aria-current={each.id === folderId && !searching} onclick={() => showFolder(each.id)}>
+                    <span class="name">{each.name}</span>
+                    {#if each.unread > 0}<span class="count" aria-label="{each.unread} unread">{each.unread}</span>{/if}
+                </button>
+                <button type="button" class="pin" class:pinned={each.favourite} aria-pressed={each.favourite} aria-label="{each.favourite ? 'Unpin' : 'Pin'} {each.name}" title={each.favourite ? "Remove from favourites" : "Add to favourites"} onclick={() => pin(each)}>
+                    {each.favourite ? "★" : "☆"}
+                </button>
+            </li>
+        {/snippet}
+
+        {#if favourites.length > 0}
+            <h2 id="favourites-heading">Favourites</h2>
+            <ul aria-labelledby="favourites-heading">
+                {#each favourites as each (each.id)}
+                    {@render row(each, false, true, 0)}
+                {/each}
+            </ul>
+            <h2 id="folders-heading">Folders</h2>
+        {:else}
+            <h2 id="folders-heading" class="unseen">Folders</h2>
+        {/if}
+        <ul aria-labelledby="folders-heading">
+            {#each tree as each (each.folder.id)}
+                {@render row(each.folder, each.parent, each.open, each.folder.depth)}
             {/each}
         </ul>
     </nav>
@@ -303,21 +377,69 @@
         list-style: none;
     }
 
-    .folders button {
-        width: 100%;
+    h2 {
+        margin: 0;
+        padding: 0.25rem 0.5rem 0;
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+    }
+
+    h2.unseen {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+
+    li {
         display: flex;
-        justify-content: space-between;
-        gap: 0.5rem;
-        padding: 0.35rem 0.5rem;
+        align-items: center;
+    }
+
+    .folders button {
         border: 0;
         background: none;
-        text-align: left;
         font-size: 0.9rem;
     }
 
-    .folders button.current {
+    .twist {
+        flex: none;
+        width: 1.1rem;
+        padding: 0;
+        color: var(--muted);
+    }
+
+    .folder {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.35rem 0.4rem;
+        text-align: left;
+    }
+
+    .folder.current {
         background: color-mix(in srgb, var(--accent) 18%, var(--surface));
         font-weight: 600;
+    }
+
+    /* The pin keeps out of the way until the row is pointed at or reached by keyboard. */
+    .pin {
+        flex: none;
+        padding: 0 0.3rem;
+        color: var(--muted);
+        opacity: 0;
+    }
+
+    .pin.pinned,
+    li:hover .pin,
+    .pin:focus-visible {
+        opacity: 1;
     }
 
     .name {

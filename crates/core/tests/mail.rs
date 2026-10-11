@@ -102,6 +102,66 @@ async fn after_a_sync_the_folders_and_messages_can_be_listed() {
 }
 
 #[tokio::test]
+async fn folders_inside_folders_come_back_as_a_tree() {
+    let f = Fixture::signed_in().await;
+    let clients = f.graph.add_folder("Clients", Some(&f.inbox));
+    let acme = f.graph.add_folder("Acme", Some(&clients));
+
+    f.sync().await;
+    let folders = f.run("mail.folders.list", json!({})).await;
+    let folders = folders["folders"].as_array().unwrap();
+    let at = |id: &str| folders.iter().position(|each| each["id"] == id).unwrap();
+
+    assert_eq!(folders[at(&f.inbox)]["depth"], 0);
+    assert_eq!(at(&clients), at(&f.inbox) + 1);
+    assert_eq!(folders[at(&clients)]["depth"], 1);
+    assert_eq!(at(&acme), at(&clients) + 1);
+    assert_eq!(folders[at(&acme)]["depth"], 2);
+}
+
+#[tokio::test]
+async fn a_folder_can_be_pinned_and_unpinned() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let pinned = |folders: Value| -> Vec<Value> {
+        folders["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|each| each["favourite"] == true)
+            .map(|each| each["id"].clone())
+            .collect()
+    };
+
+    f.run(
+        "mail.folders.set_favourite",
+        json!({ "folder_id": f.inbox, "favourite": true }),
+    )
+    .await;
+    f.sync().await;
+    assert_eq!(
+        pinned(f.run("mail.folders.list", json!({})).await),
+        [json!(f.inbox)]
+    );
+
+    f.run(
+        "mail.folders.set_favourite",
+        json!({ "folder_id": "inbox", "favourite": false }),
+    )
+    .await;
+    assert!(pinned(f.run("mail.folders.list", json!({})).await).is_empty());
+
+    let refused = f
+        .registry
+        .execute(
+            "mail.folders.set_favourite",
+            json!({ "folder_id": "no-such-folder", "favourite": true }),
+        )
+        .await;
+    assert!(refused.is_err());
+}
+
+#[tokio::test]
 async fn a_long_folder_is_paged() {
     let f = Fixture::signed_in().await;
     f.graph.add_messages(&f.inbox, 130);

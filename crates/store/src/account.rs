@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::StoreError;
 use crate::migrate::migrate;
 
-const STEPS: &[&str] = &["
+const STEPS: &[&str] = &[
+    "
     CREATE TABLE folders (
         id TEXT PRIMARY KEY NOT NULL,
         parent_id TEXT,
@@ -79,7 +80,12 @@ const STEPS: &[&str] = &["
         subject, sender, recipients, body,
         tokenize = 'unicode61 remove_diacritics 2'
     );
-"];
+",
+    "
+    -- Kept on this computer only: Graph has no documented favourites.
+    ALTER TABLE folders ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0;
+",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Folder {
@@ -90,6 +96,10 @@ pub struct Folder {
     pub unread: i64,
     pub total: i64,
     pub hidden: bool,
+    /// Pinned to the top of the folder list, on this computer only.
+    pub favourite: bool,
+    /// How far below the top of the tree: 0 for the inbox and its peers.
+    pub depth: u32,
 }
 
 /// What a sync learned about a folder. `None` leaves what is stored alone,
@@ -370,19 +380,21 @@ impl AccountDb {
 
     // ---- reading -------------------------------------------------------
 
-    /// Every folder that is not hidden: the well-known ones first, in their
-    /// usual order, then the rest by name.
+    /// Every folder that is not hidden, as a tree read from the top down:
+    /// each folder is followed by the folders inside it. At every level the
+    /// well-known ones come first, in their usual order, then the rest by
+    /// name.
     pub fn folders(&self) -> Result<Vec<Folder>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT id, parent_id, name, well_known, unread, total, hidden FROM folders
+            "SELECT id, parent_id, name, well_known, unread, total, hidden, favourite FROM folders
              WHERE hidden = 0
              ORDER BY CASE well_known
                  WHEN 'inbox' THEN 0 WHEN 'drafts' THEN 1 WHEN 'sentitems' THEN 2 WHEN 'deleteditems' THEN 3
                  WHEN 'archive' THEN 4 WHEN 'junkemail' THEN 5 WHEN 'outbox' THEN 6 ELSE 7 END,
                  name COLLATE NOCASE, id",
         )?;
-        let folders = statement
+        let folders: Vec<Folder> = statement
             .query_map([], |row| {
                 Ok(Folder {
                     id: row.get(0)?,
@@ -392,11 +404,25 @@ impl AccountDb {
                     unread: row.get(4)?,
                     total: row.get(5)?,
                     hidden: row.get(6)?,
+                    favourite: row.get(7)?,
+                    depth: 0,
                 })
             })?
             .collect::<Result<_, _>>()?;
 
-        Ok(folders)
+        Ok(as_tree(folders))
+    }
+
+    /// Pin a folder to the top of the list, or unpin it. The folder may be
+    /// named by its id or, for a standard folder, by its well-known name.
+    /// Gives back whether there is such a folder.
+    pub fn set_favourite(&self, folder: &str, favourite: bool) -> Result<bool, StoreError> {
+        let changed = self.connection().execute(
+            "UPDATE folders SET favourite = ?2 WHERE id = ?1 OR well_known = ?1",
+            params![folder, favourite],
+        )?;
+
+        Ok(changed > 0)
     }
 
     /// A window of a folder's messages, newest first.
@@ -626,6 +652,60 @@ fn restart(connection: &Connection, resource: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Put folders, already in the order their level should read, into the
+/// order of the whole tree. A folder whose parent is not among them (the
+/// mailbox's own root is not) sits at the top. The server's word is not
+/// trusted to be a tree: a folder is placed once, so a loop of parents
+/// cannot hang this, and whatever a loop leaves unplaced goes at the top.
+fn as_tree(folders: Vec<Folder>) -> Vec<Folder> {
+    use std::collections::{HashMap, HashSet};
+
+    let ids: HashSet<&str> = folders.iter().map(|f| f.id.as_str()).collect();
+    let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut tops = Vec::new();
+    for (index, folder) in folders.iter().enumerate() {
+        match folder.parent_id.as_deref() {
+            Some(parent) if parent != folder.id && ids.contains(parent) => {
+                children.entry(parent).or_default().push(index);
+            }
+            _ => tops.push(index),
+        }
+    }
+
+    let mut placed = vec![false; folders.len()];
+    let mut order = Vec::with_capacity(folders.len());
+    let mut place = |start: usize, placed: &mut Vec<bool>| {
+        let mut waiting = vec![(start, 0u32)];
+        while let Some((index, depth)) = waiting.pop() {
+            if std::mem::replace(&mut placed[index], true) {
+                continue;
+            }
+            order.push((index, depth));
+            if let Some(inside) = children.get(folders[index].id.as_str()) {
+                waiting.extend(inside.iter().rev().map(|&child| (child, depth + 1)));
+            }
+        }
+    };
+    for top in tops {
+        place(top, &mut placed);
+    }
+    for index in 0..folders.len() {
+        if !placed[index] {
+            place(index, &mut placed);
+        }
+    }
+
+    let mut folders: Vec<Option<Folder>> = folders.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|(index, depth)| {
+            let mut folder = folders.get_mut(index)?.take()?;
+            folder.depth = depth;
+            Some(folder)
+        })
+        .collect()
+}
+
 fn remove_folder(transaction: &Transaction<'_>, id: &str) -> Result<(), StoreError> {
     delete_messages(transaction, "folder_id = ?1", params![id])?;
     transaction.execute(
@@ -730,4 +810,90 @@ fn index(transaction: &Transaction<'_>, message_id: &str) -> Result<(), StoreErr
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(id: &str, parent: &str) -> FolderChange {
+        FolderChange {
+            id: id.to_owned(),
+            parent_id: Some(parent.to_owned()),
+            name: Some(id.to_owned()),
+            ..FolderChange::default()
+        }
+    }
+
+    fn with_folders(folders: &[FolderChange]) -> AccountDb {
+        let db = AccountDb::in_memory().unwrap();
+        db.apply_folders(folders, &[], "next", Round::Finished)
+            .unwrap();
+        db
+    }
+
+    fn shape(db: &AccountDb) -> Vec<(String, u32)> {
+        db.folders()
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.id, f.depth))
+            .collect()
+    }
+
+    #[test]
+    fn folders_read_as_a_tree_with_the_standard_ones_first() {
+        let db = with_folders(&[
+            folder("zebra", "root"),
+            folder("inbox-id", "root"),
+            folder("clients", "inbox-id"),
+            folder("acme", "clients"),
+            folder("billing", "inbox-id"),
+            folder("apple", "root"),
+        ]);
+        db.set_well_known(&[("inbox", "inbox-id".to_owned())])
+            .unwrap();
+
+        assert_eq!(
+            shape(&db),
+            [
+                ("inbox-id".to_owned(), 0),
+                ("billing".to_owned(), 1),
+                ("clients".to_owned(), 1),
+                ("acme".to_owned(), 2),
+                ("apple".to_owned(), 0),
+                ("zebra".to_owned(), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn folders_that_claim_each_other_as_parent_are_still_all_listed() {
+        let db = with_folders(&[
+            folder("a", "b"),
+            folder("b", "a"),
+            folder("own", "own"),
+            folder("plain", "root"),
+        ]);
+
+        let mut ids: Vec<String> = shape(&db).into_iter().map(|(id, _)| id).collect();
+        ids.sort();
+
+        assert_eq!(ids, ["a", "b", "own", "plain"]);
+    }
+
+    #[test]
+    fn a_favourite_stays_one_through_a_sync_and_goes_with_its_folder() {
+        let db = with_folders(&[folder("projects", "root")]);
+
+        assert!(db.set_favourite("projects", true).unwrap());
+        assert!(!db.set_favourite("no-such-folder", true).unwrap());
+
+        db.apply_folders(&[folder("projects", "root")], &[], "next", Round::Finished)
+            .unwrap();
+        assert!(db.folders().unwrap()[0].favourite);
+
+        db.apply_folders(&[], &["projects".to_owned()], "next", Round::Finished)
+            .unwrap();
+        assert!(db.folders().unwrap().is_empty());
+    }
 }

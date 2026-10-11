@@ -15,6 +15,8 @@ A message's remote pictures stay out until you ask for them, so a sender
 cannot tell you opened it. A link that says one address and goes to another
 is called out before you click it.
 
+![Folders as a tree, with a pinned folder under Favourites](docs/screenshots/folders.png)
+
 ![A message whose remote pictures were not loaded](docs/screenshots/remote-pictures-blocked.png)
 
 ![A link whose words name one site while it goes to another, with the warning shown](docs/screenshots/deceptive-link.png)

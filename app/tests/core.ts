@@ -120,6 +120,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** Folders already pinned as favourites. */
+    pinned?: string[];
     /** True when Brolga has no app registration of its own, as now. */
     needsClientId?: boolean;
     /** The account a sign-in adds, or the words it fails with. */
@@ -170,11 +172,14 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             focused: true,
         });
         const inFolder = (id: unknown) => mail.filter((m) => m.folder_id === id);
-        const folder = (id: string, name: string, well_known: string | null) => ({
+        const pinned = new Set<unknown>(core.pinned ?? []);
+        const folder = (id: string, name: string, well_known: string | null, parent_id = "root", depth = 0) => ({
             id,
-            parent_id: "root",
+            parent_id,
             name,
             well_known,
+            favourite: pinned.has(id),
+            depth,
             unread: inFolder(id).filter((m) => !m.is_read).length,
             total: inFolder(id).length,
             hidden: false,
@@ -205,8 +210,16 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     folder("deleted", "Deleted Items", "deleteditems"),
                     folder("archive", "Archive", "archive"),
                     folder("projects", "Projects", null),
+                    folder("harbour", "Harbour upgrade", null, "projects", 1),
+                    folder("surveys", "Surveys", null, "harbour", 2),
+                    folder("website", "Website", null, "projects", 1),
                 ],
             }),
+            "mail.folders.set_favourite": (args) => {
+                if (args.favourite) pinned.add(args.folder_id);
+                else pinned.delete(args.folder_id);
+                return { account_id: args.account_id, folder_id: args.folder_id, favourite: args.favourite };
+            },
             "mail.messages.list": (args) => {
                 const all = inFolder(args.folder_id);
                 const offset = (args.offset as number) ?? 0;

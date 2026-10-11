@@ -8,6 +8,10 @@ export interface Folder {
     well_known: string | null;
     unread: number;
     total: number;
+    /** Pinned to the top of the list, on this computer only. */
+    favourite: boolean;
+    /** How far below the top of the tree. The list comes in tree order. */
+    depth: number;
 }
 
 export interface Person {
@@ -45,6 +49,9 @@ export interface SyncResult {
 
 export const listFolders = async (account_id: string) =>
     (await execute<{ folders: Folder[] }>("mail.folders.list", { account_id })).folders;
+
+export const setFavourite = (account_id: string, folder_id: string, favourite: boolean) =>
+    execute<{ favourite: boolean }>("mail.folders.set_favourite", { account_id, folder_id, favourite });
 
 export const listMessages = (account_id: string, folder_id: string, offset: number, limit: number) =>
     execute<{ total: number; messages: Message[] }>("mail.messages.list", { account_id, folder_id, offset, limit });

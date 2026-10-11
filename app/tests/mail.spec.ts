@@ -6,6 +6,8 @@ const picture = async (page: Page, name: string) => {
 };
 
 const messages = (page: Page) => page.getByRole("listbox", { name: "Messages" });
+const tree = (page: Page) => page.getByRole("list", { name: "Folders" });
+const folder = (page: Page, name: string) => tree(page).getByRole("button", { name: new RegExp(`^${name}`) });
 const body = (page: Page) => page.frameLocator('iframe[title="Message body"]');
 
 test("the window opens on the inbox, newest first, and syncs", async ({ page }) => {
@@ -15,7 +17,7 @@ test("the window opens on the inbox, newest first, and syncs", async ({ page }) 
     await expect(rows).toHaveCount(4);
     await expect(rows.first()).toContainText("Sam Taylor");
     await expect(rows.first()).toContainText("Budget review moved to Thursday");
-    await expect(page.getByRole("button", { name: "Inbox" })).toContainText("2");
+    await expect(folder(page, "Inbox")).toContainText("2");
     await expect(page.getByText("4 messages")).toBeVisible();
     await expect.poll(async () => (await ran(page)).some((r) => r.command === "mail.sync")).toBe(true);
 });
@@ -115,7 +117,7 @@ test("a search with no matches says so", async ({ page }) => {
 test("a folder of thousands keeps only what is on screen in the page", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(5000)] });
 
-    await page.getByRole("button", { name: "Archive" }).click();
+    await folder(page, "Archive").click();
     await expect(page.getByText("5,000 messages")).toBeVisible();
     const rows = messages(page).getByRole("option");
     await expect(rows.first()).toContainText("Archived message 1");
@@ -165,7 +167,7 @@ test("new mail appears at the top without losing the place in the list", async (
 
     await expect(messages(page).getByRole("option")).toHaveCount(5);
     await expect(messages(page).getByRole("option").first()).toContainText("Just arrived");
-    await expect(page.getByRole("button", { name: "Inbox" })).toContainText("3");
+    await expect(folder(page, "Inbox")).toContainText("3");
     // What was being read is still being read.
     await expect(messages(page).getByRole("option", { selected: true })).toContainText("Invoice 2041 attached");
     await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Invoice 2041 attached");
@@ -187,4 +189,40 @@ test("with two accounts, each has its own folders", async ({ page }) => {
     await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.folders.list").at(-1)?.args).toEqual({
         account_id: sam.id,
     });
+});
+
+test("folders inside folders can be closed up, and stay closed", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+
+    await expect(folder(page, "Surveys")).toBeVisible();
+    await page.getByRole("button", { name: "Collapse Projects" }).click();
+
+    await expect(folder(page, "Harbour upgrade")).toHaveCount(0);
+    await expect(folder(page, "Surveys")).toHaveCount(0);
+    await expect(folder(page, "Projects")).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Expand Projects" })).toBeVisible();
+    await expect(folder(page, "Website")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Expand Projects" }).click();
+    await expect(folder(page, "Website")).toBeVisible();
+});
+
+test("a pinned folder is kept at the top, and can be unpinned", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(3)], pinned: ["archive"] });
+    const favourites = page.getByRole("list", { name: "Favourites" });
+
+    await expect(favourites.getByRole("button", { name: /^Archive/ })).toBeVisible();
+    await picture(page, "folders");
+
+    await favourites.getByRole("button", { name: /^Archive/ }).click();
+    await expect(page.getByText("3 messages")).toBeVisible();
+
+    await page.getByRole("button", { name: "Pin Surveys" }).click();
+    await expect(favourites.getByRole("button", { name: /^Surveys/ })).toBeVisible();
+
+    await favourites.getByRole("button", { name: "Unpin Archive" }).click();
+    await expect(favourites.getByRole("listitem")).toHaveCount(1);
+    expect((await ran(page)).filter((r) => r.command === "mail.folders.set_favourite")).toHaveLength(2);
 });
