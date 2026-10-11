@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { Account } from "./accounts";
-    import { say } from "./commands";
+    import { chooseSavePath, say } from "./commands";
     import { type Attachment, type Folder, type Message, type Opened, type Sort, type View, getConversation, listAttachments, listFolders, listMessages, openLink, openMessage, saveAttachment, searchMail, setFavourite, setTrustedSender, syncNow } from "./mail";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -35,11 +35,15 @@
     /** What became of the last attachment saved. */
     let saved = $state<string | null>(null);
 
-    async function save(attachment: Attachment) {
+    /** Save to the downloads folder, or first ask where. */
+    async function save(attachment: Attachment, ask = false) {
         if (!accountId || !opened) return;
         saved = null;
         try {
-            const result = await saveAttachment(accountId, opened.message.id, attachment.id);
+            const messageId = opened.message.id;
+            const path = ask ? await chooseSavePath(attachment.name || "attachment") : undefined;
+            if (ask && !path) return;
+            const result = await saveAttachment(accountId, messageId, attachment.id, path ?? undefined);
             saved = `Saved to ${result.path}`;
         } catch (failure) {
             saved = say(failure);

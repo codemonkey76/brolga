@@ -20,6 +20,8 @@ use brolga_auth::{Accounts, AuthError, Authority, SecretStore, TokenClient};
 use brolga_commands::{Registry, RegistryError, builtin_registry};
 use brolga_store::{GlobalDb, StoreError};
 
+pub use saving::safe_name as safe_file_name;
+
 /// Brolga's own app registration, for organisations that have not made one.
 /// There is none yet: registering it with Microsoft is the owner's to do.
 /// Until then every sign-in names a client ID of the organisation's own.

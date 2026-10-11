@@ -13,7 +13,8 @@
         attachments: Attachment[];
         /** What became of the last attachment saved: where it went, or why it did not. */
         saved: string | null;
-        onSave: (attachment: Attachment) => void;
+        /** Save to the downloads folder, or with `ask` to a place chosen in a dialog. */
+        onSave: (attachment: Attachment, ask?: boolean) => void;
         /** Always show this sender's remote pictures, or stop. */
         onTrust: (address: string, trusted: boolean) => void;
         onShowImages: () => void;
@@ -177,6 +178,9 @@
                             <button type="button" class="attachment" title="Save to your downloads folder" onclick={() => onSave(each)}>
                                 📎 {each.name || "Attachment"} <span class="muted">{size(each.size)}</span>
                             </button>
+                            <button type="button" class="attachment as" aria-label="Save {each.name || 'attachment'} as…" title="Choose where to save it" onclick={() => onSave(each, true)}>
+                                Save as…
+                            </button>
                         {/if}
                     </li>
                 {/each}
@@ -271,6 +275,20 @@
         flex-wrap: wrap;
         gap: 0.4rem;
         border-bottom: 1px solid var(--line);
+    }
+
+    .attachments li {
+        display: flex;
+    }
+
+    .attachments li .attachment:first-child:not(:last-child) {
+        border-right: 0;
+        border-radius: 0.4rem 0 0 0.4rem;
+    }
+
+    .attachment.as {
+        border-radius: 0 0.4rem 0.4rem 0;
+        color: var(--muted);
     }
 
     .attachment {

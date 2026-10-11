@@ -301,6 +301,19 @@ async fn an_attachment_is_saved_under_a_safe_name_and_never_over_another() {
     assert!(link.unwrap_err().to_string().contains("link to a file"));
     assert!(missing.is_err());
 
+    // A place chosen in a save dialog is used as it is.
+    let chosen = first.parent().unwrap().join("chosen name.txt");
+    let as_chosen = f
+        .registry
+        .execute(
+            "mail.attachments.save",
+            json!({ "message_id": id, "attachment_id": "attachment-0", "path": chosen }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(as_chosen["path"], json!(chosen));
+    assert_eq!(std::fs::read(&chosen).unwrap(), b"[Desktop Entry]");
+
     let _ = std::fs::remove_dir_all(first.parent().unwrap());
 }
 

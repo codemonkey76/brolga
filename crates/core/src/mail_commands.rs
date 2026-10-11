@@ -122,6 +122,7 @@ struct SaveAttachment {
     account_id: Option<String>,
     message_id: String,
     attachment_id: String,
+    path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -448,10 +449,16 @@ async fn attachments(context: Context, args: Attachments) -> Result<Value, Comma
 }
 
 async fn save_attachment(context: Context, args: SaveAttachment) -> Result<Value, CommandError> {
-    let folder = context
-        .downloads
-        .clone()
-        .ok_or_else(|| failed("This computer has no downloads folder to save into."))?;
+    let chosen = args.path.as_deref().map(std::path::PathBuf::from);
+    let folder = match &chosen {
+        Some(_) => None,
+        None => Some(
+            context
+                .downloads
+                .clone()
+                .ok_or_else(|| failed("This computer has no downloads folder to save into."))?,
+        ),
+    };
     let account = context
         .account(args.account_id.as_deref())
         .map_err(failed)?;
@@ -490,10 +497,14 @@ async fn save_attachment(context: Context, args: SaveAttachment) -> Result<Value
     }
 
     let size = content.len();
-    let path = tokio::task::spawn_blocking(move || crate::saving::save(&folder, &name, &content))
-        .await
-        .map_err(failed)?
-        .map_err(|e| failed(format!("The attachment could not be saved. {e}")))?;
+    let path = tokio::task::spawn_blocking(move || match (chosen, folder) {
+        (Some(path), _) => crate::saving::save_as(&path, &content),
+        (None, Some(folder)) => crate::saving::save(&folder, &name, &content),
+        (None, None) => Err(std::io::Error::other("nowhere to save to")),
+    })
+    .await
+    .map_err(failed)?
+    .map_err(|e| failed(format!("The attachment could not be saved. {e}")))?;
 
     Ok(json!({ "path": path.to_string_lossy(), "size": size }))
 }
@@ -1087,7 +1098,11 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                 "properties": {
                     "account_id": account_id_property(),
                     "message_id": { "type": "string" },
-                    "attachment_id": { "type": "string", "description": "From mail.attachments.list." }
+                    "attachment_id": { "type": "string", "description": "From mail.attachments.list." },
+                    "path": {
+                        "type": "string",
+                        "description": "A full path to save to instead, as chosen by a person in a save dialog. Whatever is there is replaced."
+                    }
                 },
                 "required": ["message_id", "attachment_id"],
                 "additionalProperties": false

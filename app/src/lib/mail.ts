@@ -114,8 +114,8 @@ export const searchMail = async (account_id: string, query: string) =>
 export const listAttachments = async (account_id: string, message_id: string) =>
     (await execute<{ attachments: Attachment[] }>("mail.attachments.list", { account_id, message_id })).attachments;
 
-export const saveAttachment = (account_id: string, message_id: string, attachment_id: string) =>
-    execute<{ path: string; size: number }>("mail.attachments.save", { account_id, message_id, attachment_id });
+export const saveAttachment = (account_id: string, message_id: string, attachment_id: string, path?: string) =>
+    execute<{ path: string; size: number }>("mail.attachments.save", { account_id, message_id, attachment_id, ...(path ? { path } : {}) });
 
 /** A size in bytes as a person would say it. */
 export function size(bytes: number): string {

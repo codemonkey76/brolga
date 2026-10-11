@@ -97,6 +97,22 @@ pub fn save(folder: &Path, name: &str, content: &[u8]) -> std::io::Result<PathBu
     ))
 }
 
+/// Write a file at a place a person chose in a save dialog, replacing what
+/// is there: the dialog has already asked about that.
+pub fn save_as(path: &Path, content: &[u8]) -> std::io::Result<PathBuf> {
+    if !path.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the place to save to must be a full path",
+        ));
+    }
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+
+    Ok(path.to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +154,20 @@ mod tests {
 
         assert_eq!(safe.chars().count(), LONGEST);
         assert!(safe.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn saving_as_writes_where_it_is_told_and_only_to_a_full_path() {
+        let folder = std::env::temp_dir().join(format!("brolga-saving-as-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("chosen.txt");
+
+        save_as(&path, b"one").unwrap();
+        save_as(&path, b"two").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        assert!(save_as(Path::new("relative.txt"), b"x").is_err());
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

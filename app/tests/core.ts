@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** Where the save dialog says to save. Left out, the dialog is dismissed. */
+    savePath?: string;
     /** Folders already pinned as favourites. */
     pinned?: string[];
     /** True when Brolga has no app registration of its own, as now. */
@@ -323,7 +325,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.attachments.save": (args) => {
                 const found = mail.find((each) => each.id === args.message_id)?.attachments?.find((each) => each.id === args.attachment_id);
                 if (!found) throw { code: "failed", message: "This message has no such attachment." };
-                return { path: `/home/robin/Downloads/${found.name}`, size: found.size };
+                return { path: args.path ?? `/home/robin/Downloads/${found.name}`, size: found.size };
             },
             "mail.search": (args) => {
                 const words = String(args.query).toLowerCase().split(/\s+/).filter(Boolean);
@@ -353,6 +355,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             ran,
             __TAURI_INTERNALS__: {
                 invoke: async (name: string, payload: { command: string; args?: Record<string, unknown> }) => {
+                    // The save dialog: the place this test says was chosen, or dismissed.
+                    if (name === "choose_save_path") return core.savePath ?? null;
                     if (name !== "execute_command") throw new Error(`The frontend called ${name}, which is not a command.`);
                     const run = commands[payload.command];
                     if (!run) throw { code: "unknown_command", message: `there is no command called \`${payload.command}\`` };

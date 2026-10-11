@@ -27,6 +27,8 @@ brolga-platform.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio.workspace = true
 
 [lints]
 workspace = true

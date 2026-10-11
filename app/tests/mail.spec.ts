@@ -295,12 +295,12 @@ test("attachments are listed on the message and saved when asked", async ({ page
 
     // The picture within the body is not offered as a file.
     await expect(attached.getByRole("listitem")).toHaveCount(2);
-    await expect(attached.getByRole("button", { name: /Invoice 2041\.pdf/ })).toContainText("180 KB");
+    await expect(attached.getByRole("button", { name: /^📎 Invoice 2041\.pdf/ })).toContainText("180 KB");
     // A link to a file kept elsewhere has nothing to save.
     await expect(attached.getByRole("button", { name: /Statement/ })).toHaveCount(0);
     await expect(attached).toContainText("Statement.xlsx");
 
-    await attached.getByRole("button", { name: /Invoice 2041\.pdf/ }).click();
+    await attached.getByRole("button", { name: /^📎 Invoice 2041\.pdf/ }).click();
     await expect(page.getByText("Saved to /home/robin/Downloads/Invoice 2041.pdf")).toBeVisible();
     await picture(page, "attachments");
 
@@ -398,4 +398,24 @@ test("a list by date is marked off into today, yesterday and earlier", async ({ 
     await page.getByRole("combobox", { name: "Sort" }).selectOption("sender");
     await expect(page.locator(".stretch")).toHaveCount(0);
     await expect(page.locator(".starts")).toHaveCount(0);
+});
+
+test("an attachment can be saved to a place chosen in the save dialog", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, savePath: "/home/robin/Documents/September.pdf" });
+    await messages(page).getByRole("option").filter({ hasText: "Invoice 2041" }).click();
+
+    await page.getByRole("button", { name: "Save Invoice 2041.pdf as…" }).click();
+
+    await expect(page.getByText("Saved to /home/robin/Documents/September.pdf")).toBeVisible();
+    expect((await ran(page)).find((r) => r.command === "mail.attachments.save")?.args.path).toBe("/home/robin/Documents/September.pdf");
+});
+
+test("dismissing the save dialog saves nothing", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").filter({ hasText: "Invoice 2041" }).click();
+
+    await page.getByRole("button", { name: "Save Invoice 2041.pdf as…" }).click();
+
+    await expect(page.getByText("Saved to")).toHaveCount(0);
+    expect((await ran(page)).some((r) => r.command === "mail.attachments.save")).toBe(false);
 });

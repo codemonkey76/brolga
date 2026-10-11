@@ -16,6 +16,13 @@ export function execute<T>(command: string, args: Record<string, unknown> = {}):
     return invoke<T>("execute_command", { command, args });
 }
 
+/**
+ * Ask where to save a file, with the system's own dialog. Null if it was
+ * dismissed. A dialog is the window's own business, so this is the one thing
+ * here that is not a command; the saving that follows is.
+ */
+export const chooseSavePath = (suggestedName: string) => invoke<string | null>("choose_save_path", { suggestedName });
+
 export function isCommandFailure(value: unknown): value is CommandFailure {
     return typeof value === "object" && value !== null && "code" in value && "message" in value;
 }
