@@ -22,6 +22,7 @@ pub const NEVER: &[&str] = &[
     "accounts.sign_in",
     "accounts.sign_in_with_code.begin",
     "accounts.sign_in_with_code.finish",
+    "app.desktop.set",
     "app.open_link",
     "mail.trusted_senders.set",
 ];

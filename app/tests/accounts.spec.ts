@@ -509,6 +509,23 @@ test("a PST file is read into an archive, with how far it has got, and then is r
     await expect(section.getByRole("listitem")).toHaveCount(0);
 });
 
+test("Brolga is kept running and started at sign-in only when chosen, and says when there is no tray", async ({ page }) => {
+    await withCore(page, { accounts: [robin], noTray: true });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    const here = page.getByRole("region", { name: "This computer" });
+    const applied = () => page.evaluate(() => (window as unknown as { applied: unknown[] }).applied.at(-1));
+
+    await expect(here.getByRole("checkbox", { name: /Keep running/ })).not.toBeChecked();
+    await expect(here.getByRole("checkbox", { name: /Start when I sign in/ })).not.toBeChecked();
+
+    await here.getByRole("checkbox", { name: /Start when I sign in/ }).check();
+    await expect.poll(applied).toEqual({ keep_running: false, start_at_login: true });
+    await here.getByRole("checkbox", { name: /Keep running/ }).check();
+    await expect.poll(applied).toEqual({ keep_running: true, start_at_login: true });
+    await expect(here.getByRole("status")).toContainText("no system tray");
+    await picture(page, "this-computer");
+});
+
 test("an import can be stopped, and one that failed says why", async ({ page }) => {
     const failed = { id: "archive:9", name: "Broken", source: "Broken.pst", state: "failed", messages: 0, messages_done: null, messages_total: null, skipped: 0, error: "this is not a PST or OST file, or it is damaged" };
     await withCore(page, { accounts: [robin], archives: [failed], pickFiles: ["/home/robin/Huge.pst"] });

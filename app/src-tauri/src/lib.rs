@@ -4,6 +4,7 @@
 //! on the control channel so the CLI and agents can run the same commands in
 //! this process while it is open.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use brolga_auth::Authority;
@@ -14,6 +15,7 @@ use brolga_platform::{SystemSecrets, data_dir, downloads_dir, open_in_browser};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
@@ -118,6 +120,79 @@ async fn next_request(asked: State<'_, Asked>) -> Result<Option<Value>, ()> {
     Ok(asked.0.lock().await.recv().await)
 }
 
+/// Whether closing the window leaves Brolga running. True only when the
+/// person chose it and there is a tray icon to bring it back, or quit, by.
+#[derive(Default)]
+struct Stays {
+    chosen: AtomicBool,
+    tray: AtomicBool,
+}
+
+impl Stays {
+    fn on_close(&self) -> bool {
+        self.chosen.load(Ordering::Relaxed) && self.tray.load(Ordering::Relaxed)
+    }
+}
+
+/// Act on what `app.desktop.set` recorded: whether closing leaves Brolga
+/// running, and whether it starts when the person signs in. Gives back
+/// whether there is a tray icon, without which it cannot stay.
+#[tauri::command]
+async fn apply_desktop(
+    app: tauri::AppHandle,
+    registry: State<'_, Arc<Registry>>,
+    stays: State<'_, Arc<Stays>>,
+) -> Result<bool, Failure> {
+    let chosen = registry
+        .execute("app.desktop.get", serde_json::json!({}))
+        .await?;
+    stays
+        .chosen
+        .store(chosen["keep_running"] == true, Ordering::Relaxed);
+    let starter = app.autolaunch();
+    let _ = if chosen["start_at_login"] == true {
+        starter.enable()
+    } else {
+        starter.disable()
+    };
+
+    Ok(stays.tray.load(Ordering::Relaxed))
+}
+
+/// An icon in the system tray, to bring the window back by and to quit
+/// from. A desktop with no tray has none, and is told so by the error.
+fn tray(app: &tauri::AppHandle, registry: Arc<Registry>) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+
+    let menu = MenuBuilder::new(app)
+        .item(&MenuItemBuilder::with_id("open", "Open Brolga").build(app)?)
+        .item(&MenuItemBuilder::with_id("write", "New message").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::with_id("quit", "Quit").build(app)?)
+        .build()?;
+    let mut icon = tauri::tray::TrayIconBuilder::with_id("main")
+        .tooltip("Brolga")
+        .menu(&menu)
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+            "quit" => app.exit(0),
+            "write" => {
+                let registry = registry.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = registry
+                        .execute("app.window.show", showing(Some("mailto:")))
+                        .await;
+                });
+            }
+            _ => bring_forward(app),
+        });
+    if let Some(picture) = app.default_window_icon() {
+        icon = icon.icon(picture.clone());
+    }
+    icon.build(app)?;
+
+    Ok(())
+}
+
 fn bring_forward(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -135,6 +210,8 @@ fn showing(link: Option<&str>) -> Value {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // Started by the computer at sign-in, not by a person: no window is shown.
+    let background = std::env::args().skip(1).any(|arg| arg == "--background");
     // A mailto: link clicked somewhere else arrives as the one argument.
     let link = std::env::args().skip(1).find(|arg| {
         arg.get(..7)
@@ -186,14 +263,46 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }));
     let opening = registry.clone();
+    let for_tray = registry.clone();
+    let at_start = registry.clone();
+    let stays = Arc::new(Stays::default());
+    let (staying, closing) = (stays.clone(), stays.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--background"]),
+        ))
+        .manage(stays)
+        // Closing the window hides it where the person chose that Brolga
+        // stays; mail goes on being fetched and reminders given.
+        .on_window_event(move |window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && closing.on_close()
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .manage(registry)
         .manage(Asked(tokio::sync::Mutex::new(asked)))
         .setup(move |app| {
             let _ = window.set(app.handle().clone());
+            let has_tray = tray(app.handle(), for_tray).is_ok();
+            staying.tray.store(has_tray, Ordering::Relaxed);
+            let chosen = tauri::async_runtime::block_on(
+                at_start.execute("app.desktop.get", serde_json::json!({})),
+            )
+            .unwrap_or_default();
+            staying
+                .chosen
+                .store(chosen["keep_running"] == true, Ordering::Relaxed);
+            // With no tray to come back by, a window is always shown.
+            if !(background && staying.on_close()) {
+                bring_forward(app.handle());
+            }
             tauri::async_runtime::spawn(server.run(control));
             if link.is_some() {
                 tauri::async_runtime::spawn(async move {
@@ -209,10 +318,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             choose_save_path,
             choose_files,
             notify,
-            next_request
+            next_request,
+            apply_desktop
         ])
         .build(tauri::generate_context!())?
         .run(|_app, _event| {
+            // macOS: the icon in the Dock brings a hidden window back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                bring_forward(_app);
+            }
             // macOS hands a clicked link to the running app, not to a new one.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {

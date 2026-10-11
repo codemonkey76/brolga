@@ -7,6 +7,7 @@
 use std::sync::{Arc, OnceLock};
 
 use brolga_commands::{CommandError, CommandKind, CommandSpec, Registry, RegistryError};
+use brolga_store::GlobalDb;
 use serde_json::{Value, json};
 
 /// Brings the window forward, and hands it a message to start where there
@@ -104,10 +105,94 @@ pub fn mailto(link: &str) -> Option<Value> {
     Some(json!({ "to": to, "cc": cc, "bcc": bcc, "subject": subject, "body": body }))
 }
 
+/// Where the choices about this computer are kept.
+const DESKTOP: &str = "desktop";
+
+/// How Brolga sits on this computer, as the person chose. Both are off
+/// until they are turned on: a program that stays when it is closed, or
+/// starts by itself, is one that was asked to.
+fn desktop(db: &GlobalDb) -> Value {
+    let kept: Value = db
+        .setting(DESKTOP)
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Value::Null);
+
+    json!({
+        "keep_running": kept["keep_running"].as_bool().unwrap_or(false),
+        "start_at_login": kept["start_at_login"].as_bool().unwrap_or(false),
+    })
+}
+
 pub(crate) fn register(
     registry: &mut Registry,
     window: Arc<OnceLock<ShowWindow>>,
+    global: Arc<GlobalDb>,
 ) -> Result<(), RegistryError> {
+    let choices = json!({
+        "type": "object",
+        "properties": {
+            "keep_running": { "type": "boolean", "description": "Closing the window leaves Brolga running, fetching mail and giving reminders, with an icon in the system tray to bring it back or quit." },
+            "start_at_login": { "type": "boolean", "description": "Brolga starts, with no window, when the person signs in to this computer." }
+        },
+        "required": ["keep_running", "start_at_login"],
+        "additionalProperties": false
+    });
+    let db = global.clone();
+    registry.register(
+        CommandSpec {
+            id: "app.desktop.get".to_owned(),
+            title: "How Brolga sits on this computer".to_owned(),
+            description: "Whether Brolga keeps running when its window is closed, and whether it starts when the person signs in to this computer. Both are off until turned on."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            result_schema: choices.clone(),
+            examples: vec![json!({})],
+        },
+        Arc::new(move |_| {
+            let db = db.clone();
+            Box::pin(async move { Ok(desktop(&db)) })
+        }),
+    )?;
+    registry.register(
+        CommandSpec {
+            id: "app.desktop.set".to_owned(),
+            title: "Change how Brolga sits on this computer".to_owned(),
+            description: "Choose whether Brolga keeps running when its window is closed, and whether it starts when the person signs in to this computer. Only what is given changes. \
+                          This records the choice; the app acts on it."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "keep_running": { "type": "boolean" }, "start_at_login": { "type": "boolean" } },
+                "additionalProperties": false
+            }),
+            result_schema: choices,
+            examples: vec![json!({ "keep_running": true }), json!({ "keep_running": false })],
+        },
+        Arc::new(move |args| {
+            let db = global.clone();
+            Box::pin(async move {
+                let mut now = desktop(&db);
+                for each in ["keep_running", "start_at_login"] {
+                    if let Some(chosen) = args[each].as_bool() {
+                        now[each] = json!(chosen);
+                    }
+                }
+                db.set_setting(DESKTOP, &now.to_string())
+                    .map_err(|e| CommandError::Failed(e.to_string()))?;
+
+                Ok(now)
+            })
+        }),
+    )?;
+
     let people = json!({
         "type": "array",
         "items": {

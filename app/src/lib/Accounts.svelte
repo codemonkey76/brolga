@@ -1,6 +1,7 @@
 <script lang="ts">
     import AccountRow from "./AccountRow.svelte";
     import Archives from "./Archives.svelte";
+    import Desktop from "./Desktop.svelte";
     import {
         type Account,
         type CodeSignIn,
@@ -161,6 +162,7 @@
         </section>
 
         <Archives onChanged={onArchives} />
+        <Desktop />
     {/if}
 </div>
 

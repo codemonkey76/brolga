@@ -88,7 +88,8 @@ Four things hold whatever the access:
   the number given with `--max-sends-per-hour`. Meeting invitations,
   cancellations, answers to invitations and calendar sharing all count.
 - **Some things are only yours.** Signing in, removing an account, opening a
-  web address in your browser and choosing whose remote pictures load are
+  web address in your browser, choosing whose remote pictures load, and
+  whether Brolga stays running or starts by itself are
   refused to every agent.
 - **Everything is written down.** Each command an agent asks for is recorded
   with the program's name, the time and whether it ran, was not allowed, or

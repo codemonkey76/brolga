@@ -1,5 +1,15 @@
 # Using Brolga
 
+## Installing
+
+- **Linux:** the `.deb`, `.rpm` or `.AppImage` from the releases page.
+- **Windows and macOS:** the installers are not signed, so the system will
+  warn you. On Windows, choose **More info** and then **Run anyway**. On
+  macOS, open the app once, then allow it under **System Settings**,
+  **Privacy & Security**, **Open Anyway**. Only do this for a file you
+  downloaded from Brolga's own releases page, and check it against the
+  `SHA256SUMS` file published beside it.
+
 ## Getting started
 
 Open Brolga and choose **Sign in** on the Accounts screen. Your browser opens
@@ -69,6 +79,19 @@ in Microsoft 365, labelled with whose it is.
 an archive kept on this computer. The file itself is only read, never
 changed. The archive is read and searched like a mailbox, but nothing can be
 sent from it and it is not uploaded to Microsoft 365.
+
+## Keeping Brolga running
+
+Under **This computer** on the Accounts screen:
+
+- **Keep running when the window is closed** leaves Brolga fetching mail and
+  giving reminders, with an icon in the system tray to open it again or quit.
+  On a desktop with no system tray, closing the window still quits.
+- **Start when I sign in to this computer** starts it for you, with no window
+  if it is also kept running.
+
+Both are off until you turn them on. Starting Brolga a second time always
+brings the window you already have to the front.
 
 ## Opening email links
 

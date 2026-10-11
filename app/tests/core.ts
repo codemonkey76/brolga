@@ -168,6 +168,8 @@ export const bulk = (count: number): FakeMail[] =>
     }));
 
 export interface FakeCore {
+    /** A desktop with no system tray. */
+    noTray?: boolean;
     /** A message a mailto: link asks the window to start. */
     asked?: { to: { address: string; name: string | null }[]; cc: never[]; bcc: never[]; subject: string; body: string };
     accounts?: FakeAccount[];
@@ -260,6 +262,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const draft = (id: unknown) => drafts.find((each) => each.id === id);
         let signature = { text: "", on_replies: false };
         const notified: { title: string; body: string }[] = [];
+        const desktop = { keep_running: false, start_at_login: false };
+        const applied: (typeof desktop)[] = [];
         /** What has been done about each reminder: dismissed, or put off until a time. */
         const done = new Map<unknown, number>();
         const diaries = [
@@ -413,6 +417,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         });
 
         const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
+            "app.desktop.get": () => ({ ...desktop }),
+            "app.desktop.set": (args) => ({ ...Object.assign(desktop, args) }),
             "mail.sync": () => {
                 syncs += 1;
                 if (syncs === 2) mail.unshift(...(core.arrives ?? []));
@@ -988,6 +994,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
 
         Object.assign(window, {
             notified,
+            applied,
             arrive: () =>
                 mail.push({
                     id: "arrived",
@@ -1014,6 +1021,11 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                         return null;
                     }
                     // A mailto: link clicked elsewhere: handed over once, and then nothing more comes.
+                    // Acting on the choices about this computer: whether there is a tray to sit in.
+                    if (name === "apply_desktop") {
+                        applied.push({ ...desktop });
+                        return core.noTray !== true;
+                    }
                     if (name === "next_request") {
                         const link = core.asked;
                         core.asked = undefined;

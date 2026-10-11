@@ -119,7 +119,7 @@ impl Core {
         let images = Arc::new(remote_images::RemoteImages::new(
             options.fetch_images_from_private_hosts,
         ));
-        agent_commands::register(&mut registry, global)?;
+        agent_commands::register(&mut registry, global.clone())?;
         action_commands::register(&mut registry, mailboxes.clone())?;
         draft_commands::register(&mut registry, mailboxes.clone())?;
         calendar_commands::register(&mut registry, mailboxes.clone())?;
@@ -143,7 +143,7 @@ impl Core {
         )?;
         link_commands::register(&mut registry, options.open_browser.clone())?;
         let window = Arc::new(std::sync::OnceLock::new());
-        window_commands::register(&mut registry, window.clone())?;
+        window_commands::register(&mut registry, window.clone(), global)?;
         account_commands::register(
             &mut registry,
             account_commands::Context {

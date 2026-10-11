@@ -60,6 +60,8 @@ check.
 
 ## Left out of 1.0
 
+- **Signed installers for Windows and macOS.** They are built, unsigned;
+  [Using Brolga](docs/using.md) says how to open one. Linux comes first.
 - **Distribution lists.** A group is addressed by its own address; its
   members are not listed or expanded while writing. Reading a group's members
   needs a permission only an administrator can give, which is more than a
