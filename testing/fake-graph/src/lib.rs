@@ -114,7 +114,11 @@ impl FakeGraph {
         let app = Router::new()
             .route("/v1.0/me", get(me))
             .route("/v1.0/me/outlook/masterCategories", get(master_categories))
-            .route("/v1.0/me/calendars", get(calendars))
+            .route("/v1.0/me/calendars", get(calendars).post(create_calendar))
+            .route(
+                "/v1.0/me/calendars/{calendar}",
+                axum::routing::delete(delete_calendar),
+            )
             .route("/v1.0/me/calendarView/delta", get(events_delta))
             .route(
                 "/v1.0/me/calendars/{calendar}/calendarView",
@@ -281,6 +285,11 @@ impl FakeGraph {
 
     /// The next move is made, but the answer to it is an error: the case
     /// of a request that reached the server and an answer that did not come back.
+    /// Reminders dealt with from a device: (event, `dismissed` or until when).
+    pub fn reminders_done(&self) -> Vec<(String, String)> {
+        lock(&self.shared).calendars().reminders.clone()
+    }
+
     /// Say when someone else is busy: each a (start, end, status) in UTC.
     pub fn set_busy(&self, address: &str, times: &[(&str, &str, &str)]) {
         lock(&self.shared).calendars().busy.insert(
@@ -734,8 +743,24 @@ async fn delete_event(State(shared): State<Shared>, Path(event): Path<String>) -
 async fn event_action(
     State(shared): State<Shared>,
     Path((event, action)): Path<(String, String)>,
-    axum::Json(body): axum::Json<Value>,
+    body: Option<axum::Json<Value>>,
 ) -> Response {
+    // Dismissing a reminder is asked with no body at all.
+    let body = body.map_or(Value::Null, |given| given.0);
+    if action == "dismissReminder" || action == "snoozeReminder" {
+        // "event: dismissReminder" and "event: snoozeReminder" (SOURCES.md): 200 and nothing else.
+        let mut inner = lock(&shared);
+        if !inner.calendars().has_event(&event) {
+            return event_refused("ErrorItemNotFound");
+        }
+        let what = match body["newReminderTime"]["dateTime"].as_str() {
+            Some(until) if action == "snoozeReminder" => format!("{until}Z"),
+            None if action == "dismissReminder" => "dismissed".to_owned(),
+            _ => return event_refused("ErrorInvalidRequest"),
+        };
+        inner.calendars().reminders.push((event, what));
+        return StatusCode::OK.into_response();
+    }
     if action == "cancel" {
         // "event: cancel" (SOURCES.md): 202, and only for the organiser.
         let comment = body["comment"]
@@ -787,6 +812,40 @@ async fn event_action(
     }
 
     StatusCode::ACCEPTED.into_response()
+}
+
+/// "Create calendar" (SOURCES.md): 201 and the calendar.
+async fn create_calendar(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let Some(name) = body["name"].as_str().filter(|name| !name.trim().is_empty()) else {
+        return event_refused("ErrorInvalidRequest");
+    };
+    let mut inner = lock(&shared);
+    let id = inner.calendars().add_calendar(name, "");
+
+    match inner.calendars().one_calendar(&id) {
+        Some(made) => (StatusCode::CREATED, axum::Json(made)).into_response(),
+        None => event_refused("ErrorItemNotFound"),
+    }
+}
+
+/// "Delete calendar" (SOURCES.md): 204. The default calendar cannot be deleted.
+async fn delete_calendar(State(shared): State<Shared>, Path(calendar): Path<String>) -> Response {
+    let mut inner = lock(&shared);
+    match inner.calendars().is_default(&calendar) {
+        None => event_refused("ErrorItemNotFound"),
+        Some(true) => error(
+            StatusCode::BAD_REQUEST,
+            "ErrorInvalidRequest",
+            "The default calendar cannot be deleted.",
+        ),
+        Some(false) => {
+            inner.calendars().remove_calendar(&calendar);
+            StatusCode::NO_CONTENT.into_response()
+        }
+    }
 }
 
 async fn calendars(State(shared): State<Shared>) -> Response {

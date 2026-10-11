@@ -165,6 +165,10 @@ export const respond = (account_id: string, event_id: string, response: Answer, 
         ...(comment ? { comment } : {}),
     });
 
+export const createCalendar = (account_id: string, name: string) => execute("calendar.calendars.create", { account_id, name });
+
+export const deleteCalendar = (account_id: string, calendar_id: string) => execute("calendar.calendars.delete", { account_id, calendar_id });
+
 export const showCalendar = (account_id: string, calendar_id: string, shown: boolean) =>
     execute("calendar.calendars.set_shown", { account_id, calendar_id, shown });
 

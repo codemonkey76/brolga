@@ -162,8 +162,11 @@ async fn dismiss(mailboxes: Arc<Mailboxes>, args: Dismiss) -> Result<Value, Comm
         .db
         .dismiss_reminder(&args.event_id)
         .map_err(failed)?;
+    // Other devices are told, if they can be now. If not, it is still
+    // done with here, and they remind for themselves.
+    let everywhere = mailbox.graph.dismiss_reminder(&args.event_id).await.is_ok();
 
-    Ok(json!({ "dismissed": true }))
+    Ok(json!({ "dismissed": true, "everywhere": everywhere }))
 }
 
 async fn snooze(mailboxes: Arc<Mailboxes>, args: Snooze) -> Result<Value, CommandError> {
@@ -180,8 +183,13 @@ async fn snooze(mailboxes: Arc<Mailboxes>, args: Snooze) -> Result<Value, Comman
         .db
         .snooze_reminder(&args.event_id, &stamp(until))
         .map_err(failed)?;
+    let everywhere = mailbox
+        .graph
+        .snooze_reminder(&args.event_id, &stamp(until))
+        .await
+        .is_ok();
 
-    Ok(json!({ "snoozed_until": stamp(until) }))
+    Ok(json!({ "snoozed_until": stamp(until), "everywhere": everywhere }))
 }
 
 #[derive(Deserialize)]
@@ -1477,6 +1485,87 @@ async fn respond(mailboxes: Arc<Mailboxes>, args: Respond) -> Result<Value, Comm
     Ok(json!({ "response": response, "organizer_told": told }))
 }
 
+#[derive(Deserialize)]
+struct NewCalendar {
+    account_id: Option<String>,
+    name: String,
+}
+
+async fn create_calendar(
+    mailboxes: Arc<Mailboxes>,
+    args: NewCalendar,
+) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let name = args.name.trim();
+    if name.is_empty() {
+        return Err(failed("A calendar needs a name."));
+    }
+    if mailbox
+        .db
+        .calendars()
+        .map_err(failed)?
+        .iter()
+        .any(|each| each.name.eq_ignore_ascii_case(name))
+    {
+        return Err(failed(format!(
+            "There is already a calendar called `{name}`."
+        )));
+    }
+    let made = mailbox.graph.create_calendar(name).await.map_err(|error| {
+        if error.is_transient() {
+            failed("Microsoft 365 could not be reached. Sync and look before trying again, in case the calendar was made.")
+        } else {
+            failed(error)
+        }
+    })?;
+    // The list is read again, so that the new one is here as the server has it.
+    let listed = mailbox.calendars.sync_calendars().await.is_ok();
+
+    Ok(
+        json!({ "calendar_id": made.id, "name": made.name.unwrap_or_default(), "on_this_computer": listed }),
+    )
+}
+
+#[derive(Deserialize)]
+struct OneCalendar {
+    account_id: Option<String>,
+    calendar_id: String,
+}
+
+async fn delete_calendar(
+    mailboxes: Arc<Mailboxes>,
+    args: OneCalendar,
+) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let calendars = mailbox.db.calendars().map_err(failed)?;
+    let calendar = calendars
+        .iter()
+        .find(|each| each.id == args.calendar_id)
+        .ok_or_else(|| failed("There is no such calendar on this computer."))?;
+    if calendar.is_default {
+        return Err(failed("Your main calendar cannot be deleted."));
+    }
+    mailbox
+        .graph
+        .delete_calendar(&calendar.id)
+        .await
+        .map_err(not_made)?;
+    let rest: Vec<_> = calendars
+        .iter()
+        .filter(|each| each.id != calendar.id)
+        .cloned()
+        .collect();
+    mailbox.db.set_calendars(&rest).map_err(failed)?;
+
+    Ok(json!({ "deleted": true }))
+}
+
 async fn set_shown(mailboxes: Arc<Mailboxes>, args: Shown) -> Result<Value, CommandError> {
     let account = mailboxes
         .account(args.account_id.as_deref())
@@ -1955,7 +2044,7 @@ pub(crate) fn register(
         CommandSpec {
             id: "calendar.reminders.dismiss".to_owned(),
             title: "Dismiss a reminder".to_owned(),
-            description: "Have done with an event's reminder on this computer. The event is not changed, and other devices still remind."
+            description: "Have done with an event's reminder, here and, where Microsoft 365 can be reached, on your other devices. The event is not changed."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: false,
@@ -2003,6 +2092,54 @@ pub(crate) fn register(
             examples: vec![json!({ "event_id": "no-such-event", "minutes": 5 })],
         },
         handler(&mailboxes, snooze),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.calendars.create".to_owned(),
+            title: "New calendar".to_owned(),
+            description: "Make a calendar of your own beside the main one. It needs Microsoft 365 to be in reach.".to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id, "name": { "type": "string", "minLength": 1, "maxLength": 200 } },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "calendar_id": { "type": "string" }, "name": { "type": "string" } },
+                "required": ["calendar_id"]
+            }),
+            examples: vec![json!({ "name": "Training" })],
+        },
+        handler(&mailboxes, create_calendar),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.calendars.delete".to_owned(),
+            title: "Delete a calendar".to_owned(),
+            description: "Delete one of your calendars and every event in it. The main calendar cannot be deleted. It cannot be undone.".to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id, "calendar_id": { "type": "string" } },
+                "required": ["calendar_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "deleted": { "type": "boolean" } },
+                "required": ["deleted"]
+            }),
+            examples: vec![json!({ "calendar_id": "calendar-2" })],
+        },
+        handler(&mailboxes, delete_calendar),
     )?;
 
     registry.register(

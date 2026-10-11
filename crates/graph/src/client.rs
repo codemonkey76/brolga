@@ -164,6 +164,56 @@ impl GraphClient {
         decode(&self.get(&url, None).await?)
     }
 
+    /// Make a calendar ("Create calendar", SOURCES.md). Not safe to repeat
+    /// blindly: a second request makes a second calendar of the same name.
+    pub async fn create_calendar(&self, name: &str) -> Result<Calendar, GraphError> {
+        let url = format!("{}/me/calendars", self.base);
+        let body = serde_json::json!({ "name": name });
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&body), false)
+                .await?,
+        )
+    }
+
+    /// Delete a calendar and everything in it ("Delete calendar",
+    /// SOURCES.md). One that is already gone is as good as deleted.
+    pub async fn delete_calendar(&self, calendar_id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/calendars/{calendar_id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Have done with an event's reminder, for every device ("event:
+    /// dismissReminder", SOURCES.md).
+    pub async fn dismiss_reminder(&self, event_id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/events/{event_id}/dismissReminder", self.base);
+        self.send(reqwest::Method::POST, &url, None, None, true)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Put an event's reminder off until a moment in UTC, for every device
+    /// ("event: snoozeReminder", SOURCES.md).
+    pub async fn snooze_reminder(&self, event_id: &str, until: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/events/{event_id}/snoozeReminder", self.base);
+        let body = serde_json::json!({
+            "newReminderTime": { "dateTime": until.trim_end_matches('Z'), "timeZone": "UTC" }
+        });
+        self.send(reqwest::Method::POST, &url, None, Some(&body), true)
+            .await?;
+
+        Ok(())
+    }
+
     /// When people are free and busy between two moments in UTC, in slots
     /// of so many minutes ("calendar: getSchedule", SOURCES.md): one entry
     /// for each address asked about, as Graph gives it. It changes nothing,

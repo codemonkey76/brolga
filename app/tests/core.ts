@@ -484,6 +484,16 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             },
             "app.agent_log.list": () => ({ entries: core.agentLog ?? [] }),
             "calendar.calendars.list": (args) => ({ account_id: args.account_id, calendars: diaries }),
+            "calendar.calendars.create": (args) => {
+                const id = `made-${diaries.length + 1}`;
+                diaries.push({ id, name: args.name as string, color: "auto", hex_color: "", is_default: false, can_edit: true, shown: true });
+                return { calendar_id: id, name: args.name };
+            },
+            "calendar.calendars.delete": (args) => {
+                diaries.splice(diaries.findIndex((each) => each.id === args.calendar_id), 1);
+                core.events = (core.events ?? []).filter((each) => (each.calendar_id ?? "main") !== args.calendar_id);
+                return { deleted: true };
+            },
             "calendar.calendars.set_shown": (args) => {
                 const found = diaries.find((each) => each.id === args.calendar_id);
                 if (found) found.shown = args.shown as boolean;

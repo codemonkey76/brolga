@@ -51,6 +51,24 @@ impl CalendarSync {
     pub async fn sync_all(&self, now: Timestamp) -> Result<Synced, SyncError> {
         let mut synced = Synced::default();
 
+        let calendars = self.sync_calendars().await?;
+        synced.changed += u32::try_from(calendars.len()).unwrap_or(u32::MAX);
+
+        let window = self.window(now, &calendars)?;
+        for calendar in &calendars {
+            if calendar.is_default {
+                synced.add(self.sync_default(&calendar.id, &window).await?);
+            } else if self.due(&calendar.id)? {
+                synced.add(self.read_whole(&calendar.id, &window).await?);
+            }
+        }
+
+        Ok(synced)
+    }
+
+    /// Read which calendars there are, and keep them. What was in one that
+    /// is no longer there goes with it.
+    pub async fn sync_calendars(&self) -> Result<Vec<CalendarRow>, SyncError> {
         let calendars: Vec<CalendarRow> = self
             .graph
             .calendars()
@@ -72,18 +90,8 @@ impl CalendarSync {
             })
             .collect();
         self.db.set_calendars(&calendars)?;
-        synced.changed += u32::try_from(calendars.len()).unwrap_or(u32::MAX);
 
-        let window = self.window(now, &calendars)?;
-        for calendar in &calendars {
-            if calendar.is_default {
-                synced.add(self.sync_default(&calendar.id, &window).await?);
-            } else if self.due(&calendar.id)? {
-                synced.add(self.read_whole(&calendar.id, &window).await?);
-            }
-        }
-
-        Ok(synced)
+        Ok(calendars)
     }
 
     /// Bring one calendar's events up to date, whether or not it is due:

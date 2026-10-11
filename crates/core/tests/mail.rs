@@ -2878,3 +2878,90 @@ async fn free_and_busy_times_are_asked_for_and_a_time_everyone_is_free_is_found(
         "{offline}"
     );
 }
+
+#[tokio::test]
+async fn a_calendar_is_made_and_deleted_and_a_reminder_dealt_with_is_dealt_with_everywhere() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let names = || async {
+        f.run("calendar.calendars.list", json!({})).await["calendars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let before = names().await;
+
+    let made = f
+        .run("calendar.calendars.create", json!({ "name": " Training " }))
+        .await;
+    let id = made["calendar_id"].as_str().unwrap().to_owned();
+    assert_eq!(names().await.len(), before.len() + 1);
+    assert!(names().await.contains(&"Training".to_owned()));
+    // A second of the same name is not made.
+    assert!(
+        f.registry
+            .execute("calendar.calendars.create", json!({ "name": "training" }))
+            .await
+            .is_err()
+    );
+
+    // An event in it, which goes when the calendar does.
+    let event = f
+        .run(
+            "calendar.events.create",
+            json!({ "calendar_id": id, "subject": "Course", "start": "2027-07-01T09:00", "end": "2027-07-01T10:00", "time_zone": "UTC" }),
+        )
+        .await["event"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Its reminder dismissed and another put off: the server is told, so other devices follow.
+    assert_eq!(
+        f.run(
+            "calendar.reminders.snooze",
+            json!({ "event_id": event, "minutes": 10 })
+        )
+        .await["everywhere"],
+        true
+    );
+    assert_eq!(
+        f.run("calendar.reminders.dismiss", json!({ "event_id": event }))
+            .await["everywhere"],
+        true
+    );
+    let done = f.graph.reminders_done();
+    assert_eq!(done.len(), 2);
+    assert_eq!(done[1], (event.clone(), "dismissed".to_owned()));
+    // Out of reach it is still done with here.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 40));
+    let offline = f
+        .run("calendar.reminders.dismiss", json!({ "event_id": event }))
+        .await;
+    assert_eq!(offline, json!({ "dismissed": true, "everywhere": false }));
+    f.graph.clear_faults();
+
+    f.run("calendar.calendars.delete", json!({ "calendar_id": id }))
+        .await;
+    assert_eq!(names().await, before);
+    assert!(
+        f.registry
+            .execute("calendar.events.get", json!({ "event_id": event }))
+            .await
+            .is_err()
+    );
+    f.sync().await;
+    assert_eq!(names().await, before);
+
+    // The main calendar stays.
+    let main = f.graph.default_calendar();
+    let refused = f
+        .registry
+        .execute("calendar.calendars.delete", json!({ "calendar_id": main }))
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("main calendar"), "{refused}");
+}

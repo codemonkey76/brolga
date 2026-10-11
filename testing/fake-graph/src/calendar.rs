@@ -136,6 +136,9 @@ struct Stored {
 pub struct Calendars {
     calendars: Vec<FakeCalendar>,
     events: BTreeMap<String, Stored>,
+    /// Reminders dealt with from a device: (event, `dismissed` or the
+    /// moment it was put off until).
+    pub reminders: Vec<(String, String)>,
     /// When other people are busy, for "calendar: getSchedule": each
     /// address, and its (start, end, status) in UTC.
     pub busy: BTreeMap<String, Vec<(String, String, String)>>,
@@ -352,7 +355,15 @@ impl Calendars {
     }
 
     pub fn add_calendar(&mut self, name: &str, hex_color: &str) -> String {
-        let id = format!("calendar-{}", self.calendars.len() + 1);
+        let mut number = self.calendars.len() + 1;
+        while self
+            .calendars
+            .iter()
+            .any(|each| each.id == format!("calendar-{number}"))
+        {
+            number += 1;
+        }
+        let id = format!("calendar-{number}");
         self.calendars.push(FakeCalendar {
             id: id.clone(),
             name: name.to_owned(),
@@ -365,6 +376,27 @@ impl Calendars {
     pub fn remove_calendar(&mut self, id: &str) {
         self.calendars.retain(|c| c.id != id);
         self.events.retain(|_, stored| stored.calendar != id);
+    }
+
+    pub fn is_default(&self, id: &str) -> Option<bool> {
+        self.calendars
+            .iter()
+            .find(|each| each.id == id)
+            .map(|each| each.is_default)
+    }
+
+    /// One calendar, as the list gives it.
+    pub fn one_calendar(&self, id: &str) -> Option<Value> {
+        self.list()["value"]
+            .as_array()?
+            .iter()
+            .find(|each| each["id"] == id)
+            .cloned()
+    }
+
+    pub fn has_event(&self, id: &str) -> bool {
+        let own = id.split('.').next().unwrap_or(id);
+        self.events.get(own).is_some_and(|stored| !stored.deleted)
     }
 
     pub fn default_calendar(&self) -> String {

@@ -9,6 +9,8 @@
         type Scope,
         repeatSaid,
         cancelEvent,
+        createCalendar,
+        deleteCalendar,
         createEvent,
         deleteEvent,
         updateEvent,
@@ -256,6 +258,36 @@
         await load();
     }
 
+    /** The name of a calendar being made. Null when none is. */
+    let naming = $state<string | null>(null);
+    /** The calendar it is being asked whether to delete. */
+    let dropping = $state<string | null>(null);
+
+    async function addCalendar(submitted: SubmitEvent) {
+        submitted.preventDefault();
+        if (!accountId || !naming?.trim()) return;
+        try {
+            await createCalendar(accountId, naming.trim());
+            naming = null;
+            problem = null;
+            await load();
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    async function dropCalendar(calendar: Calendar) {
+        if (!accountId) return;
+        try {
+            await deleteCalendar(accountId, calendar.id);
+            dropping = null;
+            if (selected?.calendar_id === calendar.id) selected = null;
+            await load();
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
     async function toggle(calendar: Calendar) {
         if (!accountId) return;
         try {
@@ -331,7 +363,17 @@
             </div>
         </div>
 
-        <h2 id="calendars-heading">Calendars</h2>
+        <h2 id="calendars-heading">
+            Calendars
+            <button type="button" class="add" aria-label="New calendar" title="New calendar" onclick={() => (naming = "")}><Plus size={14} aria-hidden="true" /></button>
+        </h2>
+        {#if naming !== null}
+            <form class="naming" onsubmit={addCalendar}>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input type="text" aria-label="Name of the new calendar" placeholder="Name" maxlength="200" autofocus bind:value={naming} onkeydown={(e) => e.key === "Escape" && (naming = null)} />
+                <button type="submit" disabled={!naming.trim()}>Add</button>
+            </form>
+        {/if}
         <ul aria-labelledby="calendars-heading">
             {#each calendars as each (each.id)}
                 <li>
@@ -340,6 +382,14 @@
                         <span class="dot" style:background={calendarColour(calendars, each.id)}></span>
                         <span class="name">{each.name}</span>
                     </label>
+                    {#if dropping === each.id}
+                        <span class="drop">
+                            <button type="button" class="danger" onclick={() => dropCalendar(each)}>Delete it and its events?</button>
+                            <button type="button" onclick={() => (dropping = null)}>Keep</button>
+                        </span>
+                    {:else if !each.is_default && each.can_edit}
+                        <button type="button" class="bin" aria-label={`Delete ${each.name}`} title="Delete this calendar" onclick={() => (dropping = each.id)}><Trash size={13} aria-hidden="true" /></button>
+                    {/if}
                 </li>
             {/each}
         </ul>
@@ -503,6 +553,68 @@
 </div>
 
 <style>
+    aside h2 {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    aside .add,
+    aside .bin {
+        display: inline-grid;
+        place-items: center;
+        padding: 0.15rem;
+        border: 0;
+        background: none;
+        color: inherit;
+        opacity: 0.6;
+    }
+
+    aside .add:hover,
+    aside .bin:hover {
+        opacity: 1;
+    }
+
+    aside li {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    /* Out of sight until the row is pointed at, but still there to tab to. */
+    aside li .bin {
+        opacity: 0;
+    }
+
+    aside li:hover .bin,
+    aside li .bin:focus-visible {
+        opacity: 1;
+    }
+
+    .naming {
+        display: flex;
+        gap: 0.3rem;
+        margin-bottom: 0.4rem;
+    }
+
+    .naming input {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+    }
+
+    .drop {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+        font-size: 0.8rem;
+    }
+
+    .drop .danger {
+        color: var(--danger);
+    }
+
     .bar .new {
         display: inline-flex;
         align-items: center;

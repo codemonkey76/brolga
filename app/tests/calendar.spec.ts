@@ -637,3 +637,25 @@ test("when people are free is shown for a meeting, and a time everyone is free c
     await expect(form.getByLabel("Start time")).toHaveValue("11:00");
     await expect(form.getByLabel("End time")).toHaveValue("12:00");
 });
+
+test("a calendar is added and deleted from the list, and the main one cannot be", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: week });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    const list = page.getByRole("complementary", { name: "Calendars" });
+
+    await list.getByRole("button", { name: "New calendar" }).click();
+    await list.getByRole("textbox", { name: "Name of the new calendar" }).fill("Training");
+    await list.getByRole("button", { name: "Add" }).click();
+    await expect(list.getByRole("checkbox", { name: "Training" })).toBeChecked();
+
+    // The main calendar has no delete; the family one has, and takes its events with it.
+    await expect(list.getByRole("button", { name: "Delete Calendar" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /School pickup/ })).toBeVisible();
+    await list.getByRole("button", { name: "Delete Family" }).click();
+    await list.getByRole("button", { name: "Keep" }).click();
+    await list.getByRole("button", { name: "Delete Family" }).click();
+    await list.getByRole("button", { name: "Delete it and its events?" }).click();
+    await expect(list.getByRole("checkbox", { name: "Family" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /School pickup/ })).toHaveCount(0);
+});
