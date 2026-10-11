@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { notified, ran, robin, week, withCore } from "./core";
+import { inbox, notified, ran, robin, week, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -196,4 +196,79 @@ test("a reminder shows in the window and on the desktop, once, and can be put of
     await expect(reminders).toHaveCount(0);
     await page.clock.fastForward(60_000);
     await expect(reminders).toHaveCount(0);
+});
+
+test("an invitation in the inbox reads as one, says what it clashes with, and leads to its day", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));
+    await withCore(page, {
+        accounts: [robin],
+        events: week,
+        mail: [
+            {
+                id: "inv",
+                folder_id: "inbox",
+                subject: "Budget review",
+                preview: "Please join the budget review.",
+                from: { name: "Sam Taylor", address: "sam.taylor@example.test" },
+                received_at: "2026-10-09T05:00:00Z",
+                is_read: false,
+                has_attachments: false,
+                body: "<p>Please join the budget review.</p>",
+                meeting: {
+                    kind: "invitation",
+                    start: "2026-10-14T04:00:00Z",
+                    end: "2026-10-14T05:00:00Z",
+                    is_all_day: false,
+                    location: "Harbour Room",
+                    event_id: "e2",
+                    response: "notResponded",
+                    conflicts: [{ subject: "Supplier call", start: "2026-10-14T04:30:00Z", end: "2026-10-14T05:30:00Z" }],
+                    complete: true,
+                },
+            },
+            ...inbox,
+        ],
+    });
+    await page.getByRole("listbox", { name: "Messages" }).getByRole("option").first().click();
+    const card = page.getByRole("region", { name: "Meeting" });
+
+    await expect(card).toContainText("Meeting invitation");
+    // Two in the afternoon on the Wednesday, in Brisbane.
+    await expect(card).toContainText(/Wed.*2:00\s?PM to 3:00\s?PM/i);
+    await expect(card).toContainText("Harbour Room");
+    await expect(card).toContainText("Clashes with Supplier call");
+    if (process.env.SCREENSHOTS) await page.screenshot({ path: "../docs/screenshots/invitation.png" });
+
+    await card.getByRole("button", { name: "Show in calendar" }).click();
+    const calendar = page.getByRole("region", { name: "Calendar" });
+    await expect(calendar.getByRole("heading", { level: 1 })).toHaveText(/12 Oct – 16 Oct 2026|Oct 12 – Oct 16 2026/);
+    await expect(calendar.getByRole("button", { name: /Budget review/ })).toBeVisible();
+});
+
+test("a cancellation and an answer each say what they are", async ({ page }) => {
+    const about = (id: string, subject: string, from: string, meeting: Record<string, unknown>) => ({
+        id,
+        folder_id: "inbox",
+        subject,
+        preview: "",
+        from: { name: from, address: "someone@example.test" },
+        received_at: `2026-10-09T0${id.length}:00:00Z`,
+        is_read: true,
+        has_attachments: false,
+        body: "<p></p>",
+        meeting: { start: "2026-10-14T04:00:00Z", end: "2026-10-14T05:00:00Z", conflicts: [], complete: true, ...meeting },
+    });
+    await withCore(page, {
+        accounts: [robin],
+        mail: [about("a", "Cancelled: Budget review", "Sam Taylor", { kind: "cancellation" }), about("bb", "Accepted: Team lunch", "Jo Nguyen", { kind: "accepted" })],
+    });
+    const rows = page.getByRole("listbox", { name: "Messages" }).getByRole("option");
+    const card = page.getByRole("region", { name: "Meeting" });
+
+    await rows.filter({ hasText: "Cancelled" }).click();
+    await expect(card).toContainText("This meeting was cancelled");
+    await rows.filter({ hasText: "Accepted" }).click();
+    await expect(card).toContainText("Jo Nguyen: accepted");
+    // An answer is not an invitation: there is nothing to say about clashes.
+    await expect(card).not.toContainText("calendar then");
 });

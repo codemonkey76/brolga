@@ -45,6 +45,7 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | event: delta | https://learn.microsoft.com/graph/api/event-delta | `GET /me/calendarView/delta?startDateTime=…&endDateTime=…` for the default calendar: needs `Calendars.Read`, takes no `$select`, and names as removed events outside the window as well as deleted ones |
 | List calendars, and calendar resource type | https://learn.microsoft.com/graph/api/user-list-calendars | `GET /me/calendars`, and a calendar's name, colour, `isDefaultCalendar`, `canEdit`, owner and its `calendarView` |
 | event resource type | https://learn.microsoft.com/graph/api/resources/event | An event's properties: start and end in UTC by default, `isAllDay`, `type`, `seriesMasterId`, `showAs`, reminder, `onlineMeeting`, `changeKey` |
+| eventMessage resource type, and Get eventMessage | https://learn.microsoft.com/graph/api/eventmessage-get | A message about a meeting is an `eventMessage`, named by `@odata.type`; `meetingMessageType` says which kind; `GET /me/messages/{id}?$expand=microsoft.graph.eventMessage/event` gives the event in the calendar it is about |
 | recurrencePattern and recurrenceRange resource types | https://learn.microsoft.com/graph/api/resources/recurrencepattern | The six ways an event repeats, what each needs, and the three ways a series ends, in `crates/calendar` |
 
 ## Microsoft identity platform (Microsoft Learn)

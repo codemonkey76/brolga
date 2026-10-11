@@ -271,6 +271,11 @@ fn message_change(message: Message) -> MessageChange {
         sent_at: message.sent_date_time,
         is_read: message.is_read,
         is_draft: message.is_draft,
+        // Said only where the server says what kind of message it is.
+        is_meeting: message
+            .odata_type
+            .as_deref()
+            .map(|kind| kind.contains("eventMessage")),
         has_attachments: message.has_attachments,
         importance: message.importance,
         // The day it is due, where the server says: a flag that comes with

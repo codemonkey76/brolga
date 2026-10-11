@@ -25,9 +25,11 @@
 
     interface Props {
         accounts: Account[];
+        /** A day to open on, when the calendar is come to for one. */
+        startOn?: Date | null;
     }
 
-    let { accounts }: Props = $props();
+    let { accounts, startOn = null }: Props = $props();
 
     const VIEWS: { id: View; name: string }[] = [
         { id: "day", name: "Day" },
@@ -46,7 +48,8 @@
         // The working week, then.
     }
     /** A day in what is shown. */
-    let anchor = $state(startOfDay(new Date()));
+    // svelte-ignore state_referenced_locally
+    let anchor = $state(startOfDay(startOn ?? new Date()));
     let now = $state(new Date());
     let calendars = $state<Calendar[]>([]);
     let events = $state<CalendarEvent[]>([]);

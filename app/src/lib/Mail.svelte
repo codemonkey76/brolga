@@ -9,9 +9,11 @@
 
     interface Props {
         accounts: Account[];
+        /** Show a day in the calendar. */
+        onCalendar: (day: Date) => void;
     }
 
-    let { accounts }: Props = $props();
+    let { accounts, onCalendar }: Props = $props();
 
     const PAGE = 100;
     let accountId = $state<string | null>(null);
@@ -825,6 +827,7 @@
             {saved}
             onSave={save}
             onTrust={trust}
+        {onCalendar}
             onWrite={write}
             onSetRead={markRead}
             onSetFlag={flag}

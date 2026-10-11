@@ -1959,3 +1959,88 @@ async fn an_all_day_event_reminds_before_its_own_midnight_where_the_person_is() 
     assert_eq!(due_at(format!("{before}T13:50:00Z")).await, 1);
     assert_eq!(due_at(format!("{day}T00:00:00Z")).await, 1);
 }
+
+#[tokio::test]
+async fn an_invitation_reads_as_one_with_when_where_and_what_else_is_on() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    let main = f.graph.default_calendar();
+    let day = jiff::Timestamp::now()
+        .checked_add(jiff::Span::new().hours(24 * 10))
+        .unwrap()
+        .strftime("%Y-%m-%d")
+        .to_string();
+    let at = |time: &str| format!("{day}T{time}:00Z");
+    // The meeting itself, tentatively in the calendar as Outlook puts it,
+    // and a dentist's appointment that overlaps it.
+    let event = f.graph.add_event(
+        &main,
+        FakeEvent::new("Budget review", &at("04:00"), &at("05:00")).at("Harbour Room"),
+    );
+    f.graph
+        .add_event(&main, FakeEvent::new("Dentist", &at("04:30"), &at("05:30")));
+    f.graph
+        .add_event(&main, FakeEvent::new("Lunch", &at("02:00"), &at("03:00")));
+    let invite = f.graph.add_message(
+        &f.inbox,
+        message("Budget review", "Sam Taylor", "2026-10-01T09:00:00Z").about_meeting(
+            "meetingRequest",
+            &at("04:00"),
+            &at("05:00"),
+            "Harbour Room",
+            Some(&event),
+        ),
+    );
+    let answer = f.graph.add_message(
+        &f.inbox,
+        message("Accepted: Team lunch", "Jo Nguyen", "2026-10-02T09:00:00Z").about_meeting(
+            "meetingAccepted",
+            &at("02:00"),
+            &at("03:00"),
+            "",
+            None,
+        ),
+    );
+    let plain = f.graph.add_message(
+        &f.inbox,
+        message("Hello", "Sam Taylor", "2026-10-03T09:00:00Z"),
+    );
+    f.sync().await;
+
+    let f = &f;
+    let read = |id: String| async move {
+        f.run("mail.messages.get", json!({ "message_id": id }))
+            .await["meeting"]
+            .clone()
+    };
+
+    let invitation = read(invite.clone()).await;
+    assert_eq!(invitation["kind"], "invitation");
+    assert_eq!(invitation["start"], at("04:00"));
+    assert_eq!(invitation["end"], at("05:00"));
+    assert_eq!(invitation["location"], "Harbour Room");
+    assert_eq!(invitation["event_id"], event);
+    assert_eq!(invitation["time_zone"], "Australia/Brisbane");
+    // The dentist overlaps; lunch does not; and the meeting does not conflict with itself.
+    let conflicts: Vec<&str> = invitation["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["subject"].as_str().unwrap())
+        .collect();
+    assert_eq!(conflicts, ["Dentist"]);
+
+    let accepted = read(answer).await;
+    assert_eq!(accepted["kind"], "accepted");
+    assert_eq!(accepted["start"], at("02:00"));
+    assert_eq!(accepted["event_id"], Value::Null);
+
+    assert_eq!(read(plain).await, Value::Null);
+
+    // Out of reach, an invitation already read is still an invitation.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 40));
+    let offline = read(invite).await;
+    assert_eq!(offline["kind"], "invitation");
+    assert_eq!(offline["start"], at("04:00"));
+}

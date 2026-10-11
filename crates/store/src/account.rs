@@ -289,6 +289,16 @@ const STEPS: &[&str] = &[
         snoozed_until TEXT
     ) STRICT;
 ",
+    "
+    -- A message about a meeting: an invitation, a cancellation or an answer.
+    ALTER TABLE messages ADD COLUMN is_meeting INTEGER NOT NULL DEFAULT 0;
+
+    -- What such a message says of its meeting, as last read from the server.
+    CREATE TABLE meeting_details (
+        message_id TEXT PRIMARY KEY NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
+        details TEXT NOT NULL
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +349,8 @@ pub struct MessageRow {
     pub flag_status: String,
     /// The day it is to be followed up by, `YYYY-MM-DD`, or empty.
     pub flag_due: String,
+    /// It is about a meeting: an invitation, a cancellation or an answer.
+    pub is_meeting: bool,
     /// JSON: an array of strings.
     pub categories: String,
     pub inference: String,
@@ -420,6 +432,7 @@ pub struct MessageChange {
     pub flag_status: Option<String>,
     /// `YYYY-MM-DD`, or empty for none.
     pub flag_due: Option<String>,
+    pub is_meeting: Option<bool>,
     pub categories: Option<String>,
     pub inference: Option<String>,
 }
@@ -873,8 +886,8 @@ impl AccountDb {
             .query_map(params![folder_id, offset, limit], |row| {
                 Ok(ConversationRow {
                     latest: read_message(row)?,
-                    count: row.get(19)?,
-                    unread: row.get(20)?,
+                    count: row.get(20)?,
+                    unread: row.get(21)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -993,6 +1006,30 @@ impl AccountDb {
             }
         }
         transaction.commit()?;
+
+        Ok(())
+    }
+
+    /// What a message about a meeting says of it, as JSON, if that has
+    /// been read from the server.
+    pub fn meeting_details(&self, message_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .connection()
+            .query_row(
+                "SELECT details FROM meeting_details WHERE message_id = ?1",
+                [message_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn save_meeting_details(&self, message_id: &str, details: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "INSERT INTO meeting_details (message_id, details)
+             SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM messages WHERE id = ?1)
+             ON CONFLICT (message_id) DO UPDATE SET details = ?2",
+            params![message_id, details],
+        )?;
 
         Ok(())
     }
@@ -1189,7 +1226,7 @@ impl AccountDb {
 
 const COLUMNS: &str = "id, folder_id, conversation_id, subject, preview, from_name, from_address, to_recipients, \
                        cc_recipients, received_at, sent_at, is_read, is_draft, has_attachments, importance, \
-                       flag_status, categories, inference, flag_due";
+                       flag_status, categories, inference, flag_due, is_meeting";
 
 fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -1212,6 +1249,7 @@ fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         categories: row.get(16)?,
         inference: row.get(17)?,
         flag_due: row.get(18)?,
+        is_meeting: row.get(19)?,
     })
 }
 
@@ -1408,6 +1446,12 @@ fn upsert_message(
             generation
         ],
     )?;
+    if let Some(is_meeting) = m.is_meeting {
+        transaction.execute(
+            "UPDATE messages SET is_meeting = ?2 WHERE id = ?1",
+            params![m.id, is_meeting],
+        )?;
+    }
     if let Some(due) = &m.flag_due {
         transaction.execute(
             "UPDATE messages SET flag_due = ?2 WHERE id = ?1",

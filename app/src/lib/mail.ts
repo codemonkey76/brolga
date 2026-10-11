@@ -78,8 +78,27 @@ export interface Attachment {
     kind: "file" | "item" | "reference";
 }
 
+/** What a message about a meeting says of it. */
+export interface Meeting {
+    kind: "invitation" | "cancellation" | "accepted" | "tentative" | "declined" | "unknown";
+    /** UTC. */
+    start?: string | null;
+    end?: string | null;
+    is_all_day?: boolean;
+    location?: string;
+    time_zone?: string | null;
+    event_id?: string | null;
+    /** Your own answer so far. */
+    response?: string | null;
+    /** What else is in your calendar then. */
+    conflicts?: { subject: string; start: string; end: string }[];
+    /** False where the details could not be read and are not on this computer. */
+    complete: boolean;
+}
+
 export interface Opened {
     message: Message;
+    meeting?: Meeting | null;
     body: { format: "html" | "text"; content: string; blocked_remote_content: number };
     /** The sender's remote pictures are shown without asking. */
     sender_trusted: boolean;

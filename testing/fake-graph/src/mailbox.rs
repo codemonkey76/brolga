@@ -35,11 +35,27 @@ pub struct FakeMessage {
     pub flag_due: Option<String>,
     pub is_draft: bool,
     pub categories: Vec<String>,
+    /// What it says of a meeting, if it is about one.
+    pub meeting: Option<FakeMeeting>,
     /// `(name, address)`. Left empty, the message is to the mailbox's owner.
     pub to: Vec<(String, String)>,
     pub cc: Vec<(String, String)>,
     pub bcc: Vec<(String, String)>,
     pub attachments: Vec<FakeAttachment>,
+}
+
+/// A message about a meeting.
+#[derive(Clone, Debug)]
+pub struct FakeMeeting {
+    /// `meetingRequest`, `meetingCancelled`, `meetingAccepted`,
+    /// `meetingTenativelyAccepted` or `meetingDeclined`.
+    pub kind: String,
+    /// UTC: `2026-10-20T03:00:00Z`.
+    pub start: String,
+    pub end: String,
+    pub location: String,
+    /// The event in the calendar it is about. An answer has none of its own.
+    pub event_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +85,7 @@ impl FakeMessage {
             flag_due: None,
             is_draft: false,
             categories: Vec::new(),
+            meeting: None,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -126,6 +143,25 @@ impl FakeMessage {
             content_id: None,
         });
         self.has_attachments = true;
+        self
+    }
+
+    /// Make it a message about a meeting.
+    pub fn about_meeting(
+        mut self,
+        kind: &str,
+        start: &str,
+        end: &str,
+        location: &str,
+        event_id: Option<&str>,
+    ) -> Self {
+        self.meeting = Some(FakeMeeting {
+            kind: kind.to_owned(),
+            start: start.to_owned(),
+            end: end.to_owned(),
+            location: location.to_owned(),
+            event_id: event_id.map(str::to_owned),
+        });
         self
     }
 
@@ -458,12 +494,42 @@ impl Mailbox {
         if with_body {
             value["body"] = json!({ "contentType": "html", "content": m.body_html });
         }
+        // "eventMessage resource type": a message about a meeting says what
+        // kind it is, in a list as well as on its own.
+        if let Some(meeting) = &m.meeting {
+            let moment = |at: &str| json!({ "dateTime": format!("{}.0000000", at.trim_end_matches('Z')), "timeZone": "UTC" });
+            value["@odata.type"] = json!(if meeting.kind == "meetingRequest"
+                || meeting.kind == "meetingCancelled"
+            {
+                "#microsoft.graph.eventMessageRequest"
+            } else {
+                "#microsoft.graph.eventMessageResponse"
+            });
+            if with_body {
+                value["meetingMessageType"] = json!(meeting.kind);
+                value["startDateTime"] = moment(&meeting.start);
+                value["endDateTime"] = moment(&meeting.end);
+                value["location"] = json!({ "displayName": meeting.location });
+                value["isAllDay"] = json!(false);
+            }
+        }
 
         Some(value)
     }
 
     pub fn message(&self, id: &str) -> Option<Value> {
         self.message_json(id, true)
+    }
+
+    /// The id of the event a message about a meeting is about.
+    pub fn meeting_event(&self, id: &str) -> Option<String> {
+        self.messages
+            .get(id)?
+            .message
+            .meeting
+            .as_ref()?
+            .event_id
+            .clone()
     }
 
     /// A message's attachments as Graph lists them. The contents are given

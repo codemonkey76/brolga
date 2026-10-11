@@ -1323,6 +1323,7 @@ mod tests {
             importance: "normal".to_owned(),
             flag_status: "notFlagged".to_owned(),
             flag_due: String::new(),
+            is_meeting: false,
             categories: "[]".to_owned(),
             inference: "focused".to_owned(),
         };

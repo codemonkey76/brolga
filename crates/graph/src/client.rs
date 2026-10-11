@@ -514,6 +514,18 @@ impl GraphClient {
         self.get(&url, None).await
     }
 
+    /// A message about a meeting, whole, with the event in the calendar
+    /// that it is about ("Get eventMessage", SOURCES.md). As Graph gives it:
+    /// what it holds differs between an invitation and an answer to one.
+    pub async fn meeting_message(&self, message_id: &str) -> Result<serde_json::Value, GraphError> {
+        let url = format!(
+            "{}/me/messages/{message_id}?$expand=microsoft.graph.eventMessage/event",
+            self.base
+        );
+
+        decode(&self.get(&url, None).await?)
+    }
+
     /// The id of the folder a message is in now.
     pub async fn message_folder(&self, message_id: &str) -> Result<Option<String>, GraphError> {
         let url = format!(

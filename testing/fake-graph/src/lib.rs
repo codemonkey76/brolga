@@ -15,7 +15,7 @@ mod mailbox;
 
 pub use calendar::{FakeCalendar, FakeEvent};
 pub use identity::FakeIdentity;
-pub use mailbox::{FakeAttachment, FakeMessage};
+pub use mailbox::{FakeAttachment, FakeMeeting, FakeMessage};
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -787,9 +787,31 @@ async fn folder(State(shared): State<Shared>, Path(folder): Path<String>) -> Res
     }
 }
 
-async fn message(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
-    match lock(&shared).mailbox.message(&message) {
-        Some(message) => axum::Json(message).into_response(),
+async fn message(
+    State(shared): State<Shared>,
+    Path(message): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let found = inner.mailbox.message(&message);
+    // "Get eventMessage" (SOURCES.md): asked to, the event in the calendar
+    // that a message is about comes with it.
+    let expanded = query
+        .get("$expand")
+        .is_some_and(|expand| expand == "microsoft.graph.eventMessage/event");
+    let event = inner
+        .mailbox
+        .meeting_event(&message)
+        .filter(|_| expanded)
+        .and_then(|id| inner.calendars().one(&id));
+
+    match found {
+        Some(mut message) => {
+            if let Some(event) = event {
+                message["event"] = event;
+            }
+            axum::Json(message).into_response()
+        }
         None => error(
             StatusCode::NOT_FOUND,
             "itemNotFound",

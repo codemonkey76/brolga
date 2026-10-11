@@ -42,6 +42,8 @@ export interface FakeMail {
     conversation?: string;
     /** A draft, in the mailbox's Drafts folder. */
     is_draft?: boolean;
+    /** What it says of a meeting, if it is about one. */
+    meeting?: Record<string, unknown>;
     attachments?: { id: string; name: string; content_type: string; size: number; is_inline: boolean; kind: string }[];
     /** HTML as the core would hand it over: already cleaned. */
     body: string;
@@ -402,7 +404,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     args.format === "html"
                         ? { format: "html", content: pictures ? m.bodyWithPictures : m.body, blocked_remote_content: pictures ? 0 : (m.blocked ?? 0) }
                         : { format: "text", content: m.preview, blocked_remote_content: 0 };
-                return { message: shown(m), body, sender_trusted, remote_content_allowed: allowed, note: "" };
+                return { message: shown(m), meeting: m.meeting ?? null, body, sender_trusted, remote_content_allowed: allowed, note: "" };
             },
             "mail.trusted_senders.set": (args) => {
                 if (args.trusted) trusted.add(args.address as string);

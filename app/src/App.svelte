@@ -13,6 +13,8 @@
     let accounts = $state<Account[]>([]);
     let view = $state<View>("accounts");
     let started = $state(false);
+    /** A day the calendar is to open on, when it is come to from a message about a meeting. */
+    let calendarDay = $state<Date | null>(null);
 
     // With an account, the window opens on its mail. Without one, on adding one.
     listAccounts()
@@ -68,9 +70,15 @@
         {#if !started}
             <p class="muted starting" role="status">Starting…</p>
         {:else if view === "mail" && accounts.length > 0}
-            <Mail {accounts} />
+            <Mail
+                {accounts}
+                onCalendar={(day) => {
+                    calendarDay = day;
+                    view = "calendar";
+                }}
+            />
         {:else if view === "calendar" && accounts.length > 0}
-            <Calendar {accounts} />
+            <Calendar {accounts} startOn={calendarDay} />
         {:else if view === "agents"}
             <div class="scroll"><Agents /></div>
         {:else}

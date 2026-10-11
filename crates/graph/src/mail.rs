@@ -128,6 +128,10 @@ pub struct Message {
     pub sent_date_time: Option<String>,
     pub is_read: Option<bool>,
     pub is_draft: Option<bool>,
+    /// What kind of message it is, where it is more than a plain one:
+    /// `#microsoft.graph.eventMessageRequest` for a meeting invitation.
+    #[serde(rename = "@odata.type")]
+    pub odata_type: Option<String>,
     pub has_attachments: Option<bool>,
     /// `low`, `normal` or `high`.
     pub importance: Option<String>,

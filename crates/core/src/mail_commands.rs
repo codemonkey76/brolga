@@ -599,13 +599,111 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
         _ => json!({ "format": "text", "content": as_text(&body), "blocked_remote_content": 0 }),
     };
 
+    let meeting = if row.is_meeting {
+        meeting(&mailbox, &row).await
+    } else {
+        Value::Null
+    };
+
     Ok(json!({
         "message": shown(&row),
+        "meeting": meeting,
         "body": shown_body,
         "sender_trusted": sender_trusted,
         "remote_content_allowed": remote == RemoteContent::Allowed,
         "note": UNTRUSTED
     }))
+}
+
+/// What a message about a meeting says of it: what kind of message it is,
+/// when and where the meeting is, and what else is on then. Read from the
+/// server and kept; where it cannot be read and has not been kept, only
+/// that the message is about a meeting is known.
+async fn meeting(mailbox: &crate::mailboxes::Mailbox, row: &MessageRow) -> Value {
+    let details: Option<Value> = match mailbox.graph.meeting_message(&row.id).await {
+        Ok(fresh) => {
+            let _ = mailbox.db.save_meeting_details(&row.id, &fresh.to_string());
+            Some(fresh)
+        }
+        Err(_) => mailbox
+            .db
+            .meeting_details(&row.id)
+            .ok()
+            .flatten()
+            .and_then(|kept| serde_json::from_str(&kept).ok()),
+    };
+    let Some(details) = details else {
+        return json!({ "kind": "unknown", "complete": false });
+    };
+
+    // An invitation carries the event in the calendar; an answer to one
+    // carries the times itself. Either way they are put in UTC.
+    let event = &details["event"];
+    let moment = |own: &str, of_event: &str| {
+        [&event[of_event], &details[own]]
+            .into_iter()
+            .find_map(|at| {
+                brolga_calendar::utc(
+                    at["dateTime"].as_str()?,
+                    at["timeZone"].as_str().unwrap_or("UTC"),
+                )
+            })
+    };
+    let (start, end) = (
+        moment("startDateTime", "start"),
+        moment("endDateTime", "end"),
+    );
+    let text = |own: &Value, of_event: &Value| {
+        of_event
+            .as_str()
+            .or(own.as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let event_id = event["id"].as_str();
+
+    // What else is on then, from this computer's copy of the calendar:
+    // anything but the meeting itself, a cancelled event, or free time.
+    let conflicts: Vec<Value> = match (&start, &end) {
+        (Some(start), Some(end)) => mailbox
+            .db
+            .events_between(start, end, true)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|other| {
+                Some(other.id.as_str()) != event_id
+                    && !other.is_cancelled
+                    && other.show_as != "free"
+                    && !other.is_all_day
+            })
+            .map(
+                |other| json!({ "subject": other.subject, "start": other.start, "end": other.end }),
+            )
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    json!({
+        "kind": match details["meetingMessageType"].as_str().unwrap_or_default() {
+            "meetingRequest" => "invitation",
+            "meetingCancelled" => "cancellation",
+            "meetingAccepted" => "accepted",
+            "meetingTenativelyAccepted" => "tentative",
+            "meetingDeclined" => "declined",
+            _ => "unknown",
+        },
+        "start": start,
+        "end": end,
+        "is_all_day": event["isAllDay"].as_bool().or(details["isAllDay"].as_bool()).unwrap_or(false),
+        "location": text(&details["location"]["displayName"], &event["location"]["displayName"]),
+        "time_zone": event["originalStartTimeZone"]
+            .as_str()
+            .map(|zone| brolga_calendar::iana_zone(zone).unwrap_or(zone)),
+        "event_id": event_id,
+        "response": event["responseStatus"]["response"].as_str(),
+        "conflicts": conflicts,
+        "complete": true,
+    })
 }
 
 async fn trusted_senders(context: Context, args: TrustedSenders) -> Result<Value, CommandError> {
@@ -1184,6 +1282,28 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                             "blocked_remote_content": { "type": "integer" }
                         },
                         "required": ["format", "content", "blocked_remote_content"]
+                    },
+                    "meeting": {
+                        "description": "For a message about a meeting, what it says of it; null for any other message.",
+                        "anyOf": [
+                            { "type": "null" },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "kind": { "enum": ["invitation", "cancellation", "accepted", "tentative", "declined", "unknown"], "description": "An invitation or cancellation from the organiser, or someone's answer to an invitation." },
+                                    "start": { "type": ["string", "null"], "description": "UTC." },
+                                    "end": { "type": ["string", "null"] },
+                                    "is_all_day": { "type": "boolean" },
+                                    "location": { "type": "string" },
+                                    "time_zone": { "type": ["string", "null"] },
+                                    "event_id": { "type": ["string", "null"], "description": "The event in the calendar, for calendar.events.get." },
+                                    "response": { "type": ["string", "null"], "description": "The owner's own answer so far." },
+                                    "conflicts": { "type": "array", "items": { "type": "object" }, "description": "What else is in the calendar at that time." },
+                                    "complete": { "type": "boolean", "description": "False where the details could not be read and are not on this computer." }
+                                },
+                                "required": ["kind", "complete"]
+                            }
+                        ]
                     },
                     "sender_trusted": { "type": "boolean", "description": "The sender is on this computer's list of trusted senders." },
                     "remote_content_allowed": { "type": "boolean", "description": "Remote images were fetched for this answer." },

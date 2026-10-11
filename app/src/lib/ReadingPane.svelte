@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Archive, Flag, Forward, Mail as Unread, MailOpen, OctagonAlert, Paperclip, Reply, ReplyAll, Tag, Trash } from "@lucide/svelte";
+    import { Archive, CalendarDays, Flag, Forward, Mail as Unread, MailOpen, OctagonAlert, Paperclip, Reply, ReplyAll, Tag, Trash } from "@lucide/svelte";
     import { type Attachment, type Category, type FlagStatus, type Folder, type Message, type Opened, categoryColour, dueSaid, flagDays, size, when, who } from "./mail";
 
     interface Props {
@@ -16,6 +16,8 @@
         saved: string | null;
         /** Save to the downloads folder, or with `ask` to a place chosen in a dialog. */
         onSave: (attachment: Attachment, ask?: boolean) => void;
+        /** Show a day in the calendar. */
+        onCalendar: (day: Date) => void;
         /** Start an answer to the message. */
         onWrite: (kind: "reply" | "reply_all" | "forward" | "forward_as_attachment") => void;
         onSetRead: (isRead: boolean) => void;
@@ -42,8 +44,31 @@
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onWrite, onSetRead, onSetFlag, categories, onCategorise, folders, within, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onCalendar, onWrite, onSetRead, onSetFlag, categories, onCategorise, folders, within, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
+
+    const MEETING: Record<string, string> = {
+        invitation: "Meeting invitation",
+        cancellation: "This meeting was cancelled",
+        accepted: "Accepted",
+        tentative: "Tentatively accepted",
+        declined: "Declined",
+        unknown: "About a meeting",
+    };
+    const ANSWERED: Record<string, string> = { accepted: "You accepted", tentativelyAccepted: "You accepted tentatively", declined: "You declined" };
+
+    /** When a meeting is, in this computer's own time. An all-day one is read as the days it names. */
+    function meetingWhen(meeting: NonNullable<Opened["meeting"]>): string {
+        if (!meeting.start || !meeting.end) return "";
+        const day: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short", year: "numeric" };
+        if (meeting.is_all_day) {
+            const [year, month, date] = meeting.start.slice(0, 10).split("-").map(Number);
+            return `${new Date(year, month - 1, date).toLocaleDateString(undefined, day)}, all day`;
+        }
+        const time: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+        const [start, end] = [new Date(meeting.start), new Date(meeting.end)];
+        return `${start.toLocaleDateString(undefined, day)}, ${start.toLocaleTimeString(undefined, time)} to ${end.toLocaleTimeString(undefined, time)}`;
+    }
     let dayMenu = $state<HTMLDetailsElement>();
 
     function due(day: string) {
@@ -295,6 +320,35 @@
             {/if}
         </header>
 
+        {#if opened.meeting}
+            {@const meeting = opened.meeting}
+            <section class="meeting" class:off={meeting.kind === "cancellation"} aria-label="Meeting">
+                <CalendarDays size={20} aria-hidden="true" />
+                <div>
+                    <p class="kind">{meeting.kind === "accepted" || meeting.kind === "tentative" || meeting.kind === "declined" ? `${who(opened.message.from)}: ${MEETING[meeting.kind].toLowerCase()}` : MEETING[meeting.kind]}</p>
+                    {#if meeting.start}
+                        <p>{meetingWhen(meeting)}</p>
+                    {/if}
+                    {#if meeting.location}<p>📍 {meeting.location}</p>{/if}
+                    {#if !meeting.complete}
+                        <p class="muted">Its time and place show when Microsoft 365 can be reached.</p>
+                    {/if}
+                    {#if meeting.kind === "invitation"}
+                        {#if (meeting.conflicts ?? []).length > 0}
+                            <p class="clash">Clashes with {(meeting.conflicts ?? []).map((c) => c.subject || "(No subject)").join(", ")}</p>
+                        {:else if meeting.complete}
+                            <p class="muted">Nothing else in your calendar then.</p>
+                        {/if}
+                        {#if meeting.response && ANSWERED[meeting.response]}<p class="muted">{ANSWERED[meeting.response]}.</p>{/if}
+                    {/if}
+                </div>
+                {#if meeting.start}
+                    {@const start = meeting.start}
+                    <button type="button" onclick={() => onCalendar(new Date(start))}>Show in calendar</button>
+                {/if}
+            </section>
+        {/if}
+
         {#if attachments.length > 0}
             <ul class="attachments" aria-label="Attachments">
                 {#each attachments as each (each.id)}
@@ -371,6 +425,43 @@
 </section>
 
 <style>
+    .meeting {
+        flex: none;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+        padding: 0.6rem 1rem;
+        border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    }
+
+    .meeting.off {
+        background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+    }
+
+    .meeting div {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .meeting p {
+        margin: 0;
+        font-size: 0.9rem;
+    }
+
+    .meeting .kind {
+        font-weight: 600;
+    }
+
+    .meeting .clash {
+        color: var(--danger);
+    }
+
+    .meeting button {
+        flex: none;
+        font-size: 0.85rem;
+    }
+
     .actions {
         display: flex;
         flex-wrap: wrap;
