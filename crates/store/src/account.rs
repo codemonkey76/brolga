@@ -121,6 +121,22 @@ const STEPS: &[&str] = &[
         address TEXT PRIMARY KEY NOT NULL COLLATE NOCASE
     ) STRICT;
 ",
+    "
+    -- The pictures shown within a message's body, by the name the body
+    -- calls each. A message is in inline_image_sets once they are fetched.
+    CREATE TABLE inline_image_sets (
+        message_id TEXT PRIMARY KEY NOT NULL REFERENCES messages (id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE inline_images (
+        message_id TEXT NOT NULL REFERENCES inline_image_sets (message_id) ON DELETE CASCADE,
+        content_id TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        -- base64
+        data TEXT NOT NULL,
+        PRIMARY KEY (message_id, content_id)
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +201,16 @@ pub struct AttachmentRow {
     pub is_inline: bool,
     /// `file`, `item` or `reference`.
     pub kind: String,
+}
+
+/// A picture shown within a message's body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineImage {
+    /// The name the body calls it by, without the `cid:`.
+    pub content_id: String,
+    pub content_type: String,
+    /// base64
+    pub data: String,
 }
 
 /// The order a folder's messages are listed in.
@@ -632,6 +658,63 @@ impl AccountDb {
                 },
             )
             .optional()?)
+    }
+
+    /// The pictures within a message's body, or nothing if they have not
+    /// been fetched yet.
+    pub fn inline_images(&self, message_id: &str) -> Result<Option<Vec<InlineImage>>, StoreError> {
+        let connection = self.connection();
+        let fetched: bool = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM inline_image_sets WHERE message_id = ?1)",
+            [message_id],
+            |row| row.get(0),
+        )?;
+        if !fetched {
+            return Ok(None);
+        }
+
+        let mut statement = connection.prepare(
+            "SELECT content_id, content_type, data FROM inline_images WHERE message_id = ?1",
+        )?;
+        let rows = statement
+            .query_map([message_id], |row| {
+                Ok(InlineImage {
+                    content_id: row.get(0)?,
+                    content_type: row.get(1)?,
+                    data: row.get(2)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(Some(rows))
+    }
+
+    pub fn save_inline_images(
+        &self,
+        message_id: &str,
+        images: &[InlineImage],
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM inline_image_sets WHERE message_id = ?1",
+            [message_id],
+        )?;
+        let known = transaction.execute(
+            "INSERT INTO inline_image_sets (message_id) SELECT ?1 WHERE EXISTS (SELECT 1 FROM messages WHERE id = ?1)",
+            [message_id],
+        )?;
+        if known > 0 {
+            for each in images {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO inline_images (message_id, content_id, content_type, data) VALUES (?1, ?2, ?3, ?4)",
+                    params![message_id, each.content_id, each.content_type, each.data],
+                )?;
+            }
+        }
+        transaction.commit()?;
+
+        Ok(())
     }
 
     /// Whose remote pictures are fetched without asking, in order.

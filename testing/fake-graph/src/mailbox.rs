@@ -40,6 +40,8 @@ pub struct FakeAttachment {
     pub inline: bool,
     /// `file`, `item` or `reference`.
     pub kind: &'static str,
+    /// What the body calls it by, for a picture shown within it.
+    pub content_id: Option<String>,
 }
 
 impl FakeMessage {
@@ -70,8 +72,29 @@ impl FakeMessage {
             content: content.to_vec(),
             inline: false,
             kind: "file",
+            content_id: None,
         });
         self.has_attachments = true;
+        self
+    }
+
+    /// Attach a picture the body shows as `<img src="cid:{content_id}">`.
+    /// As in real mail, it does not make the message one "with attachments".
+    pub fn attach_inline(
+        mut self,
+        name: &str,
+        content_type: &str,
+        content_id: &str,
+        content: &[u8],
+    ) -> Self {
+        self.attachments.push(FakeAttachment {
+            name: name.to_owned(),
+            content_type: content_type.to_owned(),
+            content: content.to_vec(),
+            inline: true,
+            kind: "file",
+            content_id: Some(content_id.to_owned()),
+        });
         self
     }
 
@@ -83,6 +106,7 @@ impl FakeMessage {
             content: Vec::new(),
             inline: false,
             kind: "reference",
+            content_id: None,
         });
         self.has_attachments = true;
         self
@@ -405,6 +429,7 @@ impl Mailbox {
                     "isInline": a.inline,
                 });
                 if with_content && a.kind == "file" {
+                    value["contentId"] = json!(a.content_id);
                     value["contentBytes"] =
                         json!(base64::engine::general_purpose::STANDARD.encode(&a.content));
                 }
@@ -413,6 +438,13 @@ impl Mailbox {
             .collect();
 
         Some(json!({ "value": listed }))
+    }
+
+    /// One attachment as Graph gives it when asked for by id: whole.
+    pub fn attachment_json(&self, message: &str, attachment: &str) -> Option<Value> {
+        let at: usize = attachment.strip_prefix("attachment-")?.parse().ok()?;
+
+        self.attachments(message, true)?["value"].get(at).cloned()
     }
 
     /// One attachment: its kind, content type and contents.

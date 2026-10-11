@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use brolga_commands::{CommandError, CommandKind, CommandSpec, Handler, Registry, RegistryError};
 use brolga_mail::{RemoteContent, html_to_text, sanitise_html, text_to_html};
-use brolga_store::{AttachmentRow, Body, MessageRow, Order};
+use brolga_store::{AttachmentRow, Body, InlineImage, MessageRow, Order};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -347,6 +347,86 @@ async fn attached(
     Ok(rows)
 }
 
+/// How a cleaned body refers to a picture attached to its message.
+const CID: &str = "src=\"cid:";
+/// The most pictures put into one message, and the largest of them.
+const MAX_INLINE_IMAGES: usize = 40;
+const MAX_INLINE_BYTES: i64 = 3 * 1024 * 1024;
+/// Plain picture types only. SVG is not one: it can carry scripts.
+const PICTURE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// The pictures within a message's body: from this computer if they have
+/// been fetched before, otherwise from Graph, and then kept. If they cannot
+/// be had now there are none, and they are asked for again next time.
+async fn inline_images(mailbox: &crate::mailboxes::Mailbox, message_id: &str) -> Vec<InlineImage> {
+    if let Ok(Some(kept)) = mailbox.db.inline_images(message_id) {
+        return kept;
+    }
+    let Ok(attached) = attached(mailbox, message_id).await else {
+        return Vec::new();
+    };
+
+    let mut images = Vec::new();
+    for each in attached
+        .iter()
+        .filter(|a| a.is_inline && a.kind == "file" && a.size <= MAX_INLINE_BYTES)
+        .filter(|a| PICTURE_TYPES.contains(&a.content_type.to_ascii_lowercase().as_str()))
+        .take(MAX_INLINE_IMAGES)
+    {
+        let Ok(whole) = mailbox.graph.file_attachment(message_id, &each.id).await else {
+            return Vec::new();
+        };
+        let (Some(content_id), Some(data)) = (whole.content_id, whole.content_bytes) else {
+            continue;
+        };
+        // It goes into an attribute as it is, so it must be base64 and nothing else.
+        if !data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+        {
+            continue;
+        }
+        images.push(InlineImage {
+            content_id: content_id.trim_matches(['<', '>']).to_owned(),
+            content_type: each.content_type.to_ascii_lowercase(),
+            data,
+        });
+    }
+    let _ = mailbox.db.save_inline_images(message_id, &images);
+
+    images
+}
+
+/// Put each picture in place of the `cid:` name that refers to it. A name
+/// with no picture loses its `src`, so the view has nothing to try.
+fn with_inline_images(html: &str, images: &[InlineImage]) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+
+    while let Some(at) = rest.find(CID) {
+        let start = at + CID.len();
+        let Some(length) = rest[start..].find('"') else {
+            break;
+        };
+        // The cleaner writes attribute values with `&` as `&amp;`.
+        let name = rest[start..start + length].replace("&amp;", "&");
+        out.push_str(&rest[..at]);
+        if let Some(image) = images
+            .iter()
+            .find(|i| i.content_id.eq_ignore_ascii_case(name.trim()))
+        {
+            out.push_str(&format!(
+                "src=\"data:{};base64,{}\"",
+                image.content_type, image.data
+            ));
+        }
+        rest = &rest[start + length + 1..];
+    }
+    out.push_str(rest);
+
+    out
+}
+
 async fn attachments(context: Context, args: Attachments) -> Result<Value, CommandError> {
     let account = context
         .account(args.account_id.as_deref())
@@ -468,6 +548,12 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
             let (content, missing) = match remote {
                 RemoteContent::Allowed => context.images.inline(&clean.html).await,
                 RemoteContent::Blocked => (clean.html, 0),
+            };
+            let content = if content.contains(CID) {
+                let images = inline_images(&mailbox, &args.message_id).await;
+                with_inline_images(&content, &images)
+            } else {
+                content
             };
             json!({ "format": "html", "content": content, "blocked_remote_content": clean.blocked_remote + missing })
         }

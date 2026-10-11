@@ -73,6 +73,10 @@ impl FakeGraph {
             .route("/v1.0/me/messages/{message}", get(message))
             .route("/v1.0/me/messages/{message}/attachments", get(attachments))
             .route(
+                "/v1.0/me/messages/{message}/attachments/{attachment}",
+                get(attachment),
+            )
+            .route(
                 "/v1.0/me/messages/{message}/attachments/{attachment}/$value",
                 get(attachment_content),
             )
@@ -416,6 +420,20 @@ async fn attachments(
             StatusCode::NOT_FOUND,
             "itemNotFound",
             "There is no such message.",
+        ),
+    }
+}
+
+async fn attachment(
+    State(shared): State<Shared>,
+    Path((message, attachment)): Path<(String, String)>,
+) -> Response {
+    match lock(&shared).mailbox.attachment_json(&message, &attachment) {
+        Some(found) => axum::Json(found).into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such attachment.",
         ),
     }
 }

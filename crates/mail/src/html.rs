@@ -77,7 +77,9 @@ pub fn sanitise_html(html: &str, remote: RemoteContent) -> Sanitised {
 
 /// An image may be one carried inside the message itself, as a `data:` URL
 /// of a plain picture type. One on the web stays only if remote content is
-/// allowed. Anything else, `cid:` included until attachments are built, goes.
+/// allowed. One attached to the message (`cid:`) is kept by its name: the
+/// name fetches nothing, and the core puts the picture in its place.
+/// Anything else goes.
 fn image_source<'a>(
     value: &'a str,
     remote: RemoteContent,
@@ -94,6 +96,9 @@ fn image_source<'a>(
     .iter()
     .any(|p| lower.starts_with(p))
     {
+        return Some(Cow::Borrowed(value));
+    }
+    if lower.starts_with("cid:") {
         return Some(Cow::Borrowed(value));
     }
     if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("//") {
@@ -213,7 +218,7 @@ fn builder() -> Builder<'static> {
             ]
             .into(),
         )
-        .url_schemes(["http", "https", "mailto", "data"].into())
+        .url_schemes(["http", "https", "mailto", "data", "cid"].into())
         // Addresses are checked one by one in the attribute filter, which
         // has to see the relative ones too in order to count blocked images.
         .url_relative(UrlRelative::PassThrough)
@@ -472,5 +477,21 @@ mod tests {
             text_to_html("1 < 2 & <script>x</script>"),
             "<pre>1 &lt; 2 &amp; &lt;script&gt;x&lt;/script&gt;</pre>"
         );
+    }
+
+    #[test]
+    fn a_picture_attached_to_the_message_keeps_its_name_and_nothing_else_may_use_one() {
+        let clean = sanitise_html(
+            "<img src=\"cid:logo@example\"><a href=\"cid:logo@example\">x</a>",
+            RemoteContent::Blocked,
+        );
+
+        assert!(
+            clean.html.contains("<img src=\"cid:logo@example\">"),
+            "{}",
+            clean.html
+        );
+        assert!(!clean.html.contains("href=\"cid:"), "{}", clean.html);
+        assert_eq!(clean.blocked_remote, 0);
     }
 }

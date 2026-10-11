@@ -10,7 +10,9 @@ use tokio::sync::Semaphore;
 
 use crate::delta::read_page;
 use crate::mail::{ATTACHMENT_SELECT, FOLDER_SELECT, MESSAGE_SELECT};
-use crate::{Attachment, DeltaPage, GraphError, ItemBody, MailFolder, Message, RetryPolicy};
+use crate::{
+    Attachment, DeltaPage, FileAttachment, GraphError, ItemBody, MailFolder, Message, RetryPolicy,
+};
 
 /// How many requests may be in flight for one mailbox at once. Low on
 /// purpose: Graph throttles a mailbox on concurrency as well as on volume.
@@ -138,6 +140,21 @@ impl GraphClient {
                 None => return Ok(all),
             }
         }
+    }
+
+    /// One file attachment whole: its contents, and the name a body refers
+    /// to it by. For the pictures within a message, which are small.
+    pub async fn file_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<FileAttachment, GraphError> {
+        let url = format!(
+            "{}/me/messages/{message_id}/attachments/{attachment_id}",
+            self.base
+        );
+
+        decode(&self.get(&url, None).await?)
     }
 
     /// The contents of a file attachment as they were attached, or of an

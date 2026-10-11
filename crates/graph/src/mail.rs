@@ -86,6 +86,18 @@ impl Attachment {
     }
 }
 
+/// A file attachment whole, contents included ("Get attachment", example 1).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAttachment {
+    pub id: String,
+    pub content_type: Option<String>,
+    /// What a body calls it by: `<img src="cid:…">`.
+    pub content_id: Option<String>,
+    /// The file, base64-encoded.
+    pub content_bytes: Option<String>,
+}
+
 pub(crate) const ATTACHMENT_SELECT: &str = "id,name,contentType,size,isInline";
 
 /// A message, as far as the list needs it. The body is fetched on its own.

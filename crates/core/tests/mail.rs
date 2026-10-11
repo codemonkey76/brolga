@@ -343,6 +343,48 @@ async fn with_no_window_the_core_keeps_mail_up_to_date_itself() {
 }
 
 #[tokio::test]
+async fn a_picture_within_a_message_is_shown_and_kept_for_offline() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Signed", "Sam Taylor", "2026-10-01T09:00:00Z")
+            .body(
+                "<p>Regards</p><img src=\"cid:logo@example\"><img src=\"cid:missing@example\">\
+                 <img src=\"cid:drawing@example\">",
+            )
+            .attach_inline("logo.png", "image/png", "logo@example", b"\x89PNG fake")
+            .attach_inline("drawing.svg", "image/svg+xml", "drawing@example", b"<svg/>"),
+    );
+    f.sync().await;
+    let read = || {
+        f.run(
+            "mail.messages.get",
+            json!({ "message_id": id, "format": "html" }),
+        )
+    };
+
+    let first = read().await;
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 50));
+    let offline = read().await;
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": f.inbox }))
+        .await;
+
+    let html = first["body"]["content"].as_str().unwrap();
+    assert!(
+        html.contains("src=\"data:image/png;base64,iVBORyBmYWtl\""),
+        "{html}"
+    );
+    // A name with no picture, and a picture that is not a plain one, show nothing.
+    assert!(!html.contains("cid:") && !html.contains("svg"), "{html}");
+    assert_eq!(html.matches("<img").count(), 3);
+    assert_eq!(first["body"]["blocked_remote_content"], 0);
+    assert_eq!(offline["body"], first["body"]);
+    assert_eq!(listed["messages"][0]["has_attachments"], false);
+}
+
+#[tokio::test]
 async fn a_long_folder_is_paged() {
     let f = Fixture::signed_in().await;
     f.graph.add_messages(&f.inbox, 130);

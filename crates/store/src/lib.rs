@@ -11,8 +11,8 @@ mod global;
 mod migrate;
 
 pub use account::{
-    AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, MessageChange,
-    MessageRow, Order, Round, SyncState,
+    AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, InlineImage,
+    MessageChange, MessageRow, Order, Round, SyncState,
 };
 pub use global::{Account, GlobalDb};
 
