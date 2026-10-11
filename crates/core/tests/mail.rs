@@ -3831,3 +3831,56 @@ async fn a_shared_mailbox_brings_its_calendar_which_is_read_and_written_in_that_
         2
     );
 }
+
+#[tokio::test]
+async fn a_calendar_someone_shared_without_their_mail_is_added_as_a_calendar_alone() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_shared_calendar("alex@example.test");
+    f.graph.add_shared_event(
+        "alex@example.test",
+        brolga_fake_graph::FakeEvent::new(
+            "Board meeting",
+            "2026-10-14T01:00:00Z",
+            "2026-10-14T02:00:00Z",
+        ),
+    );
+    f.sync().await;
+
+    let added = f
+        .run(
+            "accounts.shared.add",
+            json!({ "address": "alex@example.test" }),
+        )
+        .await;
+    assert_eq!(added["mailbox"]["calendar_only"], true);
+    let id = added["mailbox"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        f.run("accounts.shared.list", json!({})).await["mailboxes"][0]["calendar_only"],
+        true
+    );
+
+    // It syncs without its mail being asked for, and without that being a failure.
+    let synced = f.run("mail.sync", json!({})).await;
+    let theirs = synced["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["account_id"] == id.as_str())
+        .unwrap();
+    assert_eq!(theirs["ok"], true, "{theirs}");
+    assert_eq!(theirs["calendar_error"], Value::Null);
+    assert!(
+        !f.graph
+            .requests()
+            .iter()
+            .any(|each| each.contains("alex@example.test/mailFolders/delta")),
+    );
+
+    let events = f
+        .run(
+            "calendar.events.list",
+            json!({ "account_id": id, "start": "2026-10-12T00:00:00Z", "end": "2026-10-19T00:00:00Z" }),
+        )
+        .await;
+    assert_eq!(events["events"][0]["subject"], "Board meeting");
+}

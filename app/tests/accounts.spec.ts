@@ -419,3 +419,20 @@ test("categories are added, recoloured and deleted", async ({ page }) => {
     await expect(rows).toHaveCount(3);
     await expect(section).not.toContainText("Plain");
 });
+
+test("a person who shared only their calendar is added the same way, and is in Calendar and not in Mail", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Shared mailboxes" }).click();
+    const section = page.getByRole("region", { name: "Shared mailboxes of robin@example.test" });
+    await section.getByRole("textbox", { name: "Address of a shared mailbox" }).fill("alex@example.test");
+    await section.getByRole("button", { name: "Add" }).click();
+    await expect(section.getByRole("listitem")).toContainText("Alex Chen · alex@example.test (calendar only)");
+
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    await expect(page.getByRole("navigation", { name: "Folders" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Account" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Account" }).getByRole("option")).toHaveText(["robin@example.test", "↳ alex@example.test (shared)"]);
+});

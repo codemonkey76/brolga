@@ -50,6 +50,8 @@ struct Inner {
     /// The calendars of each of those mailboxes, which stand in the owner's
     /// place with it.
     other_calendars: HashMap<String, Option<calendar::Calendars>>,
+    /// Those of them of which the owner was given the calendar and no mail.
+    calendar_only: std::collections::HashSet<String>,
     /// One request at a time: a request for another mailbox stands that
     /// mailbox in the owner's place while it is answered.
     turn: Arc<tokio::sync::Mutex<()>>,
@@ -392,6 +394,15 @@ impl FakeGraph {
         let calendar = calendars.default_calendar();
 
         calendars.truth(&calendar, after, before)
+    }
+
+    /// Give the owner someone else's calendar, and nothing of their mail.
+    pub fn add_shared_calendar(&self, address: &str) {
+        let mut inner = lock(&self.shared);
+        inner
+            .others
+            .insert(address.to_lowercase(), (mailbox::Mailbox::default(), false));
+        inner.calendar_only.insert(address.to_lowercase());
     }
 
     /// Take a mailbox the owner was given away again.
@@ -814,6 +825,14 @@ async fn other_mailbox(State(shared): State<Shared>, mut request: Request, next:
         has("Mail.ReadWrite.Shared") || (reading && has("Mail.Read.Shared"))
     };
     if !allowed {
+        return error(
+            StatusCode::FORBIDDEN,
+            "ErrorAccessDenied",
+            "Access is denied. Check credentials and try again.",
+        );
+    }
+    let calendar = rest.starts_with("calendar") || rest.starts_with("events");
+    if !calendar && lock(&shared).calendar_only.contains(&address) {
         return error(
             StatusCode::FORBIDDEN,
             "ErrorAccessDenied",

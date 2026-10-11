@@ -179,7 +179,7 @@ export interface FakeCore {
     /** Microsoft 365 cannot be reached. */
     offline?: boolean;
     /** Mailboxes other people have shared with an account. */
-    shared?: { id: string; account_id: string; address: string; name: string }[];
+    shared?: { id: string; account_id: string; address: string; name: string; calendar_only?: boolean }[];
     /** Personal contacts. */
     contacts?: Record<string, unknown>[];
     /** People of the organisation, for looking up. */
@@ -881,6 +881,11 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "accounts.list": () => ({ accounts }),
             "accounts.shared.list": () => ({ mailboxes: core.shared ?? [] }),
             "accounts.shared.add": (args) => {
+                if (String(args.address).startsWith("alex")) {
+                    const added = { id: `${args.account_id}~${args.address}`, account_id: args.account_id as string, address: args.address as string, name: "Alex Chen", calendar_only: true };
+                    core.shared = [...(core.shared ?? []), added];
+                    return { mailbox: added };
+                }
                 if (!String(args.address).startsWith("support")) {
                     throw { code: "failed", message: `There is no mailbox \`${args.address}\`, or you have not been given access to it.` };
                 }

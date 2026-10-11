@@ -49,6 +49,8 @@ export interface SharedMailbox {
     account_id: string;
     address: string;
     name: string;
+    /** Only its calendar was shared: there is no mail of it to read. */
+    calendar_only?: boolean;
 }
 
 export const listShared = async () => (await execute<{ mailboxes: SharedMailbox[] }>("accounts.shared.list")).mailboxes;
@@ -58,12 +60,12 @@ export const addShared = async (account_id: string, address: string) =>
 
 export const removeShared = (mailbox_id: string) => execute("accounts.shared.remove", { mailbox_id });
 
-/** Every mailbox there is to read mail in: each account, followed by those shared with it. */
-export function mailboxes(accounts: Account[], shared: SharedMailbox[]): Account[] {
+/** Every mailbox there is to read mail in: each account, followed by those shared with it. For calendars, those of which only the calendar was shared are among them. */
+export function mailboxes(accounts: Account[], shared: SharedMailbox[], calendars = false): Account[] {
     return accounts.flatMap((account) => [
         account,
         ...shared
-            .filter((each) => each.account_id === account.id)
+            .filter((each) => each.account_id === account.id && (calendars || !each.calendar_only))
             .map((each) => ({ ...account, id: each.id, username: each.address, display_name: each.name || null, shared_with: account.id })),
     ]);
 }

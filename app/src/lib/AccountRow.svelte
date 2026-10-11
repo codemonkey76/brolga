@@ -127,11 +127,11 @@
 
     {#if sharing}
         <section class="shared" aria-label="Shared mailboxes of {account.username}">
-            <p class="muted">A mailbox someone has given you access to. Microsoft 365 will not list them, so add each by its address.</p>
+            <p class="muted">A mailbox someone has given you access to, or a person who has shared only their calendar. Microsoft 365 will not list them, so add each by its address.</p>
             <ul>
                 {#each sharing as each (each.id)}
                     <li>
-                        <span>{each.name ? `${each.name} · ` : ""}{each.address}</span>
+                        <span>{each.name ? `${each.name} · ` : ""}{each.address}{each.calendar_only ? " (calendar only)" : ""}</span>
                         <button type="button" aria-label={`Remove ${each.address}`} onclick={() => unshare(each)}>Remove</button>
                     </li>
                 {/each}

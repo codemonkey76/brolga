@@ -21,6 +21,8 @@ pub(crate) struct Mailbox {
     /// The address of the mailbox, where it is one someone else shared and
     /// not the mailbox of whoever is signed in.
     pub shared: Option<String>,
+    /// Someone else's mailbox of which only the calendar was shared.
+    pub calendar_only: bool,
     /// Sends the changes made here to the server.
     pub outbox: Arc<brolga_ops::Outbox>,
     /// One sync of an account at a time: two would fetch the same pages.
@@ -65,6 +67,9 @@ const SHARED: char = '~';
 pub(crate) struct SharedMailbox {
     pub address: String,
     pub name: String,
+    /// Only its calendar was shared: there is no mail of it to read.
+    #[serde(default)]
+    pub calendar_only: bool,
 }
 
 impl SharedMailbox {
@@ -230,6 +235,7 @@ impl Mailboxes {
             Some((owner, address)) => (owner.to_owned(), Some(address.to_owned())),
             None => (account.id.clone(), None),
         };
+        let owner_id = owner.clone();
         let tokens = Arc::new(AccountTokens {
             accounts: self.accounts.clone(),
             account_id: owner,
@@ -250,6 +256,12 @@ impl Mailboxes {
             outbox: Arc::new(brolga_ops::Outbox::new(graph.clone(), db.clone())),
             db,
             graph,
+            calendar_only: shared.as_ref().is_some_and(|address| {
+                self.shared(&owner_id)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|each| each.calendar_only && &each.address == address)
+            }),
             shared,
             syncing: Mutex::new(()),
             lock_file: path.map(|path| path.with_extension("sync-lock")),
