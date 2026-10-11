@@ -290,7 +290,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .manage(Asked(tokio::sync::Mutex::new(asked)))
         .setup(move |app| {
             let _ = window.set(app.handle().clone());
-            let has_tray = tray(app.handle(), for_tray).is_ok();
+            // On Linux the tray is drawn by a library that may not be
+            // installed, and the code that looks for it gives up by
+            // panicking. That is caught: there is then no tray, and Brolga
+            // carries on as it does on a desktop that has none.
+            let handle = app.handle().clone();
+            let has_tray = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tray(&handle, for_tray).is_ok()
+            }))
+            .unwrap_or(false);
             staying.tray.store(has_tray, Ordering::Relaxed);
             let chosen = tauri::async_runtime::block_on(
                 at_start.execute("app.desktop.get", serde_json::json!({})),

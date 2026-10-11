@@ -46,6 +46,14 @@ pub fn default_endpoint() -> io::Result<Endpoint> {
             )
         })?;
 
+    // Inside a Flatpak each start of the app has a runtime directory of its
+    // own, and a second copy would never find the first. The one place they
+    // share, and that the system keeps to this app, is `app/<its id>`.
+    let base = match std::env::var_os("FLATPAK_ID") {
+        Some(id) if !id.is_empty() => base.join("app").join(id),
+        _ => base,
+    };
+
     let dir = base.join("brolga");
     std::fs::DirBuilder::new()
         .recursive(true)

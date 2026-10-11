@@ -2,7 +2,12 @@
 
 ## Installing
 
-- **Linux:** the `.deb`, `.rpm` or `.AppImage` from the releases page.
+- **Linux:** `Brolga.flatpak` from the releases page, installed with
+  `flatpak install --user Brolga.flatpak`; or the `.deb`, `.rpm` or
+  `.AppImage`. The Flatpak can reach the network, the secret store,
+  notifications and your Downloads folder, and no other file except one you
+  pick in a file dialog. In the Flatpak, starting at sign-in does not work
+  yet.
 - **Windows and macOS:** the installers are not signed, so the system will
   warn you. On Windows, choose **More info** and then **Run anyway**. On
   macOS, open the app once, then allow it under **System Settings**,
