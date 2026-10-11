@@ -434,8 +434,13 @@ impl GraphClient {
                 .header("Prefer", prefer);
             request = match body {
                 Some(body) => request.json(body),
-                // "message: send" asks for a Content-Length of 0 by name.
-                None if method == reqwest::Method::POST => request.body(Vec::new()),
+                // "message: send" asks for a Content-Length of 0 by name, and
+                // Graph answers 411 without one. It is set outright: left
+                // to the HTTP library, a request with nothing in it goes
+                // out with no length at all.
+                None if method == reqwest::Method::POST => request
+                    .header(reqwest::header::CONTENT_LENGTH, "0")
+                    .body(Vec::new()),
                 None => request,
             };
             let sent = request.send().await;

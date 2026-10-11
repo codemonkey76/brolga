@@ -443,6 +443,16 @@ async fn require_token(request: Request, next: Next) -> Response {
             next.run(request).await
         };
     }
+    // As Graph does: a POST must say how long it is, even when that is 0.
+    if request.method() == axum::http::Method::POST
+        && !request.headers().contains_key(header::CONTENT_LENGTH)
+    {
+        return error(
+            StatusCode::LENGTH_REQUIRED,
+            "fakeGraphLengthRequired",
+            "A POST needs a Content-Length.",
+        );
+    }
     let Some(token) = token else {
         return error(
             StatusCode::UNAUTHORIZED,
