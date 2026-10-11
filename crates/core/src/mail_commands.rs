@@ -176,6 +176,11 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
         let outcome = async {
             let mailbox = context.open(&account).await?;
             let _one_at_a_time = mailbox.syncing.lock().await;
+            // Another copy of Brolga syncing this account is doing the same
+            // work into the same database: leave it to it.
+            let Some(_turn) = mailbox.sync_turn().map_err(|e| e.to_string())? else {
+                return Ok(None);
+            };
             let synced = mailbox.sync.sync_all().await.map_err(|e| e.to_string())?;
             // Then the bodies of recent mail, a batch at a time. Failing to
             // get these is not a failed sync: they are fetched when opened.
@@ -184,17 +189,22 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                 .download_bodies(&days_ago(OFFLINE_DAYS), BODIES_PER_SYNC)
                 .await
                 .unwrap_or(0);
-            Ok::<_, String>((synced, bodies))
+            Ok::<_, String>(Some((synced, bodies)))
         }
         .await;
 
         results.push(match outcome {
-            Ok((synced, bodies)) => json!({
+            Ok(Some((synced, bodies))) => json!({
                 "account_id": account.id, "ok": true, "changed": synced.changed, "removed": synced.removed,
-                "bodies_downloaded": bodies, "error": null
+                "bodies_downloaded": bodies, "syncing_elsewhere": false, "error": null
+            }),
+            Ok(None) => json!({
+                "account_id": account.id, "ok": true, "changed": 0, "removed": 0,
+                "bodies_downloaded": 0, "syncing_elsewhere": true, "error": null
             }),
             Err(error) => json!({
-                "account_id": account.id, "ok": false, "changed": 0, "removed": 0, "bodies_downloaded": 0, "error": error
+                "account_id": account.id, "ok": false, "changed": 0, "removed": 0, "bodies_downloaded": 0,
+                "syncing_elsewhere": false, "error": error
             }),
         });
     }
@@ -748,6 +758,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "changed": { "type": "integer", "description": "Folders and messages added or updated." },
                                 "removed": { "type": "integer" },
                                 "bodies_downloaded": { "type": "integer", "description": "Recent messages whose full text was fetched for reading offline." },
+                                "syncing_elsewhere": { "type": "boolean", "description": "Another copy of Brolga on this computer was already syncing this account, so this one left it to it." },
                                 "error": { "type": ["string", "null"], "description": "Why this account did not sync, in plain words." }
                             },
                             "required": ["account_id", "ok", "changed", "removed", "error"]

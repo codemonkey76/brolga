@@ -18,6 +18,35 @@ pub(crate) struct Mailbox {
     pub sync: MailSync,
     /// One sync of an account at a time: two would fetch the same pages.
     pub syncing: Mutex<()>,
+    /// The file that says so to other copies of Brolga on this computer.
+    /// None when the mail is kept in memory, which no other copy can see.
+    lock_file: Option<PathBuf>,
+}
+
+/// The right to sync an account, held against other copies of Brolga (the
+/// app, and a command-line or MCP run with no app) until it is dropped.
+pub(crate) struct SyncTurn(#[allow(dead_code)] Option<std::fs::File>);
+
+impl Mailbox {
+    /// Take the turn to sync, or nothing if another copy has it. Two copies
+    /// share one database safely, but syncing it twice at once would fetch
+    /// everything twice and each could overwrite the other's place.
+    pub fn sync_turn(&self) -> std::io::Result<Option<SyncTurn>> {
+        let Some(path) = &self.lock_file else {
+            return Ok(Some(SyncTurn(None)));
+        };
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)?;
+
+        match file.try_lock() {
+            Ok(()) => Ok(Some(SyncTurn(Some(file)))),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
 }
 
 pub(crate) struct Mailboxes {
@@ -91,11 +120,13 @@ impl Mailboxes {
             return Ok(mailbox.clone());
         }
 
+        let path = self
+            .data_dir
+            .as_ref()
+            .map(|folder| folder.join("accounts").join(file_name(&account.id)));
         let db = Arc::new(
-            match &self.data_dir {
-                Some(folder) => {
-                    AccountDb::open(&folder.join("accounts").join(file_name(&account.id)))
-                }
+            match &path {
+                Some(path) => AccountDb::open(path),
                 None => AccountDb::in_memory(),
             }
             .map_err(|e| e.to_string())?,
@@ -116,6 +147,7 @@ impl Mailboxes {
             db,
             graph,
             syncing: Mutex::new(()),
+            lock_file: path.map(|path| path.with_extension("sync-lock")),
         });
         open.insert(account.id.clone(), mailbox.clone());
 

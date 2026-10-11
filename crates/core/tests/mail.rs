@@ -385,6 +385,68 @@ async fn a_picture_within_a_message_is_shown_and_kept_for_offline() {
 }
 
 #[tokio::test]
+async fn two_copies_on_one_computer_do_not_sync_the_same_account_at_once() {
+    let identity = FakeIdentity::start().await.unwrap();
+    let graph = FakeGraph::start().await.unwrap();
+    let data_dir = downloads();
+    let core = Core::open(CoreOptions {
+        data_dir: Some(data_dir.clone()),
+        downloads_dir: None,
+        secrets: Arc::new(MemorySecrets::default()),
+        open_browser: Arc::new(|url| {
+            let url = url.to_owned();
+            tokio::spawn(async move {
+                let _ = reqwest::get(url).await;
+            });
+            Ok(())
+        }),
+        authority: Authority::new(identity.base_url()),
+        graph_base: Some(graph.base_url()),
+        default_client_id: Some("client".to_owned()),
+        fetch_images_from_private_hosts: true,
+    })
+    .unwrap();
+    let registry = core.registry();
+    registry
+        .execute("accounts.sign_in", json!({}))
+        .await
+        .unwrap();
+    let inbox = graph.folder_id("inbox");
+    let sync =
+        || async { registry.execute("mail.sync", json!({})).await.unwrap()["accounts"][0].clone() };
+    let count = || async {
+        registry
+            .execute("mail.messages.list", json!({ "folder_id": inbox }))
+            .await
+            .unwrap()["total"]
+            .clone()
+    };
+
+    assert_eq!(sync().await["syncing_elsewhere"], false);
+    // Another copy is a process holding the account's lock file.
+    let lock = std::fs::read_dir(data_dir.join("accounts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|e| e == "sync-lock"))
+        .expect("a lock file beside the account's database");
+    let other = std::fs::File::open(&lock).unwrap();
+    other.lock().unwrap();
+    graph.add_message(&inbox, message("New", "Sam Taylor", "2026-10-01T09:00:00Z"));
+
+    let left_alone = sync().await;
+    assert_eq!(left_alone["ok"], true);
+    assert_eq!(left_alone["syncing_elsewhere"], true);
+    assert_eq!(count().await, 0);
+
+    drop(other);
+    assert_eq!(sync().await["syncing_elsewhere"], false);
+    assert_eq!(count().await, 1);
+
+    drop((registry, core));
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+#[tokio::test]
 async fn a_long_folder_is_paged() {
     let f = Fixture::signed_in().await;
     f.graph.add_messages(&f.inbox, 130);
