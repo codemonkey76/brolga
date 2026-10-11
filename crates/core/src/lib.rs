@@ -13,6 +13,7 @@ mod link_commands;
 mod mail_commands;
 mod mailboxes;
 mod remote_images;
+mod reply_commands;
 mod saving;
 
 use std::path::PathBuf;
@@ -104,6 +105,7 @@ impl Core {
         ));
         action_commands::register(&mut registry, mailboxes.clone())?;
         draft_commands::register(&mut registry, mailboxes.clone())?;
+        reply_commands::register(&mut registry, mailboxes.clone())?;
         mail_commands::register(
             &mut registry,
             mail_commands::Context {

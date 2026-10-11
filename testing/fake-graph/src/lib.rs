@@ -59,12 +59,29 @@ struct Inner {
     lose_next_attachment_answer: bool,
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
+    automatic_replies: Option<Value>,
     /// Large files on their way up, by session.
     uploads: HashMap<String, Upload>,
     /// Messages every change to which is refused.
     refused_updates: std::collections::HashSet<String>,
     /// Where this server is, to write links to itself.
     base: String,
+}
+
+impl Inner {
+    /// The mailbox's automatic replies: off, until something sets them.
+    fn automatic_replies(&self) -> Value {
+        self.automatic_replies.clone().unwrap_or_else(|| {
+            json!({
+                "status": "disabled",
+                "externalAudience": "none",
+                "internalReplyMessage": "",
+                "externalReplyMessage": "",
+                "scheduledStartDateTime": { "dateTime": "2026-01-01T00:00:00.0000000", "timeZone": "UTC" },
+                "scheduledEndDateTime": { "dateTime": "2026-01-02T00:00:00.0000000", "timeZone": "UTC" }
+            })
+        })
+    }
 }
 
 type Shared = Arc<Mutex<Inner>>;
@@ -81,6 +98,14 @@ impl FakeGraph {
         let shared = Shared::default();
         let app = Router::new()
             .route("/v1.0/me", get(me))
+            .route(
+                "/v1.0/me/mailboxSettings",
+                axum::routing::patch(update_mailbox_settings),
+            )
+            .route(
+                "/v1.0/me/mailboxSettings/automaticRepliesSetting",
+                get(automatic_replies),
+            )
             .route("/v1.0/me/mailFolders/delta", get(folders_delta))
             .route("/v1.0/me/mailFolders/{folder}", get(folder))
             .route(
@@ -224,6 +249,11 @@ impl FakeGraph {
     /// How many drafts have been created on the server.
     pub fn drafts_created(&self) -> u32 {
         lock(&self.shared).drafts_created
+    }
+
+    /// The mailbox's automatic replies, as Graph would give them.
+    pub fn automatic_replies(&self) -> Value {
+        lock(&self.shared).automatic_replies()
     }
 
     /// The next file is attached, but the answer to the request is an error.
@@ -432,8 +462,12 @@ async fn require_token(request: Request, next: Next) -> Response {
     let path = request.uri().path();
     let mail = path.contains("/me/mailFolders") || path.contains("/me/messages");
     let reading = request.method() == axum::http::Method::GET;
-    // Sending is its own permission ("message: send").
-    let allowed = if path.ends_with("/send") {
+    // Sending is its own permission ("message: send"), and so are the
+    // mailbox's settings ("Update user mailbox settings").
+    let allowed = if path.contains("/me/mailboxSettings") {
+        granted.contains(&"MailboxSettings.ReadWrite")
+            || (reading && granted.contains(&"MailboxSettings.Read"))
+    } else if path.ends_with("/send") {
         granted.contains(&"Mail.Send")
     } else {
         !mail || granted.contains(&"Mail.ReadWrite") || (reading && granted.contains(&"Mail.Read"))
@@ -447,6 +481,52 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+async fn automatic_replies(State(shared): State<Shared>) -> Response {
+    axum::Json(lock(&shared).automatic_replies()).into_response()
+}
+
+/// "Update user mailbox settings" (SOURCES.md): what is given is changed
+/// and the rest left as it was. Only automatic replies are built.
+async fn update_mailbox_settings(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let Some(changes) = body["automaticRepliesSetting"].as_object() else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "fakeGraphNotBuilt",
+            "The fake Graph server changes only automaticRepliesSetting.",
+        );
+    };
+    let mut setting = inner.automatic_replies();
+    for (key, value) in changes {
+        let allowed = match key.as_str() {
+            "status" => ["disabled", "alwaysEnabled", "scheduled"]
+                .contains(&value.as_str().unwrap_or_default()),
+            "externalAudience" => {
+                ["none", "contactsOnly", "all"].contains(&value.as_str().unwrap_or_default())
+            }
+            "internalReplyMessage" | "externalReplyMessage" => value.is_string(),
+            "scheduledStartDateTime" | "scheduledEndDateTime" => {
+                value["dateTime"].is_string() && value["timeZone"].is_string()
+            }
+            _ => false,
+        };
+        if !allowed {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "badRequest",
+                &format!("`{key}` is not a value automaticRepliesSetting takes."),
+            );
+        }
+        setting[key] = value.clone();
+    }
+    inner.automatic_replies = Some(setting.clone());
+
+    axum::Json(json!({ "automaticRepliesSetting": setting })).into_response()
 }
 
 /// The signed-in user, with the properties Graph returns by default. The

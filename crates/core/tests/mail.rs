@@ -1204,3 +1204,65 @@ async fn a_file_is_attached_from_disk_and_goes_with_the_message() {
     assert_eq!(sent.attachments[0].name, "Quarterly report.pdf");
     assert_eq!(sent.attachments[0].content, b"%PDF-1.7 not really");
 }
+
+#[tokio::test]
+async fn automatic_replies_are_read_set_and_scheduled_on_the_server() {
+    let f = Fixture::signed_in().await;
+
+    let before = f.run("mail.automatic_replies.get", json!({})).await;
+    assert_eq!(before["status"], "off");
+
+    let on = f
+        .run(
+            "mail.automatic_replies.set",
+            json!({
+                "status": "scheduled",
+                "internal_message": "Away until Monday.\nRobin",
+                "external_message": "I am away <until> Monday.",
+                "external_audience": "contacts",
+                "start": "2026-10-20T08:00:00Z",
+                "end": "2026-10-24T08:00:00Z"
+            }),
+        )
+        .await;
+    assert_eq!(on["status"], "scheduled");
+    assert_eq!(on["internal_message"], "Away until Monday.\nRobin");
+    assert_eq!(on["external_message"], "I am away <until> Monday.");
+    assert_eq!(on["start"]["date_time"], "2026-10-20T08:00:00");
+
+    let server = f.graph.automatic_replies();
+    assert_eq!(server["status"], "scheduled");
+    assert_eq!(server["externalAudience"], "contactsOnly");
+    // What goes to the server is HTML, with nothing typed taken as markup.
+    assert!(
+        server["externalReplyMessage"]
+            .as_str()
+            .unwrap()
+            .contains("&lt;until&gt;")
+    );
+    assert_eq!(
+        server["scheduledEndDateTime"],
+        json!({ "dateTime": "2026-10-24T08:00:00", "timeZone": "UTC" })
+    );
+
+    // Turning them off leaves the messages for next time.
+    let off = f
+        .run("mail.automatic_replies.set", json!({ "status": "off" }))
+        .await;
+    assert_eq!(off["status"], "off");
+    assert_eq!(off["internal_message"], "Away until Monday.\nRobin");
+
+    for bad in [
+        json!({ "status": "scheduled" }),
+        json!({ "status": "scheduled", "start": "2026-10-24T08:00:00Z", "end": "2026-10-20T08:00:00Z" }),
+        json!({ "status": "scheduled", "start": "next week", "end": "2026-10-20T08:00:00Z" }),
+    ] {
+        assert!(
+            f.registry
+                .execute("mail.automatic_replies.set", bad)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(f.graph.automatic_replies()["status"], "disabled");
+}

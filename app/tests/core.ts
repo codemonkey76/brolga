@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** Why automatic replies cannot be read, if they cannot. */
+    repliesRefused?: string;
     /** The files the file dialog says were chosen. Left out, it is dismissed. */
     pickFiles?: string[];
     /** The sync is still going for as long as the test runs. */
@@ -225,6 +227,15 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         };
         const draft = (id: unknown) => drafts.find((each) => each.id === id);
         let signature = { text: "", on_replies: false };
+        let replies: Record<string, unknown> = {
+            status: "off",
+            internal_message: "",
+            external_message: "",
+            external_audience: "nobody",
+            start: null,
+            end: null,
+        };
+        const when = (time: unknown) => (time ? { date_time: String(time).replace("Z", ""), time_zone: "UTC" } : null);
         const acted = (ids: unknown, apply: (m: (typeof mail)[number]) => (() => void) | null) => {
             const undo: (() => void)[] = [];
             for (const m of mail.filter((each) => (ids as string[]).includes(each.id))) {
@@ -371,6 +382,15 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 };
                 drafts.unshift(made);
                 return { draft: made };
+            },
+            "mail.automatic_replies.get": () => {
+                if (core.repliesRefused) throw { code: "failed", message: core.repliesRefused };
+                return replies;
+            },
+            "mail.automatic_replies.set": (args) => {
+                replies = { ...replies, ...args, start: when(args.start) ?? replies.start, end: when(args.end) ?? replies.end };
+                delete replies.account_id;
+                return replies;
             },
             "mail.signature.get": () => signature,
             "mail.signature.set": (args) => {

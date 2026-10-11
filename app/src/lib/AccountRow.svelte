@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { Account } from "./accounts";
+    import AutoReplies from "./AutoReplies.svelte";
     import { execute, say } from "./commands";
 
     interface Props {
@@ -11,6 +12,8 @@
 
     let { account, busy, onSignInAgain, onRemove }: Props = $props();
     let confirming = $state(false);
+
+    let replies = $state(false);
 
     /** The signature being edited, while its editor is open. */
     let signature = $state<{ text: string; on_replies: boolean } | null>(null);
@@ -70,6 +73,7 @@
         <button type="button" onclick={() => (confirming = false)}>Keep</button>
     {:else}
         <button type="button" aria-expanded={signature !== null} onclick={editSignature}>Signature</button>
+        <button type="button" aria-expanded={replies} onclick={() => ((replies = !replies), (signatureSaid = null))}>Automatic replies</button>
         <button type="button" disabled={busy} onclick={() => (confirming = true)}>Remove</button>
     {/if}
     </div>
@@ -84,6 +88,16 @@
                 <button type="button" onclick={() => (signature = null)}>Cancel</button>
             </div>
         </form>
+    {/if}
+    {#if replies}
+        <AutoReplies
+            accountId={account.id}
+            username={account.username}
+            onClose={(said) => {
+                replies = false;
+                signatureSaid = said ?? null;
+            }}
+        />
     {/if}
     {#if signatureSaid}
         <p class="said muted" role="status">{signatureSaid}</p>

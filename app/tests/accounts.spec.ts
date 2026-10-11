@@ -114,3 +114,43 @@ test("the window works from the keyboard alone", async ({ page }) => {
 
     await expect(page.getByRole("navigation", { name: "Folders" })).toBeVisible();
 });
+
+test("automatic replies are scheduled from the accounts screen, in local time", async ({ page }) => {
+    await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Automatic replies" }).click();
+    const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
+
+    await expect(form.getByRole("radio", { name: "Off", exact: true })).toBeChecked();
+    await form.getByRole("radio", { name: "On between two times" }).check();
+    // Brisbane is ten hours ahead of UTC, all year.
+    await form.getByLabel("From").fill("2026-10-20T08:00");
+    await form.getByLabel("Until").fill("2026-10-24T17:30");
+    await form.getByLabel("To people in your organisation").fill("Away until Monday.");
+    await form.getByLabel("Reply to people outside it").selectOption("everyone");
+    await form.getByLabel("To people outside your organisation").fill("I am away until Monday.");
+    await picture(page, "automatic-replies");
+    await form.getByRole("button", { name: "Save" }).click();
+
+    await expect(page.getByText("Automatic replies are scheduled.")).toBeVisible();
+    expect((await ran(page)).find((r) => r.command === "mail.automatic_replies.set")?.args).toMatchObject({
+        status: "scheduled",
+        start: "2026-10-19T22:00:00Z",
+        end: "2026-10-24T07:30:00Z",
+        internal_message: "Away until Monday.",
+        external_audience: "everyone",
+    });
+
+    // Opened again, the times are back in local time.
+    await page.getByRole("button", { name: "Automatic replies" }).click();
+    await expect(form.getByLabel("From")).toHaveValue("2026-10-20T08:00");
+});
+
+test("a sign-in from before automatic replies says to sign in again", async ({ page }) => {
+    await withCore(page, { accounts: [robin], repliesRefused: "This sign-in was not given permission for mailbox settings. Sign in to the account again, from the accounts screen, to grant it." });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Automatic replies" }).click();
+
+    await expect(page.getByRole("alert")).toContainText("Sign in to the account again");
+    await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
+});

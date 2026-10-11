@@ -12,6 +12,8 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     // Reading mail, and changing it: read state, flags, moves, drafts.
     "Mail.ReadWrite",
     "Mail.Send",
+    // Automatic replies.
+    "MailboxSettings.ReadWrite",
 ];
 
 /// The app registration a sign-in is made under.

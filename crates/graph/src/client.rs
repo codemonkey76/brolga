@@ -337,6 +337,28 @@ impl GraphClient {
         Ok(())
     }
 
+    /// The mailbox's automatic replies as Graph gives them
+    /// ("automaticRepliesSetting resource type", SOURCES.md).
+    pub async fn automatic_replies(&self) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/mailboxSettings/automaticRepliesSetting", self.base);
+
+        decode(&self.get(&url, None).await?)
+    }
+
+    /// Set the mailbox's automatic replies ("Update user mailbox
+    /// settings"). Setting them twice leaves them as setting them once does.
+    pub async fn set_automatic_replies(
+        &self,
+        setting: &serde_json::Value,
+    ) -> Result<(), GraphError> {
+        let url = format!("{}/me/mailboxSettings", self.base);
+        let body = serde_json::json!({ "automaticRepliesSetting": setting });
+        self.send(reqwest::Method::PATCH, &url, None, Some(&body), true)
+            .await?;
+
+        Ok(())
+    }
+
     /// Send a draft ("message: send", SOURCES.md). It is saved in Sent
     /// Items. Never repeated here: a second request could send a second copy.
     pub async fn send_draft(&self, message_id: &str) -> Result<(), GraphError> {

@@ -38,15 +38,24 @@
     let files = $state<DraftFile[]>(start.files ?? []);
 
     /** Choose files with the system's dialog and attach each. One that cannot be attached is said, and the rest still are. */
+    /** True while the file dialog is open, so a second click cannot open a second one. */
+    let choosing = $state(false);
+
     async function attach() {
-        const paths = await chooseFiles().catch(() => []);
-        for (const path of paths) {
-            try {
-                files = [...files, await attachFile(accountId, start.id, path)];
-                onKept();
-            } catch (failure) {
-                problem = say(failure);
+        if (choosing) return;
+        choosing = true;
+        try {
+            const paths = await chooseFiles().catch(() => []);
+            for (const path of paths) {
+                try {
+                    files = [...files, await attachFile(accountId, start.id, path)];
+                    onKept();
+                } catch (failure) {
+                    problem = say(failure);
+                }
             }
+        } finally {
+            choosing = false;
         }
     }
 
@@ -151,7 +160,7 @@
 <form class="compose" aria-label={titles[start.kind]} onsubmit={(event) => (event.preventDefault(), send())} onkeydown={keydown} oninput={changed}>
     <div class="bar">
         <button type="submit" class="primary" disabled={sending} title="Ctrl+Enter">{sending ? "Sending…" : "Send"}</button>
-        <button type="button" onclick={attach}>Attach…</button>
+        <button type="button" disabled={choosing} onclick={attach}>{choosing ? "Choosing…" : "Attach…"}</button>
         <button type="button" onclick={close} title="Escape">Close</button>
         <button type="button" class:danger={sure} onclick={discard}>{sure ? "Discard for good?" : "Discard"}</button>
         <span class="kept muted" role="status">{kept === "kept" ? "Draft kept on this computer" : kept === "keeping" ? "Keeping…" : ""}</span>

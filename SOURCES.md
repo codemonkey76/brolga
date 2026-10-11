@@ -34,6 +34,8 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Add attachment | https://learn.microsoft.com/graph/api/message-post-attachments | `POST /me/messages/{id}/attachments` with a fileAttachment, for files under 3 MB |
 | attachment: createUploadSession | https://learn.microsoft.com/graph/api/attachment-createuploadsession | An upload session for a file of 3 MB to 150 MB, from an `AttachmentItem` of type, name and size |
 | Attach large files to Outlook messages or events | https://learn.microsoft.com/graph/outlook-large-attachments | `PUT` to the session's `uploadUrl` in ranges of under 4 MB with `Content-Range`, in order, with no Authorization header; 200 until the last piece, then 201 |
+| Get and update user mailbox settings | https://learn.microsoft.com/graph/api/user-update-mailboxsettings | `GET /me/mailboxSettings/automaticRepliesSetting` and `PATCH /me/mailboxSettings`, which need `MailboxSettings.ReadWrite` |
+| automaticRepliesSetting resource type | https://learn.microsoft.com/graph/api/resources/automaticrepliessetting | Status, audience, the two messages and the scheduled times of automatic replies |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
 
 ## Microsoft identity platform (Microsoft Learn)
