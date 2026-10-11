@@ -188,6 +188,8 @@ export interface FakeCore {
     busy?: Record<string, string>;
     /** What agents have asked for, the latest first. */
     agentLog?: { at: string; client: string; command: string; args: unknown; outcome: string; detail: string }[];
+    /** The inbox's rules, as `mail.rules.list` gives them, less the sentence. */
+    rules?: Record<string, unknown>[];
     /** Why automatic replies cannot be read, if they cannot. */
     repliesRefused?: string;
     /** The files the file dialog says were chosen. Left out, it is dismissed. */
@@ -319,6 +321,18 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             return all;
         };
         const asking = [...(core.asking ?? [])];
+        let kinds = [
+            { name: "Clients", color: "preset7" },
+            { name: "Red category", color: "preset0" },
+            { name: "Plain", color: "none" },
+        ];
+        let rules: Record<string, unknown>[] = [...(core.rules ?? [])];
+        /** A rule as the command gives it. The real sentence is the core's; here it only names what was asked. */
+        const ruled = (rule: Record<string, unknown>) => ({
+            has_error: false,
+            summary: `Looks for ${Object.keys((rule.conditions as object) ?? {}).join(", ") || "every message"}; does ${Object.keys((rule.actions as object) ?? {}).join(", ")}.`,
+            ...rule,
+        });
         let replies: Record<string, unknown> = {
             status: "off",
             internal_message: "",
@@ -774,13 +788,41 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                         dues.set(m.id, wasDue);
                     };
                 }),
-            "mail.categories.list": () => ({
-                categories: [
-                    { name: "Clients", color: "preset7" },
-                    { name: "Red category", color: "preset0" },
-                    { name: "Plain", color: "none" },
-                ],
-            }),
+            "mail.categories.list": () => ({ categories: kinds }),
+            "mail.categories.create": (args) => {
+                if (kinds.some((each) => each.name.toLowerCase() === String(args.name).toLowerCase())) {
+                    throw { code: "failed", message: `There is already a category \`${args.name}\`.` };
+                }
+                kinds.push({ name: String(args.name), color: String(args.color ?? "none") });
+                return { categories: kinds };
+            },
+            "mail.categories.set_color": (args) => {
+                kinds = kinds.map((each) => (each.name === args.name ? { ...each, color: String(args.color) } : each));
+                return { categories: kinds };
+            },
+            "mail.categories.delete": (args) => {
+                kinds = kinds.filter((each) => each.name !== args.name);
+                return { categories: kinds };
+            },
+            "mail.rules.list": () => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the rules could not be read." };
+                return { rules: rules.map(ruled) };
+            },
+            "mail.rules.create": (args) => {
+                const made = { id: `rule-${rules.length + 1}`, enabled: true, read_only: false, exceptions: {}, conditions: {}, ...args, sequence: rules.length + 1 };
+                delete (made as Record<string, unknown>).account_id;
+                rules.push(made as Record<string, unknown>);
+                return { rule: ruled(made as Record<string, unknown>) };
+            },
+            "mail.rules.update": (args) => {
+                const { account_id: _, rule_id, ...changes } = args;
+                rules = rules.map((each) => (each.id === rule_id ? { ...each, ...changes } : each));
+                return { rule: ruled(rules.find((each) => each.id === rule_id) ?? {}) };
+            },
+            "mail.rules.delete": (args) => {
+                rules = rules.filter((each) => each.id !== args.rule_id);
+                return { deleted: true };
+            },
             "mail.messages.set_categories": (args) =>
                 acted(args.message_ids, (m) => {
                     const was = tags.get(m.id) ?? [];

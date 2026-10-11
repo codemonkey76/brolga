@@ -269,3 +269,142 @@ test("with no shared mailbox there is no choice of who a message is from", async
     await expect(page.getByRole("textbox", { name: "Subject" })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "From" })).toHaveCount(0);
 });
+
+test("rules are listed, turned off, made, changed and deleted", async ({ page }) => {
+    const rules = [
+        {
+            id: "rule-1",
+            name: "Newsletters",
+            enabled: true,
+            sequence: 1,
+            read_only: false,
+            conditions: { senderContains: ["newsletter"] },
+            exceptions: {},
+            actions: { markAsRead: true },
+            summary: "When the sender contains “newsletter”: mark it read.",
+        },
+        {
+            id: "rule-2",
+            name: "Voicemail",
+            enabled: true,
+            sequence: 2,
+            read_only: false,
+            conditions: { isVoicemail: true },
+            exceptions: {},
+            actions: { copyToFolder: "archive" },
+            summary: "When it is a voicemail: copy it to Archive.",
+        },
+        {
+            id: "rule-3",
+            name: "Set by the organisation",
+            enabled: true,
+            sequence: 3,
+            read_only: true,
+            conditions: {},
+            exceptions: {},
+            actions: { delete: true },
+            summary: "For every message: delete it.",
+        },
+    ];
+    await withCore(page, { accounts: [robin], mail: inbox, rules });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Rules" }).click();
+    const section = page.getByRole("region", { name: "Rules for robin@example.test" });
+    const rows = section.getByRole("listitem");
+
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0)).toContainText("When the sender contains “newsletter”: mark it read.");
+    // One with a part the form cannot hold is not offered for changing, so saving cannot lose that part.
+    await expect(section.getByRole("button", { name: "Change Voicemail" })).toHaveCount(0);
+    await expect(section.getByRole("button", { name: "Delete Voicemail" })).toBeVisible();
+    // One the server holds read-only is only shown.
+    await expect(rows.nth(2)).toContainText("Read-only");
+    await expect(rows.nth(2).getByRole("button")).toHaveCount(0);
+    await expect(rows.nth(2).getByRole("checkbox")).toBeDisabled();
+
+    await section.getByRole("checkbox", { name: "Newsletters is on" }).uncheck();
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.rules.update")?.args).toMatchObject({ rule_id: "rule-1", enabled: false });
+
+    await section.getByRole("button", { name: "New rule" }).click();
+    const form = section.getByRole("form", { name: "New rule" });
+    await form.getByLabel("Name").fill("Receipts");
+    await form.getByLabel("The subject contains").fill("receipt, tax invoice");
+    await form.getByLabel("It has attachments").check();
+    // A rule that does nothing is not sent.
+    await form.getByRole("button", { name: "Save rule" }).click();
+    await expect(section.getByRole("alert")).toContainText("at least one thing");
+    await form.getByLabel("Move it to").selectOption({ label: "Archive" });
+    await form.getByLabel("Categorise it").selectOption("Clients");
+    await form.getByLabel("Forward it to").fill("books@example.test");
+    await picture(page, "rules");
+    await form.getByRole("button", { name: "Save rule" }).click();
+
+    await expect(rows).toHaveCount(4);
+    const made = (await ran(page)).find((r) => r.command === "mail.rules.create")?.args;
+    expect(made).toMatchObject({
+        name: "Receipts",
+        conditions: { subjectContains: ["receipt", "tax invoice"], hasAttachments: true },
+        actions: { moveToFolder: "archive", assignCategories: ["Clients"], forwardTo: ["books@example.test"] },
+    });
+
+    // Changing one starts from what it holds, and sends each part whole.
+    await section.getByRole("button", { name: "Change Receipts" }).click();
+    const changing = section.getByRole("form", { name: "Change rule" });
+    await expect(changing.getByLabel("The subject contains")).toHaveValue("receipt, tax invoice");
+    await expect(changing.getByLabel("Move it to")).toHaveValue("archive");
+    await changing.getByLabel("Forward it to").fill("");
+    await changing.getByLabel("Mark it read").check();
+    await changing.getByRole("button", { name: "Save rule" }).click();
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.rules.update").at(-1)?.args).toMatchObject({
+        rule_id: "rule-4",
+        name: "Receipts",
+        actions: { moveToFolder: "archive", assignCategories: ["Clients"], markAsRead: true },
+    });
+    expect(((await ran(page)).filter((r) => r.command === "mail.rules.update").at(-1)?.args as { actions: object }).actions).not.toHaveProperty("forwardTo");
+
+    // Deleting asks first.
+    await section.getByRole("button", { name: "Delete Voicemail" }).click();
+    expect((await ran(page)).some((r) => r.command === "mail.rules.delete")).toBe(false);
+    await section.getByRole("button", { name: "Delete it?" }).click();
+    await expect(rows).toHaveCount(3);
+});
+
+test("rules that cannot be read say why", async ({ page }) => {
+    await withCore(page, { accounts: [robin], offline: true });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Rules" }).click();
+
+    const section = page.getByRole("region", { name: "Rules for robin@example.test" });
+    await expect(section.getByRole("alert")).toContainText("could not be reached");
+    await expect(section.getByRole("button", { name: "New rule" })).toHaveCount(0);
+});
+
+test("categories are added, recoloured and deleted", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Categories" }).click();
+    const section = page.getByRole("region", { name: "Categories for robin@example.test" });
+    const rows = section.getByRole("listitem");
+    await expect(rows).toHaveCount(3);
+
+    await section.getByRole("textbox", { name: "Name of a new category" }).fill("Training");
+    await section.getByRole("combobox", { name: "Colour of the new category" }).selectOption({ label: "Green" });
+    await section.getByRole("button", { name: "Add" }).click();
+    await expect(rows).toHaveCount(4);
+    expect((await ran(page)).find((r) => r.command === "mail.categories.create")?.args).toMatchObject({ name: "Training", color: "preset4" });
+
+    // A second of the same name is refused, in the core's words.
+    await section.getByRole("textbox", { name: "Name of a new category" }).fill("training");
+    await section.getByRole("button", { name: "Add" }).click();
+    await expect(section.getByRole("alert")).toContainText("already a category");
+
+    await section.getByRole("combobox", { name: "Colour of Training" }).selectOption({ label: "Dark blue" });
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.categories.set_color")?.args).toMatchObject({ name: "Training", color: "preset22" });
+    await expect(section.getByRole("alert")).toHaveCount(0);
+    await picture(page, "category-list");
+
+    await section.getByRole("button", { name: "Delete Plain" }).click();
+    await section.getByRole("button", { name: "Delete it?" }).click();
+    await expect(rows).toHaveCount(3);
+    await expect(section).not.toContainText("Plain");
+});
