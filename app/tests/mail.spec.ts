@@ -500,3 +500,63 @@ test("a change Microsoft 365 refuses is told of, once", async ({ page }) => {
     await expect(told).toContainText("it has been put back");
     expect((await ran(page)).some((r) => r.command === "app.outbox.dismiss_refused")).toBe(true);
 });
+
+test("deleting moves the message away, opens the next, and can be undone", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await rows.first().click();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+
+    await pane.getByRole("button", { name: "Delete" }).click();
+
+    await expect(rows).toHaveCount(3);
+    await expect(pane.getByRole("heading")).toHaveText("Your October newsletter");
+    await expect(rows.first()).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Moved to Deleted Items")).toBeVisible();
+    expect((await ran(page)).find((r) => r.command === "mail.messages.move")?.args).toMatchObject({ message_ids: ["m1"], folder_id: "deleteditems" });
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(rows).toHaveCount(4);
+    await expect(rows.first()).toContainText("Budget review moved to Thursday");
+
+    // In Deleted Items there is nothing further to delete to.
+    await rows.first().click();
+    await page.keyboard.press("Delete");
+    await expect(rows).toHaveCount(3);
+    await folder(page, "Deleted Items").click();
+    await expect(rows).toHaveCount(1);
+    await rows.first().click();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+    await expect(pane.getByRole("button", { name: "Delete" })).toHaveCount(0);
+});
+
+test("a message can be archived by key and moved to any folder", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+
+    await page.keyboard.press("Backspace");
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByText("Archived")).toBeVisible();
+
+    await page.getByRole("combobox", { name: "Move to folder" }).selectOption({ label: "\u00a0\u00a0\u00a0\u00a0Surveys" });
+    await expect(rows).toHaveCount(2);
+    await expect(page.getByText("Moved to Surveys")).toBeVisible();
+
+    await folder(page, "Surveys").click();
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Your October newsletter");
+});
+
+test("deleting the last message leaves nothing open", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox.slice(0, 1) });
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+
+    await page.keyboard.press("Delete");
+
+    await expect(page.getByText("Nothing here.")).toBeVisible();
+    await expect(page.getByText("Select a message to read it.")).toBeVisible();
+});

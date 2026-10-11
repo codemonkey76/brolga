@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, dismissRefused, getConversation, listAttachments, listFolders, listMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, dismissRefused, getConversation, listAttachments, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
 
@@ -75,11 +75,7 @@
         try {
             const done = "is_read" in what ? await setRead(accountId, ids, what.is_read) : await setFlag(accountId, ids, what.flag_status);
             await redraw(what, ids);
-            if (said && done.changed > 0) {
-                clearTimeout(undoTimer);
-                undoable = { said, id: done.undo_id };
-                undoTimer = setTimeout(() => (undoable = null), UNDO_FOR);
-            }
+            if (said && done.changed > 0) offerUndo(said, done.undo_id);
         } catch (failure) {
             problem = say(failure);
         }
@@ -105,6 +101,49 @@
     const markRead = (isRead: boolean) => opened && change([opened.message.id], { is_read: isRead }, isRead ? "Marked as read" : "Marked as unread");
     const flag = (status: FlagStatus) =>
         opened && change([opened.message.id], { flag_status: status }, status === "flagged" ? "Flagged" : status === "complete" ? "Marked complete" : "Flag cleared");
+
+    function offerUndo(said: string, id: string) {
+        clearTimeout(undoTimer);
+        undoable = { said, id };
+        undoTimer = setTimeout(() => (undoable = null), UNDO_FOR);
+    }
+
+    /**
+     * Move the message being read to another folder. Deleting and archiving
+     * are this. The next message in the list takes its place, so a run of
+     * mail can be dealt with one key at a time.
+     */
+    async function moveTo(destination: string, said: string) {
+        if (!accountId || !opened) return;
+        const id = opened.message.id;
+        const at = rows.findIndex((row) => row?.id === id);
+        try {
+            const done = await moveMessages(accountId, [id], destination);
+            if (searching) {
+                rows = rows.filter((row) => row?.id !== id);
+                total = rows.length;
+            } else {
+                await refresh();
+            }
+            folders = await listFolders(accountId);
+            const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
+            if (next) {
+                await open(next);
+            } else {
+                opened = null;
+                selectedId = null;
+                thread = [];
+            }
+            if (done.changed > 0) offerUndo(said, done.undo_id);
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    /** The standard folder the message being read is in, if it is in one. */
+    const within = $derived(opened ? (folders.find((f) => f.id === opened?.message.folder_id)?.well_known ?? null) : null);
+    const remove = () => within !== "deleteditems" && moveTo("deleteditems", "Moved to Deleted Items");
+    const archive = () => within !== "archive" && folders.some((f) => f.well_known === "archive") && moveTo("archive", "Archived");
 
     /** Tell of any change Microsoft 365 would not take. Each has already been put back. */
     async function tellOfRefusals() {
@@ -403,10 +442,17 @@
             } else if (event.key === "Insert") {
                 event.preventDefault();
                 flag(opened.message.flag_status === "flagged" ? "notFlagged" : "flagged");
-            } else if (ctrl && event.key.toLowerCase() === "z" && undoable) {
+            } else if (event.key === "Delete") {
                 event.preventDefault();
-                takeBack();
+                remove();
+            } else if (event.key === "Backspace") {
+                event.preventDefault();
+                archive();
             }
+        }
+        if (undoable && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !(event.target instanceof HTMLInputElement)) {
+            event.preventDefault();
+            takeBack();
         }
     }
 
@@ -569,6 +615,11 @@
         onTrust={trust}
         onSetRead={markRead}
         onSetFlag={flag}
+        {folders}
+        {within}
+        onDelete={remove}
+        onArchive={archive}
+        onMove={(folder) => moveTo(folder.id, `Moved to ${folder.name}`)}
         onRead={(message) => read(message)}
         onShowImages={() => opened && read(opened.message, true)}
         onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}

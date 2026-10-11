@@ -5,9 +5,9 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 3 under way.** Read-only mail is built; marking read, flagging and undo are the first changes. You can sign in, sync a mailbox and
-read and search it. You cannot send, reply, move or delete yet, and there is
-no calendar.
+**Status: milestone 3 under way.** You can sign in, sync a mailbox, read and
+search it, and mark, flag, move, archive and delete messages, with undo. You
+cannot write, reply or send yet, and there is no calendar.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Attachment, type FlagStatus, type Message, type Opened, size, when, who } from "./mail";
+    import { type Attachment, type FlagStatus, type Folder, type Message, type Opened, size, when, who } from "./mail";
 
     interface Props {
         opened: Opened | null;
@@ -17,13 +17,20 @@
         onSave: (attachment: Attachment, ask?: boolean) => void;
         onSetRead: (isRead: boolean) => void;
         onSetFlag: (status: FlagStatus) => void;
+        /** Every folder, to move the message to one. */
+        folders: Folder[];
+        /** The standard folder the message is in, if it is in one. */
+        within: string | null;
+        onDelete: () => void;
+        onArchive: () => void;
+        onMove: (folder: Folder) => void;
         /** Always show this sender's remote pictures, or stop. */
         onTrust: (address: string, trusted: boolean) => void;
         onShowImages: () => void;
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onSetRead, onSetFlag, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onSetRead, onSetFlag, folders, within, onDelete, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
@@ -167,6 +174,26 @@
                 · {new Date(opened.message.received_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
             </p>
             <div class="actions" role="toolbar" aria-label="Message actions">
+                {#if within !== "deleteditems"}
+                    <button type="button" title="Delete" onclick={onDelete}>Delete</button>
+                {/if}
+                {#if within !== "archive" && folders.some((f) => f.well_known === "archive")}
+                    <button type="button" title="Backspace" onclick={onArchive}>Archive</button>
+                {/if}
+                <select
+                    aria-label="Move to folder"
+                    value=""
+                    onchange={(event) => {
+                        const to = folders.find((f) => f.id === event.currentTarget.value);
+                        event.currentTarget.value = "";
+                        if (to) onMove(to);
+                    }}
+                >
+                    <option value="" disabled>Move to…</option>
+                    {#each folders.filter((f) => f.id !== opened.message.folder_id) as each (each.id)}
+                        <option value={each.id}>{"\u00a0\u00a0".repeat(each.depth)}{each.name}</option>
+                    {/each}
+                </select>
                 {#if opened.message.is_read}
                     <button type="button" title="Ctrl+U" onclick={() => onSetRead(false)}>Mark as unread</button>
                 {:else}
@@ -270,7 +297,8 @@
         font-size: 0.85rem;
     }
 
-    .actions button {
+    .actions button,
+    .actions select {
         padding: 0.2rem 0.6rem;
         font-size: 0.85rem;
     }

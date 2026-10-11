@@ -348,6 +348,16 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     flags.set(m.id, args.flag as string);
                     return () => flags.set(m.id, was);
                 }),
+            "mail.messages.move": (args) => {
+                const named: Record<string, string> = { deleteditems: "deleted", sentitems: "sent" };
+                const to = named[args.folder_id as string] ?? (args.folder_id as string);
+                return acted(args.message_ids, (m) => {
+                    if (m.folder_id === to) return null;
+                    const was = m.folder_id;
+                    m.folder_id = to;
+                    return () => (m.folder_id = was);
+                });
+            },
             "mail.undo": (args) => {
                 const back = actions.get(args.undo_id as string);
                 back?.();

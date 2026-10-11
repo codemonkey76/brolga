@@ -138,6 +138,10 @@ export type FlagStatus = "flagged" | "complete" | "notFlagged";
 export const setFlag = (account_id: string, message_ids: string[], flag: FlagStatus) =>
     execute<Edited>("mail.messages.set_flag", { account_id, message_ids, flag });
 
+/** Move messages to a folder, by its id or a well-known name. Deleting is a move to `deleteditems`. */
+export const moveMessages = (account_id: string, message_ids: string[], folder_id: string) =>
+    execute<Edited>("mail.messages.move", { account_id, message_ids, folder_id });
+
 export const undo = (account_id: string, undo_id: string) => execute<{ undone: number }>("mail.undo", { account_id, undo_id });
 
 export interface Refused {
