@@ -64,9 +64,9 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="0.0.1" date="2026-10-12">
+    <release version="0.1.0" date="2026-10-12">
       <description>
-        <p>A development build, before the first release.</p>
+        <p>The first build for testing: mail, calendar, contacts, shared mailboxes and archives.</p>
       </description>
     </release>
   </releases>
