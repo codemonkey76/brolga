@@ -62,8 +62,35 @@ export interface Repeat {
 /** Which of a repeating series a change is for. */
 export type Scope = "occurrence" | "following" | "series";
 
+export interface Invited {
+    address: string;
+    name?: string;
+    kind?: "required" | "optional" | "resource";
+}
+
+/** A line of people as typed, `Sam Taylor <sam@example.test>, jo@example.test`, as those invited. */
+export function invitedFrom(line: string, kind: Invited["kind"]): Invited[] {
+    return line
+        .split(/[,;]/)
+        .map((each) => each.trim())
+        .filter(Boolean)
+        .map((each) => {
+            const named = /^(.*?)\s*<([^>]+)>$/.exec(each);
+            const name = named?.[1].replace(/^"|"$/g, "").trim();
+            return { address: (named?.[2] ?? each).trim(), ...(name ? { name } : {}), kind };
+        });
+}
+
+/** Those invited, as a line to change. */
+export const invitedLine = (people: { name: string | null; address: string | null }[]) =>
+    people.map((each) => (each.name && each.name !== each.address ? `${each.name} <${each.address}>` : (each.address ?? ""))).join(", ");
+
 /** What an event is made of, to make one or to change one. What is left out is left as it is. */
 export interface EventFields {
+    /** Everyone invited: the whole list. */
+    attendees?: Invited[];
+    /** True makes it a Teams meeting. */
+    online_meeting?: boolean;
     repeat?: Repeat;
     subject?: string;
     /** By the clock in `time_zone`: `2026-10-20T09:00`. For an all-day event, its first day. */
@@ -87,6 +114,10 @@ export const updateEvent = async (account_id: string, event_id: string, fields: 
 
 export const deleteEvent = (account_id: string, event_id: string, scope: Scope = "occurrence") =>
     execute("calendar.events.delete", { account_id, event_id, ...(scope === "occurrence" ? {} : { scope }) });
+
+/** Cancel a meeting one organised, with words to everyone invited. */
+export const cancelEvent = (account_id: string, event_id: string, comment: string, scope: Scope = "occurrence") =>
+    execute("calendar.events.cancel", { account_id, event_id, ...(comment ? { comment } : {}), ...(scope === "series" ? { scope } : {}) });
 
 const DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const NTH = ["first", "second", "third", "fourth", "last"];

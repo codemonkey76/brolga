@@ -2652,3 +2652,154 @@ async fn a_series_repeats_as_it_is_said_to() {
         ["2027-06-07", "2027-06-08", "2027-06-09"]
     );
 }
+
+#[tokio::test]
+async fn a_meeting_invites_tells_only_who_it_must_and_is_cancelled_with_a_word() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let mail = || -> Vec<(String, String)> {
+        f.graph
+            .meeting_mail()
+            .into_iter()
+            .map(|(_, to, what, words)| (to, format!("{what}{words}")))
+            .collect()
+    };
+    let people = |all: &[&str]| -> Value {
+        all.iter()
+            .map(|address| json!({ "address": address }))
+            .collect()
+    };
+
+    // Made online, with two people: each is invited.
+    let made = f
+        .run(
+            "calendar.events.create",
+            json!({
+                "subject": "Kick-off", "start": "2027-05-03T10:00", "end": "2027-05-03T11:00", "time_zone": "Australia/Brisbane",
+                "online_meeting": true,
+                "attendees": [{ "address": "sam@example.test", "name": "Sam Taylor" }, { "address": "jo@example.test", "kind": "optional" }]
+            }),
+        )
+        .await["event"]
+        .clone();
+    let id = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(made["is_organizer"], true);
+    assert!(made["join_url"].as_str().unwrap().starts_with("https://"));
+    assert_eq!(
+        made["attendees"][0],
+        json!({ "name": "Sam Taylor", "address": "sam@example.test", "kind": "required", "response": "none" })
+    );
+    assert_eq!(made["attendees"][1]["kind"], "optional");
+    assert_eq!(
+        mail(),
+        [
+            ("sam@example.test".into(), "invitation".into()),
+            ("jo@example.test".into(), "invitation".into())
+        ]
+    );
+
+    // Sam accepts; it shows after a sync.
+    f.graph
+        .attendee_answers(&id, "sam@example.test", "accepted");
+    f.sync().await;
+    let read = f
+        .run("calendar.events.get", json!({ "event_id": id }))
+        .await;
+    assert_eq!(read["event"]["attendees"][0]["response"], "accepted");
+
+    // Someone added and someone dropped, and nothing else: only those two hear of it.
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": id, "attendees": people(&["sam@example.test", "alex@example.test"]) }),
+    )
+    .await;
+    assert_eq!(
+        mail()[2..],
+        [
+            ("alex@example.test".into(), "invitation".into()),
+            ("jo@example.test".into(), "cancellation".into())
+        ]
+    );
+    // Sam's answer is kept.
+    assert_eq!(
+        f.run("calendar.events.get", json!({ "event_id": id }))
+            .await["event"]["attendees"][0]["response"],
+        "accepted"
+    );
+
+    // Moved: everyone hears.
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": id, "start": "2027-05-03T14:00", "end": "2027-05-03T15:00", "time_zone": "Australia/Brisbane" }),
+    )
+    .await;
+    assert_eq!(
+        mail()[4..],
+        [
+            ("sam@example.test".into(), "update".into()),
+            ("alex@example.test".into(), "update".into())
+        ]
+    );
+
+    // An address that is not one stops it here.
+    assert!(
+        f.registry
+            .execute(
+                "calendar.events.update",
+                json!({ "event_id": id, "attendees": people(&["not an address"]) })
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(mail().len(), 6);
+
+    // Cancelled, with a word, out of reach first: nothing is sent, and it is still there.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 40));
+    assert!(
+        f.registry
+            .execute("calendar.events.cancel", json!({ "event_id": id }))
+            .await
+            .is_err()
+    );
+    f.graph.clear_faults();
+    assert_eq!(mail().len(), 6);
+    f.run(
+        "calendar.events.cancel",
+        json!({ "event_id": id, "comment": ": Postponed to June." }),
+    )
+    .await;
+    assert_eq!(
+        mail()[6..],
+        [
+            (
+                "sam@example.test".into(),
+                "cancellation: Postponed to June.".into()
+            ),
+            (
+                "alex@example.test".into(),
+                "cancellation: Postponed to June.".into()
+            )
+        ]
+    );
+    assert!(
+        f.registry
+            .execute("calendar.events.get", json!({ "event_id": id }))
+            .await
+            .is_err()
+    );
+
+    // Someone else's meeting cannot be cancelled from here.
+    let theirs = f.graph.add_event(
+        &f.graph.default_calendar(),
+        brolga_fake_graph::FakeEvent::new("Review", "2027-05-04T01:00:00Z", "2027-05-04T02:00:00Z")
+            .invited_by("Sam Taylor", "sam@example.test"),
+    );
+    f.sync().await;
+    let refused = f
+        .registry
+        .execute("calendar.events.cancel", json!({ "event_id": theirs }))
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("decline"), "{refused}");
+}

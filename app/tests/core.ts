@@ -280,6 +280,15 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             if (typeof args.show_as === "string") e.show_as = args.show_as;
             if (typeof args.is_private === "boolean") e.sensitivity = args.is_private ? "private" : "normal";
             if ("reminder_minutes" in args) e.reminder_minutes = args.reminder_minutes as number | null;
+            if (Array.isArray(args.attendees)) {
+                e.attendees = (args.attendees as { address: string; name?: string; kind?: string }[]).map((each) => ({
+                    name: each.name ?? each.address,
+                    address: each.address,
+                    kind: each.kind ?? "required",
+                    response: e.attendees?.find((had) => had.address === each.address)?.response ?? "none",
+                }));
+            }
+            if (args.online_meeting === true) e.join_url = "https://teams.example.test/meet/1";
             if (typeof args.start === "string" && typeof args.end === "string") {
                 e.is_all_day = args.is_all_day === true;
                 // The page is in the zone the times are given in: a time by the clock is read as its own.
@@ -532,6 +541,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     return !also;
                 });
                 return { deleted: true };
+            },
+            "calendar.events.cancel": (args) => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, and the meeting was not cancelled. Nothing was sent; try again." };
+                const found = (core.events ?? []).find((each) => each.id === args.event_id);
+                core.events = (core.events ?? []).filter((each) => each !== found && !(args.scope === "series" && found?.series_id && each.series_id === found.series_id));
+                return { cancelled: true };
             },
             "calendar.events.respond": (args) => {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, and the answer was not taken. Nothing was sent; try again." };

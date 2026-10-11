@@ -370,6 +370,16 @@ struct Fields {
     reminder_minutes: Option<Option<i64>>,
     categories: Option<Vec<String>>,
     repeat: Option<Repeat>,
+    /// Everyone invited: given, it is the whole list.
+    attendees: Option<Vec<Invited>>,
+    online_meeting: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct Invited {
+    address: String,
+    name: Option<String>,
+    kind: Option<String>,
 }
 
 /// How an event repeats, as a person would say it: every so many days,
@@ -641,6 +651,29 @@ fn event_body(fields: &Fields) -> Result<Value, CommandError> {
     }
     if let Some(categories) = &fields.categories {
         body.insert("categories".to_owned(), json!(categories));
+    }
+    if let Some(invited) = &fields.attendees {
+        let mut all = Vec::new();
+        for each in invited {
+            let address = each.address.trim();
+            if !address.contains('@') || address.contains(char::is_whitespace) {
+                return Err(failed(format!("`{address}` is not an email address.")));
+            }
+            all.push(json!({
+                "emailAddress": { "address": address, "name": each.name.as_deref().map_or(address, str::trim) },
+                "type": each.kind.as_deref().unwrap_or("required"),
+            }));
+        }
+        body.insert("attendees".to_owned(), json!(all));
+    }
+    // A meeting made online stays online ("event resource type",
+    // SOURCES.md), so there is only turning it on.
+    if fields.online_meeting == Some(true) {
+        body.insert("isOnlineMeeting".to_owned(), json!(true));
+        body.insert(
+            "onlineMeetingProvider".to_owned(),
+            json!("teamsForBusiness"),
+        );
     }
 
     Ok(Value::Object(body))
@@ -1133,6 +1166,86 @@ async fn delete(mailboxes: Arc<Mailboxes>, args: Delete) -> Result<Value, Comman
 }
 
 #[derive(Deserialize)]
+struct Cancel {
+    account_id: Option<String>,
+    event_id: String,
+    comment: Option<String>,
+    #[serde(default)]
+    scope: Scope,
+}
+
+/// Cancel a meeting the owner organised, with words to those invited. It
+/// is mail to everyone, so where the request goes unanswered the event is
+/// looked for before anything is said, and it is not sent twice.
+async fn cancel(mailboxes: Arc<Mailboxes>, args: Cancel) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let row = mailbox
+        .db
+        .event(&args.event_id)
+        .map_err(failed)?
+        .ok_or_else(|| {
+            failed(format!(
+                "There is no event `{}` on this computer.",
+                args.event_id
+            ))
+        })?;
+    if !row.is_organizer {
+        return Err(failed(
+            "Only whoever organised a meeting can cancel it. To leave it, decline it.",
+        ));
+    }
+    let whole = match (args.scope, &row.series_master_id) {
+        (Scope::Occurrence, _) | (_, None) => None,
+        (Scope::Series, Some(master)) => Some(master.clone()),
+        (Scope::Following, Some(_)) => {
+            return Err(failed(
+                "A meeting is cancelled one occurrence at a time or as a whole series. To stop it from a day on, delete it with scope `following`.",
+            ));
+        }
+    };
+    let id = whole.as_deref().unwrap_or(&args.event_id);
+
+    let asked = mailbox
+        .graph
+        .cancel_event(id, args.comment.as_deref().unwrap_or_default().trim())
+        .await;
+    if let Err(error) = asked {
+        if !error.is_transient() {
+            return Err(failed(error));
+        }
+        match mailbox.graph.event_raw(id).await {
+            // Gone from the calendar: it was cancelled.
+            Err(brolga_graph::GraphError::Refused { status: 404, .. }) => {}
+            Ok(now) if now["isCancelled"] == true => {}
+            Ok(_) => {
+                return Err(failed(
+                    "Microsoft 365 could not be reached, and the meeting was not cancelled. Nothing was sent; try again.",
+                ));
+            }
+            Err(_) => {
+                return Err(failed(
+                    "Microsoft 365 could not be reached, so it is not known whether the meeting was cancelled. \
+                     Sync, and cancel again only if it is still in the calendar.",
+                ));
+            }
+        }
+    }
+
+    match &whole {
+        Some(master) => {
+            mailbox.db.forget_series(master, None).map_err(failed)?;
+            refresh(&mailbox, &row.calendar_id).await;
+        }
+        None => mailbox.db.forget_event(&args.event_id).map_err(failed)?,
+    }
+
+    Ok(json!({ "cancelled": true }))
+}
+
+#[derive(Deserialize)]
 struct Respond {
     account_id: Option<String>,
     event_id: String,
@@ -1447,6 +1560,27 @@ pub(crate) fn register(
                 json!({ "type": "array", "items": { "type": "string" }, "maxItems": 25 }),
             ),
             ("repeat", repeat_schema.clone()),
+            (
+                "attendees",
+                json!({
+                    "type": "array", "maxItems": 500,
+                    "description": "Everyone invited: the whole list, so to add one person give them with those already there. They are sent an invitation, and told of later changes.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "address": { "type": "string" },
+                            "name": { "type": "string" },
+                            "kind": { "enum": ["required", "optional", "resource"], "description": "Default required. A room is a resource." }
+                        },
+                        "required": ["address"],
+                        "additionalProperties": false
+                    }
+                }),
+            ),
+            (
+                "online_meeting",
+                json!({ "type": "boolean", "description": "True makes it a Teams meeting, with a link to join. Once on it cannot be turned off." }),
+            ),
         ] {
             properties[name] = schema;
         }
@@ -1457,6 +1591,37 @@ pub(crate) fn register(
         "properties": { "event": event_schema(), "note": { "type": "string" } },
         "required": ["event"]
     });
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.events.cancel".to_owned(),
+            title: "Cancel a meeting".to_owned(),
+            description: "Cancel a meeting you organised: everyone invited is sent the cancellation, with the comment if one is given, \
+                          and the meeting leaves the calendar. For one of a series, scope `series` cancels all of it. It cannot be undone."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: Some("cancel_event".to_owned()),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "event_id": { "type": "string" },
+                    "comment": { "type": "string", "maxLength": 2000, "description": "Words to everyone invited." },
+                    "scope": { "enum": ["occurrence", "series"] }
+                },
+                "required": ["event_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "cancelled": { "type": "boolean" } },
+                "required": ["cancelled"]
+            }),
+            examples: vec![json!({ "event_id": "event-0004", "comment": "Something came up." })],
+        },
+        handler(&mailboxes, cancel),
+    )?;
 
     registry.register(
         CommandSpec {

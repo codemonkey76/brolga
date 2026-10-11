@@ -231,6 +231,19 @@ impl GraphClient {
         }
     }
 
+    /// Cancel a meeting the owner organised, with words to those invited
+    /// ("event: cancel", SOURCES.md). The event leaves the calendar.
+    ///
+    /// Not safe to repeat blindly: the cancellation is mail to everyone.
+    pub async fn cancel_event(&self, event_id: &str, comment: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/events/{event_id}/cancel", self.base);
+        let body = serde_json::json!({ "comment": comment });
+        self.send(reqwest::Method::POST, &url, None, Some(&body), false)
+            .await?;
+
+        Ok(())
+    }
+
     /// Answer an invitation ("event: accept", "event: tentativelyAccept"
     /// and "event: decline", SOURCES.md). `answer` is the last part of the
     /// address: `accept`, `tentativelyAccept` or `decline`. With

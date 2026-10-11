@@ -45,6 +45,10 @@ pub struct FakeEvent {
     /// Occurrences changed on their own: the day one fell on, and what of
     /// it differs from the series, as Graph names it.
     pub overrides: Vec<(String, Value)>,
+    /// Who is invited: `(name, address, kind, response)`.
+    pub attendees: Vec<(String, String, String, String)>,
+    /// It can be joined online.
+    pub online: bool,
     pub sensitivity: String,
     pub categories: Vec<String>,
     /// What it says, as HTML or plain words.
@@ -75,6 +79,8 @@ impl FakeEvent {
             moved: Vec::new(),
             former: Vec::new(),
             overrides: Vec::new(),
+            attendees: Vec::new(),
+            online: false,
             sensitivity: "normal".to_owned(),
             categories: Vec::new(),
             body: None,
@@ -130,6 +136,10 @@ struct Stored {
 pub struct Calendars {
     calendars: Vec<FakeCalendar>,
     events: BTreeMap<String, Stored>,
+    /// Every message a meeting's organiser has had sent, oldest first:
+    /// (event, to whom, what: `invitation`, `update` or `cancellation`, and
+    /// the organiser's words with a cancellation).
+    pub sent: Vec<(String, String, String, String)>,
     /// The events made with each `transactionId`, so that a request that
     /// arrives twice makes one event.
     made: BTreeMap<String, String>,
@@ -178,6 +188,35 @@ fn write(event: &mut FakeEvent, body: &Value) -> Result<(), &'static str> {
     }
     if let Some(content) = words(&body["body"]["content"]) {
         event.body = Some(content);
+    }
+    if let Some(invited) = body["attendees"].as_array() {
+        let mut all = Vec::new();
+        for each in invited {
+            let address = words(&each["emailAddress"]["address"])
+                .filter(|address| address.contains('@'))
+                .ok_or(INVALID)?;
+            let kind = words(&each["type"]).unwrap_or_else(|| "required".to_owned());
+            if !["required", "optional", "resource"].contains(&kind.as_str()) {
+                return Err(INVALID);
+            }
+            // Someone already invited keeps the answer they gave.
+            let answered = event
+                .attendees
+                .iter()
+                .find(|had| had.1.eq_ignore_ascii_case(&address))
+                .map_or_else(|| "none".to_owned(), |had| had.3.clone());
+            all.push((
+                words(&each["emailAddress"]["name"]).unwrap_or_default(),
+                address,
+                kind,
+                answered,
+            ));
+        }
+        event.attendees = all;
+    }
+    // "event resource type": once a meeting is online it stays so.
+    if body["isOnlineMeeting"].as_bool() == Some(true) {
+        event.online = true;
     }
     if let Some(all_day) = body["isAllDay"].as_bool() {
         event.is_all_day = all_day;
@@ -377,9 +416,15 @@ impl Calendars {
         if stamp(&event.start).is_none() || stamp(&event.end).is_none() {
             return Err("ErrorPropertyValidationFailure");
         }
+        let invited = event.attendees.clone();
         let id = self.add_event(calendar, event);
         if let Some(transaction) = transaction {
             self.made.insert(transaction, id.clone());
+        }
+        // "Create event": everyone invited is sent an invitation.
+        for (_, address, _, _) in invited {
+            self.sent
+                .push((id.clone(), address, "invitation".to_owned(), String::new()));
         }
 
         Ok(id)
@@ -426,8 +471,72 @@ impl Calendars {
         };
         let mut changed = stored.event.clone();
         write(&mut changed, body)?;
+        // "Update event": a change to who is invited alone is told only to
+        // those it changes; any other change is told to everyone.
+        let addresses = |event: &FakeEvent| -> Vec<String> {
+            event.attendees.iter().map(|each| each.1.clone()).collect()
+        };
+        let (before, after) = (addresses(&stored.event), addresses(&changed));
+        let only_people = body
+            .as_object()
+            .is_some_and(|given| given.keys().all(|name| name == "attendees"));
+        let mine = stored.event.organizer.is_none();
         stored.event = changed;
+        if mine {
+            for address in &after {
+                let what = if !before.contains(address) {
+                    "invitation"
+                } else if only_people {
+                    continue;
+                } else {
+                    "update"
+                };
+                self.sent.push((
+                    id.to_owned(),
+                    address.clone(),
+                    what.to_owned(),
+                    String::new(),
+                ));
+            }
+            for address in before.iter().filter(|address| !after.contains(address)) {
+                self.sent.push((
+                    id.to_owned(),
+                    address.clone(),
+                    "cancellation".to_owned(),
+                    String::new(),
+                ));
+            }
+        }
         self.touched(id);
+
+        Ok(())
+    }
+
+    /// "event: cancel" (SOURCES.md): for the organiser alone. Everyone
+    /// invited is told, with the organiser's words, and the event goes.
+    pub fn cancel(&mut self, id: &str, comment: &str) -> Result<(), &'static str> {
+        let own = id.split('.').next().unwrap_or(id).to_owned();
+        let Some(stored) = self.events.get(&own).filter(|stored| !stored.deleted) else {
+            return Err("ErrorItemNotFound");
+        };
+        if stored.event.organizer.is_some() {
+            return Err("organizer");
+        }
+        let invited: Vec<String> = stored
+            .event
+            .attendees
+            .iter()
+            .map(|each| each.1.clone())
+            .collect();
+        self.delete_quietly(id)?;
+        for address in invited {
+            self.sent.push((
+                id.to_owned(),
+                address,
+                "cancellation".to_owned(),
+                comment.to_owned(),
+            ));
+        }
 
         Ok(())
     }
@@ -449,7 +558,37 @@ impl Calendars {
         (!stored.event.cancelled_days.contains(&day)).then(|| (own.to_owned(), day))
     }
 
+    /// "Delete event" (SOURCES.md). A meeting the owner organised is
+    /// cancelled for everyone invited.
     pub fn delete(&mut self, id: &str) -> Result<(), &'static str> {
+        let own = id.split('.').next().unwrap_or(id).to_owned();
+        let invited: Vec<String> = self
+            .events
+            .get(&own)
+            .filter(|stored| stored.event.organizer.is_none())
+            .map(|stored| {
+                stored
+                    .event
+                    .attendees
+                    .iter()
+                    .map(|each| each.1.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.delete_quietly(id)?;
+        for address in invited {
+            self.sent.push((
+                id.to_owned(),
+                address,
+                "cancellation".to_owned(),
+                String::new(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn delete_quietly(&mut self, id: &str) -> Result<(), &'static str> {
         if let Some((own, day)) = self.occurrence(id) {
             if let Some(stored) = self.events.get_mut(&own) {
                 stored.event.cancelled_days.push(day);
@@ -541,14 +680,24 @@ impl Calendars {
                     Some((name, address)) => json!({ "name": name, "address": address }),
                     None => json!({ "name": "Robin Example", "address": "robin@example.test" }),
                 } },
-                "attendees": [],
+                "attendees": event.attendees.iter().map(|(name, address, kind, response)| json!({
+                    "type": kind,
+                    "status": { "response": response, "time": "0001-01-01T00:00:00Z" },
+                    "emailAddress": { "name": name, "address": address }
+                })).collect::<Vec<_>>(),
                 "responseStatus": { "response": if event.organizer.is_some() { event.response.as_str() } else { "organizer" } },
                 "type": kind,
                 "seriesMasterId": if kind == "singleInstance" { Value::Null } else { json!(id) },
                 "categories": event.categories,
                 "isReminderOn": event.reminder_minutes.is_some(),
                 "reminderMinutesBeforeStart": event.reminder_minutes.unwrap_or(15),
-                "onlineMeeting": Value::Null,
+                "isOnlineMeeting": event.online,
+                "onlineMeetingProvider": if event.online { "teamsForBusiness" } else { "unknown" },
+                "onlineMeeting": if event.online {
+                    json!({ "joinUrl": format!("https://teams.example.test/meet/{id}") })
+                } else {
+                    Value::Null
+                },
                 "webLink": format!("https://outlook.example.test/calendar/item/{instance_id}"),
                 "changeKey": format!("key-{}", self.seq),
             })

@@ -1,7 +1,9 @@
 <script lang="ts">
-    import { type Calendar, type CalendarEvent, type EventFields, type Repeat, type Scope, addDays, placeInMonth, span } from "./calendar";
+    import { type Calendar, type CalendarEvent, type EventFields, type Repeat, type Scope, addDays, invitedFrom, invitedLine, placeInMonth, span } from "./calendar";
+    import Recipients from "./Recipients.svelte";
 
     interface Props {
+        accountId: string;
         /** The event being changed. None, and a new one is being made. */
         event: CalendarEvent | null;
         /** What the event says, where one is being changed and it is known. */
@@ -18,7 +20,7 @@
         onCancel: () => void;
     }
 
-    let { event, description, startAt, calendars, scope = "occurrence", repeat = null, onSave, onCancel }: Props = $props();
+    let { accountId, event, description, startAt, calendars, scope = "occurrence", repeat = null, onSave, onCancel }: Props = $props();
 
     const pad = (n: number) => String(n).padStart(2, "0");
     const dayOf = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
@@ -42,6 +44,8 @@
             isPrivate: event?.sensitivity === "private",
             reminder: event ? (event.reminder_minutes === null ? "" : String(event.reminder_minutes)) : "15",
             description: description ?? "",
+            required: invitedLine((event?.attendees ?? []).filter((each) => each.kind !== "optional")),
+            optional: invitedLine((event?.attendees ?? []).filter((each) => each.kind === "optional")),
             unit: (repeat?.unit ?? "") as Repeat["unit"] | "",
             every: repeat?.every ?? 1,
             weekdays: [...(repeat?.days_of_week ?? [])].sort(),
@@ -64,6 +68,10 @@
     let isPrivate = $state(was.isPrivate);
     let reminder = $state(was.reminder);
     let words = $state(was.description);
+    let required = $state(was.required);
+    let optional = $state(was.optional);
+    let showOptional = $state(was.optional !== "");
+    let online = $state(false);
     // svelte-ignore state_referenced_locally
     let calendarId = $state(event?.calendar_id ?? calendars.find((c) => c.is_default && c.can_edit)?.id ?? calendars.find((c) => c.can_edit)?.id ?? null);
     // svelte-ignore state_referenced_locally
@@ -161,6 +169,16 @@
         // The words are sent only if they were changed: what Microsoft 365
         // keeps in them, such as how to join online, is not to be lost.
         if (words !== was.description) fields.description = words;
+        // Who is invited is given whole, and only if it was changed: then only those it changes are told.
+        if (required !== was.required || optional !== was.optional) {
+            fields.attendees = [...invitedFrom(required, "required"), ...invitedFrom(optional, "optional")];
+            const wrong = fields.attendees.find((each) => !/^[^\s@]+@[^\s@]+$/.test(each.address));
+            if (wrong) {
+                problem = `“${wrong.address}” is not an email address.`;
+                return;
+            }
+        }
+        if (online) fields.online_meeting = true;
         if (event && Object.keys(fields).length === 0) {
             onCancel();
             return;
@@ -254,6 +272,20 @@
         {/if}
     {/if}
 
+    <!-- Not labels: a label would name the first control inside it, which is the button. -->
+    <div class="people">
+        <span>Invite {#if !showOptional}<button type="button" class="link" onclick={() => (showOptional = true)}>Optional</button>{/if}</span>
+        <Recipients {accountId} label="Invite" bind:value={required} placeholder="name@example.com, another@example.com" />
+    </div>
+    {#if showOptional}
+        <div class="people"><span>Optional</span><Recipients {accountId} label="Optional" bind:value={optional} /></div>
+    {/if}
+    {#if event?.join_url}
+        <p class="muted small">A Teams meeting. It stays one.</p>
+    {:else}
+        <label class="check"><input type="checkbox" bind:checked={online} /> Teams meeting</label>
+    {/if}
+
     <input type="text" aria-label="Location" placeholder="Location" maxlength="500" bind:value={location} />
 
     <div class="row">
@@ -336,6 +368,36 @@
 
     .when span {
         grid-column: 1;
+    }
+
+    .people {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        font-size: 0.85rem;
+    }
+
+    /* The field is the mail composer's, which draws no box of its own. */
+    .people :global(input) {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 0.35rem 0.5rem;
+        border: 1px solid var(--line);
+        border-radius: 0.3rem;
+        font: inherit;
+    }
+
+    .people span {
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .link {
+        border: 0;
+        background: none;
+        padding: 0;
+        color: var(--accent);
+        font-size: 0.85rem;
     }
 
     .repeat {

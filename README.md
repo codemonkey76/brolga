@@ -12,8 +12,11 @@ can be read: day, work week, week, month and agenda, across your calendars,
 with reminders. Invitations read as invitations and can be accepted,
 tentatively accepted or declined, from the message or the calendar, and
 events can be made, changed and deleted, repeating ones too: one occurrence,
-that one and the rest, or the whole series. It has been run against a real
-Microsoft 365 mailbox. People cannot be invited to a meeting yet.
+that one and the rest, or the whole series. Meetings can be called, with
+people invited and a Teams link, their answers seen, and cancelled with a
+message. Mail has been run against a real Microsoft 365 mailbox; changing the
+calendar has so far only been run against the stand-in server. The scheduling
+assistant and room finder are not built yet.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 

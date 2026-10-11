@@ -89,6 +89,23 @@ async fn every_command_is_described_and_its_examples_run() {
         ),
         "event-0002"
     );
+    // A plain event, so that the next has the id the examples expect; and
+    // a meeting of one's own, for `calendar.events.cancel`.
+    graph.add_event(
+        &graph.default_calendar(),
+        brolga_fake_graph::FakeEvent::new("Lunch", "2026-10-22T01:00:00Z", "2026-10-22T02:00:00Z"),
+    );
+    assert_eq!(
+        graph.add_event(
+            &graph.default_calendar(),
+            brolga_fake_graph::FakeEvent::new(
+                "Team meeting",
+                "2026-10-23T01:00:00Z",
+                "2026-10-23T02:00:00Z"
+            ),
+        ),
+        "event-0004"
+    );
     // A draft written in some other mail program, for `mail.drafts.open`.
     let mut elsewhere = FakeMessage::new(
         "Half written",

@@ -8,6 +8,7 @@
         type Repeat,
         type Scope,
         repeatSaid,
+        cancelEvent,
         createEvent,
         deleteEvent,
         updateEvent,
@@ -99,6 +100,24 @@
         // A series is in the calendar as its occurrences, not as itself.
         if (saved.kind === "seriesMaster") selected = null;
         else await select(saved);
+    }
+
+    /** The words to go with a cancellation, while a meeting is being cancelled. Null when none is. */
+    let cancelling = $state<string | null>(null);
+    /** A meeting the owner called, with people invited: deleting it is cancelling it for them. */
+    const mine = $derived(Boolean(selected?.is_organizer && selected.attendees.length > 0));
+
+    async function cancel(of: Scope) {
+        const event = selected;
+        if (!accountId || !event || cancelling === null) return;
+        try {
+            await cancelEvent(accountId, event.id, cancelling.trim(), of);
+            selected = null;
+            cancelling = null;
+            await load();
+        } catch (failure) {
+            problem = say(failure);
+        }
     }
 
     async function remove(of: Scope = "occurrence") {
@@ -194,6 +213,7 @@
         editing = null;
         sure = false;
         asking = null;
+        cancelling = null;
         scope = "occurrence";
         description = null;
         repeat = null;
@@ -371,6 +391,7 @@
         <aside class="details" aria-label="Event">
             {#key editing + scope + (selected?.id ?? "")}
                 <EventEditor
+                    accountId={accountId ?? ""}
                     event={editing === "change" ? selected : null}
                     description={editing === "change" ? (description?.complete ? description.text : null) : ""}
                     startAt={newStart()}
@@ -387,7 +408,15 @@
             <button type="button" class="close" aria-label="Close" title="Escape" onclick={() => (selected = null)}>✕</button>
             {#if calendars.find((c) => c.id === selected?.calendar_id)?.can_edit ?? true}
                 <div class="tools">
-                    {#if asking}
+                    {#if cancelling !== null}
+                        <!-- A meeting one called: those invited are told, with a word if there is one. -->
+                        <div class="cancel" role="group" aria-label="Cancel meeting">
+                            <textarea aria-label="Message to everyone invited" placeholder="A message to everyone invited (optional)" rows="2" maxlength="2000" bind:value={cancelling}></textarea>
+                            <button type="button" class="danger" onclick={() => cancel("occurrence")}>{selected.series_id ? "Cancel this one" : "Cancel the meeting"}</button>
+                            {#if selected.series_id}<button type="button" class="danger" onclick={() => cancel("series")}>Cancel the whole series</button>{/if}
+                            <button type="button" onclick={() => (cancelling = null)}>Keep</button>
+                        </div>
+                    {:else if asking}
                         <!-- One of a series: how much of it? -->
                         <span class="ask">{asking === "delete" ? "Delete" : "Change"}</span>
                         {#each [["occurrence", "This event"], ["following", "This and following"], ["series", "The whole series"]] as [each, label] (each)}
@@ -412,7 +441,11 @@
                                 ><Pencil size={16} aria-hidden="true" /></button
                             >
                         {/if}
-                        <button type="button" aria-label="Delete" title="Delete" onclick={() => (selected?.series_id ? (asking = "delete") : (sure = true))}
+                        <button
+                            type="button"
+                            aria-label={mine ? "Cancel meeting" : "Delete"}
+                            title={mine ? "Cancel the meeting" : "Delete"}
+                            onclick={() => (mine ? (cancelling = "") : selected?.series_id ? (asking = "delete") : (sure = true))}
                             ><Trash size={16} aria-hidden="true" /></button
                         >
                     {/if}
@@ -443,7 +476,15 @@
                 <Rsvp response={selected.response} onAnswer={answer} />
             {/if}
             {#if selected.attendees.length > 0}
+                {@const answers = selected.attendees}
                 <h3>People</h3>
+                {#if selected.is_organizer}
+                    <p class="muted small">
+                        {answers.filter((a) => a.response === "accepted").length} accepted · {answers.filter((a) => a.response === "tentativelyAccepted").length} tentative · {answers.filter(
+                            (a) => a.response === "declined",
+                        ).length} declined · {answers.filter((a) => !["accepted", "tentativelyAccepted", "declined"].includes(a.response)).length} no answer
+                    </p>
+                {/if}
                 <ul class="people">
                     {#each selected.attendees as each (each.address)}
                         <li>{each.name || each.address} <span class="muted">{ANSWERED[each.response] ?? each.response}{each.kind === "optional" ? " · optional" : ""}</span></li>
@@ -480,6 +521,19 @@
         display: inline-flex;
         align-items: center;
         font-size: 0.85rem;
+    }
+
+    .cancel {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        width: 100%;
+    }
+
+    .cancel textarea {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
     }
 
     .tools .ask {

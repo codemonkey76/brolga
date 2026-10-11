@@ -535,3 +535,67 @@ test("one of a series is changed alone, or with the rest, and deleted the same w
     expect((await ran(page)).filter((r) => r.command === "calendar.events.delete").at(-1)?.args).toEqual({ account_id: "tenant-1.robin", event_id: "s2", scope: "following" });
     await expect(calendar.getByRole("button", { name: /Stand-up/ })).toHaveCount(2);
 });
+
+test("a meeting is called, its answers counted, people changed, and cancelled with a word", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: [] });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    const calendar = page.getByRole("region", { name: "Calendar" });
+    const panel = page.getByRole("complementary", { name: "Event" });
+    const last = async (command: string) => (await ran(page)).filter((r) => r.command === command).at(-1)?.args as Record<string, unknown>;
+
+    await calendar.getByRole("button", { name: "New event" }).click();
+    const form = panel.getByRole("form", { name: "New event" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Kick-off");
+    await form.getByLabel("Start day").fill("2026-10-15");
+    await form.getByLabel("Start time").fill("10:00");
+    await form.getByRole("combobox", { name: "Invite" }).fill("Sam Taylor <sam.taylor@example.test>, jo@example.test");
+    await form.getByRole("button", { name: "Optional" }).click();
+    await form.getByRole("combobox", { name: "Optional" }).fill("alex.chen@example.test");
+    await form.getByLabel("Teams meeting").check();
+    if (process.env.SCREENSHOTS) await page.screenshot({ path: "../docs/screenshots/calendar-meeting.png" });
+    await form.getByRole("button", { name: "Save" }).click();
+
+    expect(await last("calendar.events.create")).toMatchObject({
+        online_meeting: true,
+        attendees: [
+            { address: "sam.taylor@example.test", name: "Sam Taylor", kind: "required" },
+            { address: "jo@example.test", kind: "required" },
+            { address: "alex.chen@example.test", kind: "optional" },
+        ],
+    });
+    await expect(panel.getByRole("button", { name: "Join online" })).toBeVisible();
+    await expect(panel).toContainText("0 accepted · 0 tentative · 0 declined · 3 no answer");
+
+    // A change to something else does not send who is invited again.
+    await panel.getByRole("button", { name: "Change" }).click();
+    const change = panel.getByRole("form", { name: "Change event" });
+    await expect(change.getByRole("combobox", { name: "Invite" })).toHaveValue("Sam Taylor <sam.taylor@example.test>, jo@example.test");
+    await expect(change.getByLabel("Teams meeting")).toHaveCount(0);
+    await change.getByRole("textbox", { name: "Location" }).fill("Room 4");
+    await change.getByRole("button", { name: "Save" }).click();
+    expect(await last("calendar.events.update")).not.toHaveProperty("attendees");
+
+    // A change to who is invited sends them all, and nothing else.
+    await panel.getByRole("button", { name: "Change" }).click();
+    await change.getByRole("combobox", { name: "Invite" }).fill("Sam Taylor <sam.taylor@example.test>");
+    await change.getByRole("button", { name: "Save" }).click();
+    const sent = await last("calendar.events.update");
+    expect(Object.keys(sent).sort()).toEqual(["account_id", "attendees", "event_id"]);
+    expect(sent.attendees).toHaveLength(2);
+
+    // What is not an address is said, and nothing is sent.
+    await panel.getByRole("button", { name: "Change" }).click();
+    await change.getByRole("combobox", { name: "Invite" }).fill("sam");
+    await change.getByRole("button", { name: "Save" }).click();
+    await expect(change.getByRole("alert")).toContainText("is not an email address");
+    await change.getByRole("button", { name: "Cancel" }).click();
+
+    // Cancelled, with a word to those invited.
+    await panel.getByRole("button", { name: "Cancel meeting" }).click();
+    const cancel = panel.getByRole("group", { name: "Cancel meeting" });
+    await cancel.getByRole("textbox", { name: "Message to everyone invited" }).fill("Postponed to next week.");
+    await cancel.getByRole("button", { name: "Cancel the meeting" }).click();
+    expect(await last("calendar.events.cancel")).toEqual({ account_id: "tenant-1.robin", event_id: "made-1", comment: "Postponed to next week." });
+    await expect(calendar.getByRole("button", { name: /Kick-off/ })).toHaveCount(0);
+});

@@ -277,6 +277,22 @@ impl FakeGraph {
 
     /// The next move is made, but the answer to it is an error: the case
     /// of a request that reached the server and an answer that did not come back.
+    /// Every message a meeting's organiser has had sent: (event, to whom, what, words).
+    pub fn meeting_mail(&self) -> Vec<(String, String, String, String)> {
+        lock(&self.shared).calendars().sent.clone()
+    }
+
+    /// Have someone invited to a meeting answer it.
+    pub fn attendee_answers(&self, event: &str, address: &str, response: &str) {
+        lock(&self.shared).calendars().change_event(event, |e| {
+            for each in &mut e.attendees {
+                if each.1 == address {
+                    each.3 = response.to_owned();
+                }
+            }
+        });
+    }
+
     pub fn lose_next_event_answer(&self) {
         lock(&self.shared).lose_next_event_answer = true;
     }
@@ -692,6 +708,23 @@ async fn event_action(
     Path((event, action)): Path<(String, String)>,
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
+    if action == "cancel" {
+        // "event: cancel" (SOURCES.md): 202, and only for the organiser.
+        let comment = body["comment"]
+            .as_str()
+            .or(body["Comment"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        return match lock(&shared).calendars().cancel(&event, &comment) {
+            Ok(()) => StatusCode::ACCEPTED.into_response(),
+            Err("organizer") => error(
+                StatusCode::BAD_REQUEST,
+                "ErrorAccessDenied",
+                "Your request can't be completed. You need to be an organizer to cancel a meeting.",
+            ),
+            Err(code) => event_refused(code),
+        };
+    }
     if !["accept", "tentativelyAccept", "decline"].contains(&action.as_str()) {
         return error(
             StatusCode::NOT_FOUND,
