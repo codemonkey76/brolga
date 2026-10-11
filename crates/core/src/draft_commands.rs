@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use brolga_commands::{CommandError, CommandKind, CommandSpec, Handler, Registry, RegistryError};
-use brolga_store::{Draft, DraftEdit, MessageRow};
+use brolga_store::{Draft, DraftEdit, DraftFile, MessageRow};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -50,6 +50,68 @@ struct Edit {
 struct One {
     account_id: Option<String>,
     draft_id: String,
+}
+
+#[derive(Deserialize)]
+struct AddFile {
+    account_id: Option<String>,
+    draft_id: String,
+    /// A file on this computer to attach.
+    path: Option<String>,
+    /// Or the file itself: its name and its contents in base64.
+    name: Option<String>,
+    content_base64: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RemoveFile {
+    account_id: Option<String>,
+    draft_id: String,
+    file_id: i64,
+}
+
+/// The largest file that can be attached yet. Graph takes a file of 3 MB or
+/// more only through an upload session, which is not built.
+const LARGEST_FILE: usize = 3 * 1024 * 1024 - 1;
+/// The most a message's files may come to. Microsoft 365's own default
+/// limit for a whole message is 35 MB, and base64 makes files a third bigger.
+const MOST_FILES_BYTES: i64 = 25 * 1024 * 1024;
+
+/// What kind of file a name says it is, for the commonest kinds. Anything
+/// else is sent as plain bytes, which every mail program accepts.
+fn content_type(name: &str) -> &'static str {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match extension.as_str() {
+        "pdf" => "application/pdf",
+        "txt" | "log" => "text/plain",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "zip" => "application/zip",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "ics" => "text/calendar",
+        "eml" => "message/rfc822",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
+}
+
+fn file_shown(file: &DraftFile) -> Value {
+    json!({ "id": file.id, "name": file.name, "content_type": file.content_type, "size": file.size })
 }
 
 #[derive(Deserialize)]
@@ -148,7 +210,14 @@ fn is_address(text: &str) -> bool {
         && !text.contains(['<', '>', ',', ';'])
 }
 
-fn shown(draft: &Draft) -> Value {
+fn shown(mailbox: &Mailbox, draft: &Draft) -> Value {
+    let files: Vec<Value> = mailbox
+        .db
+        .draft_files(&draft.id)
+        .unwrap_or_default()
+        .iter()
+        .map(file_shown)
+        .collect();
     let list = |raw: &str| serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!([]));
 
     json!({
@@ -163,6 +232,7 @@ fn shown(draft: &Draft) -> Value {
         "state": draft.state,
         "error": draft.error,
         "updated_at": draft.updated_at,
+        "files": files,
     })
 }
 
@@ -267,7 +337,81 @@ async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, Comman
         )
         .map_err(failed)?;
 
-    Ok(json!({ "draft": shown(&draft) }))
+    Ok(json!({ "draft": shown(&mailbox, &draft) }))
+}
+
+async fn add_file(mailboxes: Arc<Mailboxes>, args: AddFile) -> Result<Value, CommandError> {
+    use base64::Engine;
+
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let (name, data) = match (args.path, args.name, args.content_base64) {
+        (Some(path), None, None) => {
+            let path = std::path::PathBuf::from(path);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .ok_or_else(|| failed("That is not a file."))?;
+            // Looked at before it is read, so a huge file is refused, not loaded.
+            let size = std::fs::metadata(&path)
+                .map_err(|e| failed(format!("`{name}` could not be read. {e}")))?
+                .len();
+            if size > LARGEST_FILE as u64 {
+                return Err(too_large(&name));
+            }
+            let reading = path.clone();
+            let data = tokio::task::spawn_blocking(move || std::fs::read(reading))
+                .await
+                .map_err(failed)?
+                .map_err(|e| failed(format!("`{name}` could not be read. {e}")))?;
+            (name, data)
+        }
+        (None, Some(name), Some(content)) => {
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(content.trim())
+                .map_err(|_| failed("content_base64 is not base64."))?;
+            (name, data)
+        }
+        _ => {
+            return Err(failed(
+                "Give either `path`, or both `name` and `content_base64`.",
+            ));
+        }
+    };
+
+    let name = crate::saving::safe_name(&name);
+    if data.len() > LARGEST_FILE {
+        return Err(too_large(&name));
+    }
+    let carried = mailbox
+        .db
+        .draft_files_size(&args.draft_id)
+        .map_err(failed)?;
+    if carried + data.len() as i64 > MOST_FILES_BYTES {
+        return Err(failed(
+            "That would take this message's files over 25 MB, which is more than most mail systems accept.",
+        ));
+    }
+    let file = mailbox
+        .db
+        .attach_to_draft(&args.draft_id, &name, content_type(&name), &data)
+        .map_err(failed)?
+        .ok_or_else(|| failed("There is no such draft, or it is already on its way out."))?;
+
+    Ok(json!({ "file": file_shown(&file) }))
+}
+
+fn too_large(name: &str) -> CommandError {
+    failed(format!(
+        "`{name}` is 3 MB or more, which Brolga cannot attach yet."
+    ))
+}
+
+async fn remove_file(mailboxes: Arc<Mailboxes>, args: RemoveFile) -> Result<Value, CommandError> {
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+
+    Ok(
+        json!({ "removed": mailbox.db.detach_from_draft(&args.draft_id, args.file_id).map_err(failed)? }),
+    )
 }
 
 async fn get_signature(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
@@ -325,21 +469,21 @@ async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandErr
     }
     let draft = mailbox.db.draft(&args.draft_id).map_err(failed)?;
 
-    Ok(json!({ "draft": draft.as_ref().map(shown) }))
+    Ok(json!({ "draft": draft.as_ref().map(|d| shown(&mailbox, d)) }))
 }
 
 async fn get(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
     let draft = mailbox.db.draft(&args.draft_id).map_err(failed)?;
 
-    Ok(json!({ "draft": draft.as_ref().map(shown) }))
+    Ok(json!({ "draft": draft.as_ref().map(|d| shown(&mailbox, d)) }))
 }
 
 async fn list(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
     let drafts = mailbox.db.drafts().map_err(failed)?;
 
-    Ok(json!({ "drafts": drafts.iter().map(shown).collect::<Vec<_>>() }))
+    Ok(json!({ "drafts": drafts.iter().map(|d| shown(&mailbox, d)).collect::<Vec<_>>() }))
 }
 
 async fn discard(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
@@ -438,9 +582,23 @@ fn draft_schema() -> Value {
             "body": { "type": "string", "description": "The words as written, plain. The original is added under them when it is sent." },
             "state": { "enum": ["editing", "queued", "failed"], "description": "queued: waiting to be sent. failed: Microsoft 365 would not send it; `error` says why." },
             "error": { "type": ["string", "null"] },
-            "updated_at": { "type": "integer", "description": "Seconds since 1970." }
+            "updated_at": { "type": "integer", "description": "Seconds since 1970." },
+            "files": { "type": "array", "items": file_schema(), "description": "The files attached, without their contents." }
         },
         "required": ["id", "kind", "to", "cc", "bcc", "subject", "body", "state"]
+    })
+}
+
+fn file_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "integer" },
+            "name": { "type": "string" },
+            "content_type": { "type": "string" },
+            "size": { "type": "integer", "description": "In bytes." }
+        },
+        "required": ["id", "name", "content_type", "size"]
     })
 }
 
@@ -581,6 +739,67 @@ pub(crate) fn register(
             examples: vec![json!({ "draft_id": "draft-1", "body": "A better first line." })],
         },
         handler(&mailboxes, edit),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.drafts.files.add".to_owned(),
+            title: "Attach a file".to_owned(),
+            description: "Attach a file to a draft: one on this computer by its `path`, or one given whole as `name` and `content_base64`. \
+                          It is copied into the draft, so the original can change or go. A file must be under 3 MB for now, and a message's files 25 MB in all."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "draft_id": { "type": "string" },
+                    "path": { "type": "string", "description": "The full path of a file on this computer." },
+                    "name": { "type": "string" },
+                    "content_base64": { "type": "string" }
+                },
+                "required": ["draft_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "file": file_schema() },
+                "required": ["file"]
+            }),
+            examples: vec![json!({ "draft_id": "draft-1", "name": "notes.txt", "content_base64": "U29tZSBub3Rlcy4=" })],
+        },
+        handler(&mailboxes, add_file),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.drafts.files.remove".to_owned(),
+            title: "Remove an attached file".to_owned(),
+            description: "Take a file off a draft, by the id mail.drafts.get lists it under. `removed` is false if there was no such file, or the draft is on its way out."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "draft_id": { "type": "string" },
+                    "file_id": { "type": "integer" }
+                },
+                "required": ["draft_id", "file_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "removed": { "type": "boolean" } },
+                "required": ["removed"]
+            }),
+            examples: vec![json!({ "draft_id": "draft-1", "file_id": 999 })],
+        },
+        handler(&mailboxes, remove_file),
     )?;
 
     registry.register(

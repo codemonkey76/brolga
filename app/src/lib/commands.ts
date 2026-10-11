@@ -23,6 +23,9 @@ export function execute<T>(command: string, args: Record<string, unknown> = {}):
  */
 export const chooseSavePath = (suggestedName: string) => invoke<string | null>("choose_save_path", { suggestedName });
 
+/** Ask which files to attach, with the system's own dialog. Empty if it was dismissed. */
+export const chooseFiles = () => invoke<string[]>("choose_files");
+
 export function isCommandFailure(value: unknown): value is CommandFailure {
     return typeof value === "object" && value !== null && "code" in value && "message" in value;
 }

@@ -136,7 +136,22 @@ export interface Draft {
     /** queued: waiting to be sent. failed: Microsoft 365 would not send it. */
     state: "editing" | "queued" | "failed";
     error: string | null;
+    files: DraftFile[];
 }
+
+export interface DraftFile {
+    id: number;
+    name: string;
+    content_type: string;
+    /** In bytes. */
+    size: number;
+}
+
+export const attachFile = async (account_id: string, draft_id: string, path: string) =>
+    (await execute<{ file: DraftFile }>("mail.drafts.files.add", { account_id, draft_id, path })).file;
+
+export const removeFile = (account_id: string, draft_id: string, file_id: number) =>
+    execute<{ removed: boolean }>("mail.drafts.files.remove", { account_id, draft_id, file_id });
 
 export const createDraft = async (account_id: string, kind: Draft["kind"], message_id?: string) =>
     (await execute<{ draft: Draft }>("mail.drafts.create", { account_id, kind, ...(message_id ? { message_id } : {}) })).draft;

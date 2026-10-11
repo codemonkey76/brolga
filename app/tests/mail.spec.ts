@@ -721,3 +721,31 @@ test("search filters as the words are typed", async ({ page }) => {
     await expect(rows).toHaveCount(4);
     await expect(page.getByText("4 messages")).toBeVisible();
 });
+
+test("files are attached from the file dialog, can be removed, and go with the message", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: inbox,
+        pickFiles: ["/home/robin/Documents/Quarterly report.pdf", "/home/robin/huge-video.mov", "/home/robin/Documents/Budget.xlsx"],
+    });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    await form.getByRole("textbox", { name: "To" }).fill("jo@example.test");
+
+    await form.getByRole("button", { name: "Attach…" }).click();
+
+    const attached = form.getByRole("list", { name: "Attached files" });
+    // The one that is too big is said, and does not stop the others.
+    await expect(attached.getByRole("listitem")).toHaveCount(2);
+    await expect(attached).toContainText("Quarterly report.pdf");
+    await expect(form.getByRole("alert")).toContainText("`huge-video.mov` is 3 MB or more");
+    await picture(page, "compose-with-files");
+
+    await attached.getByRole("button", { name: "Remove Budget.xlsx" }).click();
+    await expect(attached.getByRole("listitem")).toHaveCount(1);
+
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form).toHaveCount(0);
+    const went = (await sent(page))[0] as { files: { name: string }[] };
+    expect(went.files.map((each) => each.name)).toEqual(["Quarterly report.pdf"]);
+});

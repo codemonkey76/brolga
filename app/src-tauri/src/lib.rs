@@ -68,6 +68,27 @@ async fn choose_save_path(app: tauri::AppHandle, suggested_name: String) -> Opti
     Some(path.to_string_lossy().into_owned())
 }
 
+/// Ask which files to attach, with the system's own dialog. Gives back
+/// their paths, or none if the dialog was dismissed. Choosing is all it
+/// does: the attaching is a command.
+#[tauri::command]
+async fn choose_files(app: tauri::AppHandle) -> Vec<String> {
+    let (chosen, choice) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_files(move |paths| {
+        let _ = chosen.send(paths);
+    });
+
+    choice
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|path| path.into_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Opening the channel is how a second copy finds out it is one, so it is
     // done first, before any data is opened or there is a window to show.
@@ -96,7 +117,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             tauri::async_runtime::spawn(server.run(control));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![execute_command, choose_save_path])
+        .invoke_handler(tauri::generate_handler![
+            execute_command,
+            choose_save_path,
+            choose_files
+        ])
         .run(tauri::generate_context!())?;
 
     Ok(())

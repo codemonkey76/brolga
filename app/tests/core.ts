@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** The files the file dialog says were chosen. Left out, it is dismissed. */
+    pickFiles?: string[];
     /** The sync is still going for as long as the test runs. */
     syncNeverEnds?: boolean;
     /** Why Microsoft 365 will not send anything, if it will not. */
@@ -365,6 +367,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     body: signature.text && (kind === "new" || signature.on_replies) ? `\n\n${signature.text}` : "",
                     state: "editing",
                     error: null,
+                    files: [] as Record<string, unknown>[],
                 };
                 drafts.unshift(made);
                 return { draft: made };
@@ -382,6 +385,19 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 found.state = "editing";
                 found.error = null;
                 return { draft: found };
+            },
+            "mail.drafts.files.add": (args) => {
+                const found = draft(args.draft_id);
+                const name = String(args.path).split("/").pop() ?? "";
+                if (name.startsWith("huge")) throw { code: "failed", message: `\`${name}\` is 3 MB or more, which Brolga cannot attach yet.` };
+                const file = { id: Date.now() + Math.random(), name, content_type: "application/pdf", size: 184_320 };
+                (found?.files as unknown[]).push(file);
+                return { file };
+            },
+            "mail.drafts.files.remove": (args) => {
+                const found = draft(args.draft_id);
+                if (found) found.files = (found.files as { id: number }[]).filter((each) => each.id !== args.file_id);
+                return { removed: true };
             },
             "mail.drafts.list": () => ({ drafts }),
             "mail.drafts.discard": (args) => {
@@ -490,6 +506,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 invoke: async (name: string, payload: { command: string; args?: Record<string, unknown> }) => {
                     // The save dialog: the place this test says was chosen, or dismissed.
                     if (name === "choose_save_path") return core.savePath ?? null;
+                    // The file dialog: the files this test says were chosen.
+                    if (name === "choose_files") return core.pickFiles ?? [];
                     if (name !== "execute_command") throw new Error(`The frontend called ${name}, which is not a command.`);
                     const run = commands[payload.command];
                     if (!run) throw { code: "unknown_command", message: `there is no command called \`${payload.command}\`` };

@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { say } from "./commands";
-    import { type Draft, type Person, discardDraft, editDraft, sendDraft } from "./mail";
+    import { chooseFiles, say } from "./commands";
+    import { type Draft, type DraftFile, type Person, attachFile, discardDraft, editDraft, removeFile, sendDraft, size } from "./mail";
 
     interface Props {
         accountId: string;
@@ -35,6 +35,30 @@
     let subject = $state(start.subject);
     let body = $state(start.body);
     let copies = $state(start.cc.length > 0 || start.bcc.length > 0);
+    let files = $state<DraftFile[]>(start.files ?? []);
+
+    /** Choose files with the system's dialog and attach each. One that cannot be attached is said, and the rest still are. */
+    async function attach() {
+        const paths = await chooseFiles().catch(() => []);
+        for (const path of paths) {
+            try {
+                files = [...files, await attachFile(accountId, start.id, path)];
+                onKept();
+            } catch (failure) {
+                problem = say(failure);
+            }
+        }
+    }
+
+    async function detach(file: DraftFile) {
+        try {
+            await removeFile(accountId, start.id, file.id);
+            files = files.filter((each) => each.id !== file.id);
+            onKept();
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
 
     /** Whether what is on screen is what is kept, and if not why not. */
     let kept = $state<"kept" | "keeping" | "changed">("kept");
@@ -127,6 +151,7 @@
 <form class="compose" aria-label={titles[start.kind]} onsubmit={(event) => (event.preventDefault(), send())} onkeydown={keydown} oninput={changed}>
     <div class="bar">
         <button type="submit" class="primary" disabled={sending} title="Ctrl+Enter">{sending ? "Sending…" : "Send"}</button>
+        <button type="button" onclick={attach}>Attach…</button>
         <button type="button" onclick={close} title="Escape">Close</button>
         <button type="button" class:danger={sure} onclick={discard}>{sure ? "Discard for good?" : "Discard"}</button>
         <span class="kept muted" role="status">{kept === "kept" ? "Draft kept on this computer" : kept === "keeping" ? "Keeping…" : ""}</span>
@@ -148,6 +173,17 @@
         <label><span>Bcc</span><input bind:value={bcc} type="text" autocomplete="off" spellcheck="false" /></label>
     {/if}
     <label><span>Subject</span><input bind:value={subject} type="text" autocomplete="off" /></label>
+
+    {#if files.length > 0}
+        <ul class="files" aria-label="Attached files">
+            {#each files as each (each.id)}
+                <li>
+                    📎 {each.name} <span class="muted">{size(each.size)}</span>
+                    <button type="button" class="link" aria-label="Remove {each.name}" title="Remove" onclick={() => detach(each)}>✕</button>
+                </li>
+            {/each}
+        </ul>
+    {/if}
 
     <textarea bind:this={words} bind:value={body} aria-label="Message"></textarea>
 
@@ -199,6 +235,25 @@
         border: 0;
         background: none;
         padding: 0.35rem 0;
+    }
+
+    .files {
+        flex: none;
+        margin: 0;
+        padding: 0.4rem 1rem;
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .files li {
+        padding: 0.15rem 0.3rem 0.15rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        background: var(--raised);
+        font-size: 0.85rem;
     }
 
     .link {

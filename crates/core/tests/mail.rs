@@ -1138,3 +1138,69 @@ async fn a_signature_starts_new_messages_and_answers_only_if_asked() {
         json!({ "text": "Robin", "on_replies": true })
     );
 }
+
+#[tokio::test]
+async fn a_file_is_attached_from_disk_and_goes_with_the_message() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let folder = downloads();
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("Quarterly report.pdf");
+    std::fs::write(&path, b"%PDF-1.7 not really").unwrap();
+    let big = folder.join("big.bin");
+    std::fs::write(&big, vec![0u8; 3 * 1024 * 1024]).unwrap();
+
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Report" }),
+        )
+        .await["draft"]["id"]
+        .clone();
+    let added = f
+        .run(
+            "mail.drafts.files.add",
+            json!({ "draft_id": draft, "path": path }),
+        )
+        .await;
+    let extra = f
+        .run(
+            "mail.drafts.files.add",
+            json!({ "draft_id": draft, "name": "../note.txt", "content_base64": "SGk=" }),
+        )
+        .await;
+    let too_big = f
+        .registry
+        .execute(
+            "mail.drafts.files.add",
+            json!({ "draft_id": draft, "path": big }),
+        )
+        .await;
+
+    assert_eq!(added["file"]["name"], "Quarterly report.pdf");
+    assert_eq!(added["file"]["content_type"], "application/pdf");
+    assert_eq!(added["file"]["size"], 19);
+    // A name given by a caller is made a plain file name, like any other.
+    assert_eq!(extra["file"]["name"], "_note.txt");
+    assert!(too_big.unwrap_err().to_string().contains("3 MB"));
+
+    f.run(
+        "mail.drafts.files.remove",
+        json!({ "draft_id": draft, "file_id": extra["file"]["id"] }),
+    )
+    .await;
+    let kept = f.run("mail.drafts.get", json!({ "draft_id": draft })).await;
+    assert_eq!(kept["draft"]["files"].as_array().unwrap().len(), 1);
+
+    // The original can go; the draft has its own copy.
+    std::fs::remove_dir_all(&folder).unwrap();
+    f.run("mail.drafts.send", json!({ "draft_id": draft }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+    let sent = &f.graph.sent()[0];
+    assert_eq!(sent.attachments.len(), 1);
+    assert_eq!(sent.attachments[0].name, "Quarterly report.pdf");
+    assert_eq!(sent.attachments[0].content, b"%PDF-1.7 not really");
+}
