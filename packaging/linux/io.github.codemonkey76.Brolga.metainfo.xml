@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.3" date="2026-10-12">
+      <description>
+        <p>A message is shown as it was laid out, with its own colours and tables. Blocked pictures are offered with Show blocked content and Trust sender.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-12">
       <description>
         <p>Run as an AppImage, signing in and links in messages open your browser.</p>
