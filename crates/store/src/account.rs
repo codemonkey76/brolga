@@ -114,6 +114,13 @@ const STEPS: &[&str] = &[
         PRIMARY KEY (message_id, position)
     ) STRICT;
 ",
+    "
+    -- Senders whose remote pictures are fetched without asking. Kept on
+    -- this computer only.
+    CREATE TABLE trusted_senders (
+        address TEXT PRIMARY KEY NOT NULL COLLATE NOCASE
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -625,6 +632,41 @@ impl AccountDb {
                 },
             )
             .optional()?)
+    }
+
+    /// Whose remote pictures are fetched without asking, in order.
+    pub fn trusted_senders(&self) -> Result<Vec<String>, StoreError> {
+        let connection = self.connection();
+        let mut statement =
+            connection.prepare("SELECT address FROM trusted_senders ORDER BY address")?;
+        let rows = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+
+        Ok(rows)
+    }
+
+    pub fn is_trusted_sender(&self, address: &str) -> Result<bool, StoreError> {
+        Ok(self.connection().query_row(
+            "SELECT EXISTS (SELECT 1 FROM trusted_senders WHERE address = ?1)",
+            [address.trim()],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn set_trusted_sender(&self, address: &str, trusted: bool) -> Result<(), StoreError> {
+        let address = address.trim();
+        let connection = self.connection();
+        if trusted {
+            connection.execute(
+                "INSERT OR IGNORE INTO trusted_senders (address) VALUES (?1)",
+                [address],
+            )?;
+        } else {
+            connection.execute("DELETE FROM trusted_senders WHERE address = ?1", [address])?;
+        }
+
+        Ok(())
     }
 
     /// What is attached to a message, or nothing if that has not been

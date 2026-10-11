@@ -23,6 +23,8 @@ is called out before you click it.
 
 ![A message whose remote pictures were not loaded](docs/screenshots/remote-pictures-blocked.png)
 
+![The reading pane under the message list](docs/screenshots/reading-pane-bottom.png)
+
 ![A link whose words name one site while it goes to another, with the warning shown](docs/screenshots/deceptive-link.png)
 
 ![The accounts screen, with one account signed in and one that needs to sign in again](docs/screenshots/accounts.png)

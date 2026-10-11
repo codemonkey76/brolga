@@ -136,6 +136,19 @@ struct GetMessage {
     message_id: String,
     format: Option<String>,
     allow_remote_content: Option<bool>,
+    allow_for_trusted_senders: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct TrustedSenders {
+    account_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SetTrustedSender {
+    account_id: Option<String>,
+    address: String,
+    trusted: bool,
 }
 
 #[derive(Deserialize)]
@@ -430,7 +443,14 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
         }
     };
 
-    let remote = if args.allow_remote_content.unwrap_or(false) {
+    let sender_trusted = !row.from_address.trim().is_empty()
+        && mailbox
+            .db
+            .is_trusted_sender(&row.from_address)
+            .map_err(failed)?;
+    let remote = if args.allow_remote_content.unwrap_or(false)
+        || (sender_trusted && args.allow_for_trusted_senders.unwrap_or(false))
+    {
         RemoteContent::Allowed
     } else {
         RemoteContent::Blocked
@@ -454,7 +474,44 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
         _ => json!({ "format": "text", "content": as_text(&body), "blocked_remote_content": 0 }),
     };
 
-    Ok(json!({ "message": shown(&row), "body": shown_body, "note": UNTRUSTED }))
+    Ok(json!({
+        "message": shown(&row),
+        "body": shown_body,
+        "sender_trusted": sender_trusted,
+        "remote_content_allowed": remote == RemoteContent::Allowed,
+        "note": UNTRUSTED
+    }))
+}
+
+async fn trusted_senders(context: Context, args: TrustedSenders) -> Result<Value, CommandError> {
+    let account = context
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = context.open(&account).await.map_err(failed)?;
+
+    Ok(json!({ "addresses": mailbox.db.trusted_senders().map_err(failed)? }))
+}
+
+async fn set_trusted_sender(
+    context: Context,
+    args: SetTrustedSender,
+) -> Result<Value, CommandError> {
+    let address = args.address.trim();
+    // Enough to refuse what is plainly not an address; it is only ever
+    // compared with the address a message says it is from.
+    if !address.contains('@') || address.contains(char::is_whitespace) {
+        return Err(failed(format!("`{address}` is not an email address.")));
+    }
+    let account = context
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = context.open(&account).await.map_err(failed)?;
+    mailbox
+        .db
+        .set_trusted_sender(address, args.trusted)
+        .map_err(failed)?;
+
+    Ok(json!({ "address": address, "trusted": args.trusted }))
 }
 
 async fn search(context: Context, args: Search) -> Result<Value, CommandError> {
@@ -817,6 +874,61 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
 
     registry.register(
         CommandSpec {
+            id: "mail.trusted_senders.list".to_owned(),
+            title: "List trusted senders".to_owned(),
+            description: "The addresses whose remote pictures are shown without asking. The list is kept on this computer only. \
+                          It is matched against the address a message says it is from, which a sender can forge, so it decides about pictures and nothing else."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id_property() },
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "addresses": { "type": "array", "items": { "type": "string" } } },
+                "required": ["addresses"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&context, trusted_senders),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.trusted_senders.set".to_owned(),
+            title: "Trust or stop trusting a sender".to_owned(),
+            description: "Put an address on the list of senders whose remote pictures are shown without asking, or take it off. \
+                          Showing a sender's pictures lets them tell when their messages are opened."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "address": { "type": "string" },
+                    "trusted": { "type": "boolean" }
+                },
+                "required": ["address", "trusted"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "address": { "type": "string" }, "trusted": { "type": "boolean" } },
+                "required": ["address", "trusted"]
+            }),
+            examples: vec![json!({ "address": "sam@example.test", "trusted": true })],
+        },
+        handler(&context, set_trusted_sender),
+    )?;
+
+    registry.register(
+        CommandSpec {
             id: "mail.attachments.list".to_owned(),
             title: "List a message's attachments".to_owned(),
             description: "What is attached to a message, without the contents: each attachment's id, name, type and size in bytes. \
@@ -917,6 +1029,10 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                     "allow_remote_content": {
                         "type": "boolean",
                         "description": "Fetch the message's remote images and include them. Fetching them tells the sender the message was opened. Default false."
+                    },
+                    "allow_for_trusted_senders": {
+                        "type": "boolean",
+                        "description": "Fetch them as well when the sender is on this computer's list of trusted senders. Default false."
                     }
                 },
                 "required": ["message_id"],
@@ -935,9 +1051,11 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                         },
                         "required": ["format", "content", "blocked_remote_content"]
                     },
+                    "sender_trusted": { "type": "boolean", "description": "The sender is on this computer's list of trusted senders." },
+                    "remote_content_allowed": { "type": "boolean", "description": "Remote images were fetched for this answer." },
                     "note": { "type": "string" }
                 },
-                "required": ["message", "body", "note"]
+                "required": ["message", "body", "sender_trusted", "remote_content_allowed", "note"]
             }),
             // The first message in the fake mailbox the command tests sync from.
             examples: vec![json!({ "message_id": "message-000008" })],

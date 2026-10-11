@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { say } from "./commands";
-    import { type Attachment, type Folder, type Message, type Opened, type Sort, type View, getConversation, listAttachments, listFolders, listMessages, openLink, openMessage, saveAttachment, searchMail, setFavourite, syncNow } from "./mail";
+    import { type Attachment, type Folder, type Message, type Opened, type Sort, type View, getConversation, listAttachments, listFolders, listMessages, openLink, openMessage, saveAttachment, searchMail, setFavourite, setTrustedSender, syncNow } from "./mail";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
 
@@ -47,28 +47,46 @@
     }
 
     /** How the list is laid out. This window's business only. */
-    let view = $state<View>({ sort: "newest", conversations: false });
+    let view = $state<View>({ sort: "newest", conversations: false, plain: false, pane: "right" });
     const SORTS: Sort[] = ["newest", "oldest", "sender", "subject"];
     try {
         const kept: unknown = JSON.parse(localStorage.getItem("brolga.view") ?? "null");
         if (kept && typeof kept === "object") {
-            const { sort, conversations } = kept as Partial<View>;
-            view = { sort: SORTS.includes(sort as Sort) ? (sort as Sort) : "newest", conversations: conversations === true };
+            const { sort, conversations, plain, pane } = kept as Partial<View>;
+            view = {
+                sort: SORTS.includes(sort as Sort) ? (sort as Sort) : "newest",
+                conversations: conversations === true,
+                plain: plain === true,
+                pane: pane === "bottom" ? "bottom" : "right",
+            };
         }
     } catch {
         // Nothing kept: newest first, a line for each message.
     }
 
     async function lay(next: View) {
+        const relist = next.sort !== view.sort || next.conversations !== view.conversations;
+        const reread = next.plain !== view.plain;
         view = next;
         try {
             localStorage.setItem("brolga.view", JSON.stringify(next));
         } catch {
             // It still holds for as long as the window is open.
         }
-        if (folderId && !searching) {
+        if (reread && opened) void read(opened.message);
+        if (relist && folderId && !searching) {
             reset();
             await need(0);
+        }
+    }
+
+    async function trust(address: string, trusted: boolean) {
+        if (!accountId || !opened) return;
+        try {
+            await setTrustedSender(accountId, address, trusted);
+            await read(opened.message);
+        } catch (failure) {
+            readingProblem = say(failure);
         }
     }
     let opening = $state(false);
@@ -237,9 +255,10 @@
         opening = true;
         readingProblem = null;
         try {
-            const result = await openMessage(accountId, message.id, withImages);
+            const result = await openMessage(accountId, message.id, withImages, view.plain);
             if (readingId !== message.id) return;
             opened = result;
+            imagesShown = result.remote_content_allowed;
             if (result.message.has_attachments && attachments.length === 0) {
                 try {
                     const all = await listAttachments(accountId, message.id);
@@ -323,7 +342,7 @@
 
 <svelte:window onkeydown={keydown} />
 
-<div class="mail">
+<div class="mail" class:bottom={view.pane === "bottom"}>
     <nav class="folders" aria-label="Folders">
         {#if accounts.length > 1}
             <select aria-label="Account" value={accountId} onchange={(event) => chooseAccount(event.currentTarget.value)}>
@@ -420,6 +439,17 @@
                         <option value="subject">By subject</option>
                     </select>
                 </label>
+                <label>
+                    <input type="checkbox" checked={view.plain} onchange={(event) => lay({ ...view, plain: event.currentTarget.checked })} />
+                    Plain text
+                </label>
+                <label>
+                    Reading pane
+                    <select value={view.pane} onchange={(event) => lay({ ...view, pane: event.currentTarget.value === "bottom" ? "bottom" : "right" })}>
+                        <option value="right">Right</option>
+                        <option value="bottom">Bottom</option>
+                    </select>
+                </label>
             </div>
         {/if}
 
@@ -441,6 +471,7 @@
         {attachments}
         {saved}
         onSave={save}
+        onTrust={trust}
         onRead={(message) => read(message)}
         onShowImages={() => opened && read(opened.message, true)}
         onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}
@@ -557,8 +588,23 @@
         font-size: 0.8rem;
     }
 
+    .mail.bottom {
+        grid-template-columns: 13rem minmax(0, 1fr);
+        grid-template-rows: minmax(8rem, 40%) minmax(0, 1fr);
+    }
+
+    .mail.bottom .folders {
+        grid-row: 1 / 3;
+    }
+
+    .mail.bottom .list {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
+
     .view {
         display: flex;
+        flex-wrap: wrap;
         justify-content: space-between;
         align-items: center;
         gap: 0.5rem;

@@ -417,6 +417,61 @@ async fn as_html_a_message_is_safe_to_show_and_its_remote_images_are_held_back()
 }
 
 #[tokio::test]
+async fn a_trusted_senders_pictures_are_fetched_only_where_that_is_asked_for() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Newsletter", "News Desk", "2026-10-01T09:00:00Z")
+            .body("<p>Hello</p><img src=\"https://tracker.test/open.gif\">"),
+    );
+    f.sync().await;
+    let read = |trusting: bool| {
+        let mut args = json!({ "message_id": id, "format": "html" });
+        if trusting {
+            args["allow_for_trusted_senders"] = json!(true);
+        }
+        f.run("mail.messages.get", args)
+    };
+    let address = read(false).await["message"]["from"]["address"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let before = read(true).await;
+    f.run(
+        "mail.trusted_senders.set",
+        json!({ "address": address.to_uppercase(), "trusted": true }),
+    )
+    .await;
+    let trusting = read(true).await;
+    // An agent, or anything else that does not ask, is not opted in by the list.
+    let not_asking = read(false).await;
+    let listed = f.run("mail.trusted_senders.list", json!({})).await;
+    f.run(
+        "mail.trusted_senders.set",
+        json!({ "address": address, "trusted": false }),
+    )
+    .await;
+    let after = read(true).await;
+    let nonsense = f
+        .registry
+        .execute(
+            "mail.trusted_senders.set",
+            json!({ "address": "everyone", "trusted": true }),
+        )
+        .await;
+
+    assert_eq!(before["remote_content_allowed"], false);
+    assert_eq!(before["sender_trusted"], false);
+    assert_eq!(trusting["remote_content_allowed"], true);
+    assert_eq!(trusting["sender_trusted"], true);
+    assert_eq!(not_asking["remote_content_allowed"], false);
+    assert_eq!(listed["addresses"].as_array().unwrap().len(), 1);
+    assert_eq!(after["remote_content_allowed"], false);
+    assert!(nonsense.is_err());
+}
+
+#[tokio::test]
 async fn search_finds_by_word_sender_and_filter() {
     let f = Fixture::signed_in().await;
     f.graph.add_message(

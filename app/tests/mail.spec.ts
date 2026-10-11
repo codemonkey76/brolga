@@ -309,3 +309,53 @@ test("attachments are listed on the message and saved when asked", async ({ page
     await expect(attached).toHaveCount(0);
     await expect(page.getByText("Saved to")).toHaveCount(0);
 });
+
+test("a sender can be trusted for pictures, and untrusted again", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const pane = page.getByRole("region", { name: "Message" });
+
+    await messages(page).getByRole("option").nth(1).click();
+    await expect(body(page).locator("img")).toHaveCount(0);
+    await pane.getByRole("button", { name: "Always show from northwind.news@example.test" }).click();
+
+    await expect(body(page).locator("img")).toHaveCount(1);
+    await expect(pane.getByText("are always shown")).toBeVisible();
+
+    // It holds the next time the message is opened, with nothing to click.
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await messages(page).getByRole("option").nth(1).click();
+    await expect(body(page).locator("img")).toHaveCount(1);
+
+    await pane.getByRole("button", { name: "Stop" }).click();
+    await expect(body(page).locator("img")).toHaveCount(0);
+    await expect(pane.getByRole("button", { name: "Show pictures" })).toBeVisible();
+});
+
+test("a message can be read as plain text, with no frame at all", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+
+    await page.getByRole("checkbox", { name: "Plain text" }).check();
+
+    await expect(page.locator("iframe")).toHaveCount(0);
+    await expect(page.getByLabel("Message body")).toContainText("the room is booked for 2 pm on Thursday");
+    expect((await ran(page)).filter((r) => r.command === "mail.messages.get").at(-1)?.args.format).toBe("text");
+});
+
+test("the reading pane can go under the list", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+    const list = await messages(page).boundingBox();
+    const beside = await page.getByRole("region", { name: "Message" }).boundingBox();
+    expect(beside!.x).toBeGreaterThan(list!.x + list!.width - 1);
+
+    await page.getByRole("combobox", { name: "Reading pane" }).selectOption("bottom");
+
+    const under = await page.getByRole("region", { name: "Message" }).boundingBox();
+    const listNow = await messages(page).boundingBox();
+    expect(under!.y).toBeGreaterThan(listNow!.y + listNow!.height - 1);
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await picture(page, "reading-pane-bottom");
+});

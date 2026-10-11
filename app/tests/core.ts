@@ -221,6 +221,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         });
         const inFolder = (id: unknown) => mail.filter((m) => m.folder_id === id);
         const pinned = new Set<unknown>(core.pinned ?? []);
+        const trusted = new Set<string | null>();
         const folder = (id: string, name: string, well_known: string | null, parent_id = "root", depth = 0) => ({
             id,
             parent_id,
@@ -301,12 +302,19 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.messages.get": (args) => {
                 const m = mail.find((each) => each.id === args.message_id);
                 if (!m) throw { code: "failed", message: "There is no such message on this computer." };
-                const pictures = args.allow_remote_content === true && m.bodyWithPictures !== undefined;
-                return {
-                    message: shown(m),
-                    body: { format: "html", content: pictures ? m.bodyWithPictures : m.body, blocked_remote_content: pictures ? 0 : (m.blocked ?? 0) },
-                    note: "",
-                };
+                const sender_trusted = trusted.has(m.from.address);
+                const allowed = args.allow_remote_content === true || (sender_trusted && args.allow_for_trusted_senders === true);
+                const pictures = allowed && m.bodyWithPictures !== undefined;
+                const body =
+                    args.format === "html"
+                        ? { format: "html", content: pictures ? m.bodyWithPictures : m.body, blocked_remote_content: pictures ? 0 : (m.blocked ?? 0) }
+                        : { format: "text", content: m.preview, blocked_remote_content: 0 };
+                return { message: shown(m), body, sender_trusted, remote_content_allowed: allowed, note: "" };
+            },
+            "mail.trusted_senders.set": (args) => {
+                if (args.trusted) trusted.add(args.address as string);
+                else trusted.delete(args.address as string);
+                return { address: args.address, trusted: args.trusted };
             },
             "mail.attachments.list": (args) => ({
                 attachments: mail.find((each) => each.id === args.message_id)?.attachments ?? [],

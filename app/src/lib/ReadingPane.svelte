@@ -14,11 +14,13 @@
         /** What became of the last attachment saved: where it went, or why it did not. */
         saved: string | null;
         onSave: (attachment: Attachment) => void;
+        /** Always show this sender's remote pictures, or stop. */
+        onTrust: (address: string, trusted: boolean) => void;
         onShowImages: () => void;
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
@@ -192,26 +194,42 @@
                     {opened.body.blocked_remote_content === 1 ? "1 remote picture was" : `${opened.body.blocked_remote_content} remote pictures were`}
                     not loaded, so the sender cannot tell you opened this.
                     <button type="button" onclick={onShowImages}>Show pictures</button>
+                    {#if opened.message.from.address}
+                        {@const address = opened.message.from.address}
+                        <button type="button" onclick={() => onTrust(address, true)}>Always show from {address}</button>
+                    {/if}
                 {/if}
             </p>
         {/if}
+        {#if opened.sender_trusted && opened.message.from.address}
+            {@const address = opened.message.from.address}
+            <p class="trusted muted">
+                Pictures from {address} are always shown.
+                <button type="button" onclick={() => onTrust(address, false)}>Stop</button>
+            </p>
+        {/if}
 
-        {#key `${opened.message.id} ${imagesShown} ${drawn}`}
-            <!-- The pointer and focus are only watched to show where a link goes;
-                 the message itself is reached and read in the ordinary way. -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <iframe
-                bind:this={frame}
-                title="Message body"
-                sandbox="allow-same-origin"
-                srcdoc={page}
-                onload={loaded}
-                onmouseenter={watch}
-                onmouseleave={unwatch}
-                onfocus={watch}
-                onblur={unwatch}
-            ></iframe>
-        {/key}
+        {#if opened.body.format === "text"}
+            <!-- Plain words need no frame: they are put on the page as text and nothing else. -->
+            <pre class="plain" aria-label="Message body">{opened.body.content}</pre>
+        {:else}
+            {#key `${opened.message.id} ${imagesShown} ${drawn}`}
+                <!-- The pointer and focus are only watched to show where a link goes;
+                     the message itself is reached and read in the ordinary way. -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <iframe
+                    bind:this={frame}
+                    title="Message body"
+                    sandbox="allow-same-origin"
+                    srcdoc={page}
+                    onload={loaded}
+                    onmouseenter={watch}
+                    onmouseleave={unwatch}
+                    onfocus={watch}
+                    onblur={unwatch}
+                ></iframe>
+            {/key}
+        {/if}
 
         <p class="status" class:warn={mismatch} aria-live="polite">
             {#if hover}{mismatch ? "This link goes somewhere other than it says: " : ""}{hover}{/if}
@@ -220,6 +238,30 @@
 </section>
 
 <style>
+    .plain {
+        flex: 1;
+        min-height: 0;
+        margin: 0;
+        padding: 1rem;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: inherit;
+        font-size: 0.9rem;
+    }
+
+    .trusted {
+        flex: none;
+        margin: 0;
+        padding: 0.3rem 1rem;
+        font-size: 0.8rem;
+    }
+
+    .trusted button,
+    .note button {
+        margin-left: 0.4rem;
+    }
+
     .attachments {
         flex: none;
         margin: 0;

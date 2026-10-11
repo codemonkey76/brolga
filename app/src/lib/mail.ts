@@ -51,6 +51,10 @@ export interface Attachment {
 export interface Opened {
     message: Message;
     body: { format: "html" | "text"; content: string; blocked_remote_content: number };
+    /** The sender's remote pictures are shown without asking. */
+    sender_trusted: boolean;
+    /** Remote pictures were fetched for this. */
+    remote_content_allowed: boolean;
 }
 
 export interface SyncResult {
@@ -73,16 +77,36 @@ export type Sort = "newest" | "oldest" | "sender" | "subject";
 export interface View {
     sort: Sort;
     conversations: boolean;
+    /** Read messages as plain words, with no formatting or pictures. */
+    plain: boolean;
+    /** Where the message being read goes: beside the list or under it. */
+    pane: "right" | "bottom";
 }
 
 export const listMessages = (account_id: string, folder_id: string, offset: number, limit: number, view: View) =>
-    execute<{ total: number; messages: Message[] }>("mail.messages.list", { account_id, folder_id, offset, limit, ...view });
+    execute<{ total: number; messages: Message[] }>("mail.messages.list", {
+        account_id,
+        folder_id,
+        offset,
+        limit,
+        sort: view.sort,
+        conversations: view.conversations,
+    });
 
 export const getConversation = async (account_id: string, conversation_id: string) =>
     (await execute<{ messages: Message[] }>("mail.conversations.get", { account_id, conversation_id })).messages;
 
-export const openMessage = (account_id: string, message_id: string, allow_remote_content: boolean) =>
-    execute<Opened>("mail.messages.get", { account_id, message_id, format: "html", allow_remote_content });
+export const openMessage = (account_id: string, message_id: string, allow_remote_content: boolean, plain: boolean) =>
+    execute<Opened>("mail.messages.get", {
+        account_id,
+        message_id,
+        format: plain ? "text" : "html",
+        allow_remote_content,
+        allow_for_trusted_senders: true,
+    });
+
+export const setTrustedSender = (account_id: string, address: string, trusted: boolean) =>
+    execute<{ trusted: boolean }>("mail.trusted_senders.set", { account_id, address, trusted });
 
 export const searchMail = async (account_id: string, query: string) =>
     (await execute<{ messages: Message[] }>("mail.search", { account_id, query, limit: 200 })).messages;
