@@ -1,11 +1,12 @@
 <script lang="ts">
-    import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, RefreshCw, Send, SquarePen, Star, Trash } from "@lucide/svelte";
+    import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
     import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
+    import Toolbar from "./Toolbar.svelte";
 
     interface Props {
         accounts: Account[];
@@ -26,6 +27,23 @@
     const asked = new Set<number>();
 
     let query = $state("");
+    /** Whether a search looks in every folder or only the one shown. */
+    let everywhere = $state(true);
+    try {
+        everywhere = localStorage.getItem("brolga.search.scope") !== "folder";
+    } catch {
+        // Every folder, then.
+    }
+
+    function scope(all: boolean) {
+        everywhere = all;
+        try {
+            localStorage.setItem("brolga.search.scope", all ? "all" : "folder");
+        } catch {
+            // It holds for as long as the window is open.
+        }
+        if (query.trim()) search();
+    }
     let searching = $state(false);
     let opened = $state<Opened | null>(null);
     let selectedId = $state<string | null>(null);
@@ -460,7 +478,7 @@
         asked.clear();
         const mine = listing;
         try {
-            const found = await searchMail(accountId, query);
+            const found = await searchMail(accountId, query, everywhere ? undefined : (folderId ?? undefined));
             if (mine !== listing) return;
             searching = true;
             rows = found;
@@ -656,6 +674,25 @@
 
 <svelte:window onkeydown={keydown} />
 
+<div class="mailview">
+<Toolbar
+    message={writing ? null : (opened?.message ?? null)}
+    {folders}
+    {within}
+    {categories}
+    {syncing}
+    onWrite={write}
+    onDelete={remove}
+    onPurge={purge}
+    onJunk={junk}
+    onNotJunk={notJunk}
+    onArchive={archive}
+    onMove={(folder) => moveTo(folder.id, `Moved to ${folder.name}`)}
+    onSetRead={markRead}
+    onSetFlag={flag}
+    onCategorise={categorise}
+    onSync={sync}
+/>
 <div class="mail" class:bottom={view.pane === "bottom"}>
     <nav class="folders" aria-label="Folders">
         {#if accounts.length > 1}
@@ -667,8 +704,6 @@
         {:else if account}
             <p class="account" title={account.username}>{account.username}</p>
         {/if}
-
-        <button type="button" class="new" title="Ctrl+N" onclick={() => write("new")}><SquarePen size={16} aria-hidden="true" />New message</button>
 
         {#if drafts.length > 0}
             <h2 id="drafts-heading">Being written</h2>
@@ -744,7 +779,10 @@
                     oninput={typedSearch}
                 />
             </form>
-            <button type="button" disabled={syncing} onclick={sync} title="Sync now (F9)"><RefreshCw size={15} aria-hidden="true" />{syncing ? "Syncing…" : "Sync"}</button>
+            <select aria-label="Search in" title="Where to search" value={everywhere ? "all" : "folder"} onchange={(event) => scope(event.currentTarget.value === "all")}>
+                <option value="all">All folders</option>
+                <option value="folder">This folder</option>
+            </select>
         </div>
 
         {#if problem}
@@ -753,7 +791,7 @@
 
         <p class="heading">
             {#if searching}
-                {total === 1 ? "1 result" : `${total} results`} for “{query}”
+                {total === 1 ? "1 result" : `${total} results`} for “{query}” {everywhere ? "in all folders" : `in ${folder?.name ?? "this folder"}`}
             {:else if folder}
                 {@const things = view.conversations ? "conversation" : "message"}
                 {folder.name} <span class="muted">· {total === 1 ? `1 ${things}` : `${total.toLocaleString()} ${things}s`}</span>
@@ -828,28 +866,25 @@
             onSave={save}
             onTrust={trust}
         {onCalendar}
-            onWrite={write}
-            onSetRead={markRead}
-            onSetFlag={flag}
         {categories}
-        onCategorise={categorise}
-            {folders}
-            {within}
-            onDelete={remove}
-        onPurge={purge}
-        onJunk={junk}
-        onNotJunk={notJunk}
-            onArchive={archive}
-            onMove={(folder) => moveTo(folder.id, `Moved to ${folder.name}`)}
             onRead={(message) => read(message)}
             onShowImages={() => opened && read(opened.message, true)}
             onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}
         />
     {/if}
 </div>
+</div>
 
 <style>
+    .mailview {
+        height: 100%;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
     .mail {
+        flex: 1;
         height: 100%;
         display: grid;
         grid-template-columns: 13rem minmax(16rem, 24rem) minmax(0, 1fr);
@@ -994,14 +1029,6 @@
         padding: 0.1rem 0.25rem;
     }
 
-    .new,
-    .bar button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.4rem;
-    }
-
     .folder :global(svg) {
         flex: none;
         color: var(--muted);
@@ -1009,12 +1036,6 @@
 
     .folder .name {
         flex: 1;
-    }
-
-    .new {
-        flex: none;
-        margin: 0 0.25rem;
-        font-weight: 600;
     }
 
     .warn {

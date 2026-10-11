@@ -508,7 +508,7 @@ test("deleting moves the message away, opens the next, and can be undone", async
     await rows.first().click();
     await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
 
-    await pane.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
 
     await expect(rows).toHaveCount(3);
     await expect(pane.getByRole("heading")).toHaveText("Your October newsletter");
@@ -528,7 +528,7 @@ test("deleting moves the message away, opens the next, and can be undone", async
     await expect(rows).toHaveCount(1);
     await rows.first().click();
     await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
-    await expect(pane.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
 });
 
 test("a message can be archived by key and moved to any folder", async ({ page }) => {
@@ -855,20 +855,20 @@ test("in Deleted Items a message is deleted for good, after asking twice", async
     await rows.first().click();
     await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
 
-    await pane.getByRole("button", { name: "Delete permanently" }).click();
+    await page.getByRole("button", { name: "Delete permanently" }).click();
     await expect(rows).toHaveCount(4);
-    await pane.getByRole("button", { name: "Keep" }).click();
-    await expect(pane.getByRole("button", { name: "Delete permanently" })).toBeVisible();
+    await page.getByRole("button", { name: "Keep" }).click();
+    await expect(page.getByRole("button", { name: "Delete permanently" })).toBeVisible();
 
-    await pane.getByRole("button", { name: "Delete permanently" }).click();
-    await pane.getByRole("button", { name: /Delete for good/ }).click();
+    await page.getByRole("button", { name: "Delete permanently" }).click();
+    await page.getByRole("button", { name: /Delete for good/ }).click();
 
     await expect(rows).toHaveCount(3);
     await expect(page.getByText("Deleted permanently.")).toBeVisible();
     // There is nothing to undo.
     await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
     // The next message is not left half-way to being deleted.
-    await expect(pane.getByRole("button", { name: "Delete permanently" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete permanently" })).toBeVisible();
 });
 
 test("a message can be sent to junk and brought back", async ({ page }) => {
@@ -878,13 +878,13 @@ test("a message can be sent to junk and brought back", async ({ page }) => {
     await rows.nth(3).click();
     await expect(pane.getByRole("heading")).toHaveText("Action needed: confirm your password");
 
-    await pane.getByRole("button", { name: "Junk", exact: true }).click();
+    await page.getByRole("button", { name: "Junk", exact: true }).click();
     await expect(rows).toHaveCount(3);
     await expect(page.getByText("Moved to Junk Email")).toBeVisible();
 
     await folder(page, "Junk Email").click();
     await rows.first().click();
-    await pane.getByRole("button", { name: "Not junk" }).click();
+    await page.getByRole("button", { name: "Not junk" }).click();
     await expect(page.getByText("Moved to the inbox")).toBeVisible();
     await folder(page, "Inbox").click();
     await expect(rows).toHaveCount(4);
@@ -896,8 +896,8 @@ test("a message is given categories, shown in their colours, and that can be und
     const pane = page.getByRole("region", { name: "Message" });
     await first.click();
 
-    await pane.getByText("Categories", { exact: true }).click();
-    const menu = pane.getByRole("list", { name: "Categories" });
+    await page.getByRole("toolbar", { name: "Message actions" }).locator('summary[aria-label="Categories"]').click();
+    const menu = page.getByRole("list", { name: "Categories" });
     await menu.getByRole("checkbox", { name: "Clients" }).check();
     await menu.getByRole("checkbox", { name: "Red category" }).check();
 
@@ -943,7 +943,7 @@ test("a draft in the Drafts folder opens to be carried on with, and is saved to 
     await expect(form.getByRole("combobox", { name: "To" })).toHaveValue("Jo Nguyen <jo.nguyen@example.test>");
     await expect(form.getByRole("textbox", { name: "Message" }).locator("b")).toHaveText("Jo");
     // It is not shown as a message to read, with Reply and the rest.
-    await expect(page.getByRole("button", { name: "Reply", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Reply", exact: true })).toBeDisabled();
 
     await form.getByRole("textbox", { name: "Message" }).click();
     await page.keyboard.press("End");
@@ -966,7 +966,7 @@ test("a flag can be given a day to follow up by, changed and taken off", async (
     const actions = page.getByRole("toolbar", { name: "Message actions" });
     await messages(page).getByRole("option").first().click();
 
-    await actions.getByText("Flag for…").click();
+    await actions.getByLabel("Flag for…").click();
     const days = actions.getByRole("list", { name: "Follow up by" });
     await expect(days.getByRole("button", { name: /This week/ })).toContainText(/Fri,? (9 Oct|Oct 9)/);
     await expect(days.getByRole("button", { name: /Next week/ })).toContainText(/Mon,? (12 Oct|Oct 12)/);
@@ -978,11 +978,11 @@ test("a flag can be given a day to follow up by, changed and taken off", async (
     await picture(page, "flag-due");
 
     // Another day, typed.
-    await actions.getByText("Due…").click();
+    await actions.getByLabel("Due…").click();
     await days.getByLabel("Another day").fill("2026-11-02");
     await expect(actions).toContainText(/Due Mon,? (2 Nov|Nov 2)/);
 
-    await actions.getByText("Due…").click();
+    await actions.getByLabel("Due…").click();
     await days.getByRole("button", { name: "No day" }).click();
     await expect(actions).toContainText("Flagged");
     await expect(actions).not.toContainText("Due Mon");
@@ -1081,4 +1081,50 @@ test("files dropped on a message being written are attached to it", async ({ pag
     await expect(form).not.toHaveClass(/over/);
     const added = (await ran(page)).filter((r) => r.command === "mail.drafts.files.add");
     expect(added[0].args).toMatchObject({ name: "notes.txt", content_base64: "U29tZSBub3Rlcy4=" });
+});
+
+test("the actions are icons along the top, each with its name on hover, greyed out until a message is open", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const bar = page.getByRole("toolbar", { name: "Message actions" });
+
+    // With nothing open there is nothing to reply to or delete; a new message can always be started.
+    await expect(bar.getByRole("button", { name: "Reply", exact: true })).toBeDisabled();
+    await expect(bar.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+    await expect(bar.getByRole("button", { name: "New message" })).toBeEnabled();
+    await expect(bar.getByRole("button", { name: "Sync" })).toBeVisible();
+
+    await messages(page).getByRole("option").first().click();
+    const reply = bar.getByRole("button", { name: "Reply", exact: true });
+    await expect(reply).toBeEnabled();
+    // An icon alone, with its name and its key in the hover text.
+    await expect(reply).toHaveText("");
+    await expect(reply).toHaveAttribute("title", "Reply (Ctrl+R)");
+    await expect(bar.getByRole("button", { name: "Delete", exact: true })).toHaveAttribute("title", "Delete (Del)");
+    await picture(page, "mail");
+
+    // While a message is being written, the actions for the one behind it are out of reach.
+    await bar.getByRole("button", { name: "New message" }).click();
+    await expect(reply).toBeDisabled();
+});
+
+test("a search can be of every folder or only the one shown", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(3)] });
+    const rows = messages(page).getByRole("option");
+    const box = page.getByRole("searchbox", { name: "Search mail" });
+    const where = page.getByRole("combobox", { name: "Search in" });
+
+    await box.fill("message");
+    // Every folder: the three in the archive are found from the inbox.
+    await expect(where).toHaveValue("all");
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByText("in all folders")).toBeVisible();
+
+    await where.selectOption("folder");
+    await expect(page.getByText("0 results")).toBeVisible();
+    await expect(page.getByText("in Inbox")).toBeVisible();
+    expect((await ran(page)).filter((r) => r.command === "mail.search").at(-1)?.args).toMatchObject({ folder_id: "inbox" });
+
+    // The choice is kept.
+    await page.reload();
+    await expect(where).toHaveValue("folder");
 });

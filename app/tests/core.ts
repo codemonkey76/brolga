@@ -655,7 +655,9 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             },
             "mail.search": (args) => {
                 const words = String(args.query).toLowerCase().split(/\s+/).filter(Boolean);
-                const found = mail.filter((m) => words.every((w) => `${m.subject} ${m.preview} ${m.from.name}`.toLowerCase().includes(w)));
+                const found = mail
+                    .filter((m) => !args.folder_id || m.folder_id === args.folder_id)
+                    .filter((m) => words.every((w) => `${m.subject} ${m.preview} ${m.from.name}`.toLowerCase().includes(w)));
                 return { messages: found.map(shown), note: "" };
             },
             "app.open_link": () => ({ opened: true }),

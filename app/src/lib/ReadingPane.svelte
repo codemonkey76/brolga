@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { Archive, CalendarDays, Flag, Forward, Mail as Unread, MailOpen, OctagonAlert, Paperclip, Reply, ReplyAll, Tag, Trash } from "@lucide/svelte";
-    import { type Attachment, type Category, type FlagStatus, type Folder, type Message, type Opened, categoryColour, dueSaid, flagDays, size, when, who } from "./mail";
+    import { CalendarDays } from "@lucide/svelte";
+    import { type Attachment, type Category, type Message, type Opened, categoryColour, size, when, who } from "./mail";
 
     interface Props {
         opened: Opened | null;
@@ -18,33 +18,15 @@
         onSave: (attachment: Attachment, ask?: boolean) => void;
         /** Show a day in the calendar. */
         onCalendar: (day: Date) => void;
-        /** Start an answer to the message. */
-        onWrite: (kind: "reply" | "reply_all" | "forward" | "forward_as_attachment") => void;
-        onSetRead: (isRead: boolean) => void;
-        /** `due` is a day, `YYYY-MM-DD`; empty for no day; left out to leave the day as it is. */
-        onSetFlag: (status: FlagStatus, due?: string) => void;
-        /** The mailbox's categories, to choose from. */
+        /** The mailbox's categories, for the colour of each. */
         categories: Category[];
-        /** Give the message exactly these categories. */
-        onCategorise: (names: string[]) => void;
-        /** Every folder, to move the message to one. */
-        folders: Folder[];
-        /** The standard folder the message is in, if it is in one. */
-        within: string | null;
-        onDelete: () => void;
-        /** Delete for good. Offered only where a message has already been deleted once. */
-        onPurge: () => void;
-        onJunk: () => void;
-        onNotJunk: () => void;
-        onArchive: () => void;
-        onMove: (folder: Folder) => void;
         /** Always show this sender's remote pictures, or stop. */
         onTrust: (address: string, trusted: boolean) => void;
         onShowImages: () => void;
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onCalendar, onWrite, onSetRead, onSetFlag, categories, onCategorise, folders, within, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onCalendar, categories, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
 
     const MEETING: Record<string, string> = {
@@ -69,16 +51,8 @@
         const [start, end] = [new Date(meeting.start), new Date(meeting.end)];
         return `${start.toLocaleDateString(undefined, day)}, ${start.toLocaleTimeString(undefined, time)} to ${end.toLocaleTimeString(undefined, time)}`;
     }
-    let dayMenu = $state<HTMLDetailsElement>();
 
-    function due(day: string) {
-        // Closed outright: the menu is the browser's own, and is not left
-        // open behind a choice made from the date box.
-        if (dayMenu) dayMenu.open = false;
-        onSetFlag("flagged", day);
-    }
-    /** The message being asked about, once "Delete permanently" has been pressed once. */
-    let sureOf = $state<string | null>(null);
+
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
     let mismatch = $state(false);
@@ -220,97 +194,6 @@
                 To {people(opened.message.to) || "nobody"}{#if opened.message.cc.length}, cc {people(opened.message.cc)}{/if}
                 · {new Date(opened.message.received_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
             </p>
-            <div class="actions" role="toolbar" aria-label="Message actions">
-                <button type="button" title="Ctrl+R" onclick={() => onWrite("reply")}><Reply size={15} aria-hidden="true" />Reply</button>
-                <button type="button" title="Ctrl+Shift+R" onclick={() => onWrite("reply_all")}><ReplyAll size={15} aria-hidden="true" />Reply all</button>
-                <button type="button" title="Ctrl+F" onclick={() => onWrite("forward")}><Forward size={15} aria-hidden="true" />Forward</button>
-                <button type="button" title="Forward this message whole, as an attached file" onclick={() => onWrite("forward_as_attachment")}><Paperclip size={15} aria-hidden="true" />Forward as attachment</button>
-                {#if within !== "deleteditems"}
-                    <button type="button" title="Delete" onclick={onDelete}><Trash size={15} aria-hidden="true" />Delete</button>
-                {:else if sureOf === opened.message.id}
-                    <button type="button" class="danger" onclick={() => ((sureOf = null), onPurge())}>Delete for good? It cannot be undone</button>
-                    <button type="button" onclick={() => (sureOf = null)}>Keep</button>
-                {:else}
-                    <button type="button" onclick={() => (sureOf = opened.message.id)}><Trash size={15} aria-hidden="true" />Delete permanently</button>
-                {/if}
-                {#if within === "junkemail"}
-                    <button type="button" onclick={onNotJunk}><OctagonAlert size={15} aria-hidden="true" />Not junk</button>
-                {:else if within !== "deleteditems" && within !== "sentitems" && within !== "drafts" && folders.some((f) => f.well_known === "junkemail")}
-                    <button type="button" onclick={onJunk}><OctagonAlert size={15} aria-hidden="true" />Junk</button>
-                {/if}
-                {#if within !== "archive" && folders.some((f) => f.well_known === "archive")}
-                    <button type="button" title="Backspace" onclick={onArchive}><Archive size={15} aria-hidden="true" />Archive</button>
-                {/if}
-                <select
-                    aria-label="Move to folder"
-                    value=""
-                    onchange={(event) => {
-                        const to = folders.find((f) => f.id === event.currentTarget.value);
-                        event.currentTarget.value = "";
-                        if (to) onMove(to);
-                    }}
-                >
-                    <option value="" disabled>Move to…</option>
-                    {#each folders.filter((f) => f.id !== opened.message.folder_id) as each (each.id)}
-                        <option value={each.id}>{"\u00a0\u00a0".repeat(each.depth)}{each.name}</option>
-                    {/each}
-                </select>
-                {#if opened.message.is_read}
-                    <button type="button" title="Ctrl+U" onclick={() => onSetRead(false)}><Unread size={15} aria-hidden="true" />Mark as unread</button>
-                {:else}
-                    <button type="button" title="Ctrl+Q" onclick={() => onSetRead(true)}><MailOpen size={15} aria-hidden="true" />Mark as read</button>
-                {/if}
-                {#if opened.message.flag_status === "flagged"}
-                    <button type="button" onclick={() => onSetFlag("complete")}>Mark complete</button>
-                    <button type="button" title="Insert" onclick={() => onSetFlag("notFlagged")}><Flag size={15} aria-hidden="true" />Clear flag</button>
-                {:else if opened.message.flag_status === "complete"}
-                    <button type="button" onclick={() => onSetFlag("notFlagged")}><Flag size={15} aria-hidden="true" />Clear flag</button>
-                {:else}
-                    <button type="button" title="Insert" onclick={() => onSetFlag("flagged")}><Flag size={15} aria-hidden="true" />Flag</button>
-                {/if}
-                {#if opened.message.flag_status !== "complete"}
-                    <details class="menu" bind:this={dayMenu}>
-                        <summary>{opened.message.flag_status === "flagged" ? "Due…" : "Flag for…"}</summary>
-                        <ul aria-label="Follow up by">
-                            {#each flagDays() as each (each.label)}
-                                <li><button type="button" class="plain" onclick={() => due(each.day)}>{each.label} <span class="muted">{dueSaid(each.day)}</span></button></li>
-                            {/each}
-                            <li>
-                                <label>On <input type="date" aria-label="Another day" onchange={(event) => event.currentTarget.value && due(event.currentTarget.value)} /></label>
-                            </li>
-                            {#if opened.message.flag_due}
-                                <li><button type="button" class="plain" onclick={() => due("")}>No day</button></li>
-                            {/if}
-                        </ul>
-                    </details>
-                {/if}
-                {#if categories.length > 0}
-                    <details class="menu">
-                        <summary><Tag size={15} aria-hidden="true" />Categories</summary>
-                        <ul aria-label="Categories">
-                            {#each categories as each (each.name)}
-                                {@const has = (opened.message.categories ?? []).includes(each.name)}
-                                <li>
-                                    <label>
-                                        <input
-                                            type="checkbox"
-                                            checked={has}
-                                            onchange={() =>
-                                                onCategorise(has ? opened.message.categories.filter((n) => n !== each.name) : [...(opened.message.categories ?? []), each.name])}
-                                        />
-                                        <span class="dot" style:background={categoryColour(each.color)}></span>
-                                        {each.name}
-                                    </label>
-                                </li>
-                            {/each}
-                        </ul>
-                    </details>
-                {/if}
-                {#if opened.message.flag_status === "flagged"}
-                    <span class="flagged">🚩 {opened.message.flag_due ? `Due ${dueSaid(opened.message.flag_due)}` : "Flagged"}</span>
-                {/if}
-                {#if opened.message.flag_status === "complete"}<span class="muted">✓ Complete</span>{/if}
-            </div>
             {#if (opened.message.categories ?? []).length > 0}
                 <p class="chips" aria-label="This message's categories">
                     {#each opened.message.categories as name (name)}
@@ -462,32 +345,6 @@
         font-size: 0.85rem;
     }
 
-    .actions {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 0.4rem;
-        margin-top: 0.5rem;
-        font-size: 0.85rem;
-    }
-
-    .actions button,
-    .menu summary {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.3rem;
-    }
-
-    .actions button,
-    .actions select {
-        padding: 0.2rem 0.6rem;
-        font-size: 0.85rem;
-    }
-
-    .flagged {
-        color: var(--danger);
-    }
-
     .dot {
         display: inline-block;
         width: 0.65rem;
@@ -510,68 +367,6 @@
         border: 1px solid var(--line);
         border-radius: 999px;
         font-size: 0.8rem;
-    }
-
-    .menu {
-        position: relative;
-    }
-
-    .menu summary {
-        list-style: none;
-        cursor: default;
-        padding: 0.2rem 0.6rem;
-        border: 1px solid var(--line);
-        border-radius: 0.4rem;
-        background: var(--surface);
-    }
-
-    .menu summary::-webkit-details-marker {
-        display: none;
-    }
-
-    .menu ul {
-        position: absolute;
-        z-index: 5;
-        top: 100%;
-        left: 0;
-        min-width: 12rem;
-        max-height: 16rem;
-        overflow-y: auto;
-        margin: 0.2rem 0 0;
-        padding: 0.3rem;
-        list-style: none;
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: 0.4rem;
-        box-shadow: 0 6px 18px color-mix(in srgb, CanvasText 18%, transparent);
-    }
-
-    .menu .plain {
-        width: 100%;
-        display: flex;
-        justify-content: space-between;
-        gap: 1rem;
-        border: 0;
-        background: none;
-        padding: 0.25rem 0.4rem;
-        text-align: left;
-    }
-
-    .menu .plain:hover {
-        background: var(--raised);
-    }
-
-    .menu label {
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-        padding: 0.25rem 0.4rem;
-        white-space: nowrap;
-    }
-
-    .danger {
-        color: var(--danger);
-        border-color: var(--danger);
     }
 
     .plain {

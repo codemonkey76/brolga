@@ -157,8 +157,9 @@ export const openMessage = (account_id: string, message_id: string, allow_remote
 export const setTrustedSender = (account_id: string, address: string, trusted: boolean) =>
     execute<{ trusted: boolean }>("mail.trusted_senders.set", { account_id, address, trusted });
 
-export const searchMail = async (account_id: string, query: string) =>
-    (await execute<{ messages: Message[] }>("mail.search", { account_id, query, limit: 200 })).messages;
+/** Search synced mail: in one folder, or with none named in all of them. */
+export const searchMail = async (account_id: string, query: string, folder_id?: string) =>
+    (await execute<{ messages: Message[] }>("mail.search", { account_id, query, limit: 200, ...(folder_id ? { folder_id } : {}) })).messages;
 
 export const listAttachments = async (account_id: string, message_id: string) =>
     (await execute<{ attachments: Attachment[] }>("mail.attachments.list", { account_id, message_id })).attachments;
