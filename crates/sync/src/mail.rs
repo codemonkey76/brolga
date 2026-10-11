@@ -24,7 +24,7 @@ pub struct Synced {
 }
 
 impl Synced {
-    fn add(&mut self, other: Synced) {
+    pub(crate) fn add(&mut self, other: Synced) {
         self.pages += other.pages;
         self.changed += other.changed;
         self.removed += other.removed;

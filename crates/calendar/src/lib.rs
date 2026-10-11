@@ -13,4 +13,4 @@ mod zones;
 pub use recurrence::{
     DayOfWeek, Ends, Occurrence, Pattern, RecurrenceError, Series, WeekIndex, occurrences,
 };
-pub use zones::iana_zone;
+pub use zones::{iana_zone, utc};

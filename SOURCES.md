@@ -42,6 +42,9 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Get MIME content of a message | https://learn.microsoft.com/graph/outlook-get-mime-message | `GET /me/messages/{id}/$value`, the message whole as a `.eml` file holds it, for forwarding as an attachment |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
 
+| event: delta | https://learn.microsoft.com/graph/api/event-delta | `GET /me/calendarView/delta?startDateTime=…&endDateTime=…` for the default calendar: needs `Calendars.Read`, takes no `$select`, and names as removed events outside the window as well as deleted ones |
+| List calendars, and calendar resource type | https://learn.microsoft.com/graph/api/user-list-calendars | `GET /me/calendars`, and a calendar's name, colour, `isDefaultCalendar`, `canEdit`, owner and its `calendarView` |
+| event resource type | https://learn.microsoft.com/graph/api/resources/event | An event's properties: start and end in UTC by default, `isAllDay`, `type`, `seriesMasterId`, `showAs`, reminder, `onlineMeeting`, `changeKey` |
 | recurrencePattern and recurrenceRange resource types | https://learn.microsoft.com/graph/api/resources/recurrencepattern | The six ways an event repeats, what each needs, and the three ways a series ends, in `crates/calendar` |
 
 ## Microsoft identity platform (Microsoft Learn)

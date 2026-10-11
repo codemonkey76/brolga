@@ -13,8 +13,10 @@
 //! - A message leaving one folder for another is never lost between them,
 //!   whichever folder's changes arrive first.
 
+mod calendar;
 mod mail;
 
+pub use calendar::CalendarSync;
 pub use mail::{MailSync, Synced};
 
 use brolga_graph::GraphError;

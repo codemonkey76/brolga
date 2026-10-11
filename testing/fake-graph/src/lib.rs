@@ -9,9 +9,11 @@
 //! queries included. Each resource the client comes to use is added here
 //! first.
 
+mod calendar;
 mod identity;
 mod mailbox;
 
+pub use calendar::{FakeCalendar, FakeEvent};
 pub use identity::FakeIdentity;
 pub use mailbox::{FakeAttachment, FakeMessage};
 
@@ -60,6 +62,7 @@ struct Inner {
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
     automatic_replies: Option<Value>,
+    calendars: Option<calendar::Calendars>,
     /// Large files on their way up, by session.
     uploads: HashMap<String, Upload>,
     /// Messages every change to which is refused.
@@ -69,6 +72,12 @@ struct Inner {
 }
 
 impl Inner {
+    /// The calendars, which begin as the one every mailbox has.
+    fn calendars(&mut self) -> &mut calendar::Calendars {
+        self.calendars
+            .get_or_insert_with(calendar::Calendars::with_default)
+    }
+
     /// The mailbox's automatic replies: off, until something sets them.
     fn automatic_replies(&self) -> Value {
         self.automatic_replies.clone().unwrap_or_else(|| {
@@ -99,6 +108,12 @@ impl FakeGraph {
         let app = Router::new()
             .route("/v1.0/me", get(me))
             .route("/v1.0/me/outlook/masterCategories", get(master_categories))
+            .route("/v1.0/me/calendars", get(calendars))
+            .route("/v1.0/me/calendarView/delta", get(events_delta))
+            .route(
+                "/v1.0/me/calendars/{calendar}/calendarView",
+                get(calendar_view),
+            )
             .route(
                 "/v1.0/me/mailboxSettings",
                 axum::routing::patch(update_mailbox_settings),
@@ -255,6 +270,49 @@ impl FakeGraph {
     /// How many drafts have been created on the server.
     pub fn drafts_created(&self) -> u32 {
         lock(&self.shared).drafts_created
+    }
+
+    /// The id of the calendar every mailbox has.
+    pub fn default_calendar(&self) -> String {
+        lock(&self.shared).calendars().default_calendar()
+    }
+
+    pub fn add_calendar(&self, name: &str, hex_color: &str) -> String {
+        lock(&self.shared).calendars().add_calendar(name, hex_color)
+    }
+
+    pub fn remove_calendar(&self, id: &str) {
+        lock(&self.shared).calendars().remove_calendar(id);
+    }
+
+    pub fn add_event(&self, calendar: &str, event: FakeEvent) -> String {
+        lock(&self.shared).calendars().add_event(calendar, event)
+    }
+
+    pub fn change_event(&self, id: &str, change: impl FnOnce(&mut FakeEvent)) {
+        lock(&self.shared).calendars().change_event(id, change);
+    }
+
+    pub fn delete_event(&self, id: &str) {
+        lock(&self.shared).calendars().delete_event(id);
+    }
+
+    /// Make every calendar delta token given out so far no good.
+    pub fn expire_calendar_tokens(&self) {
+        lock(&self.shared).calendars().expire_tokens();
+    }
+
+    /// Every occurrence there truly is in a calendar between two moments
+    /// in UTC, as (id, start, end).
+    pub fn events(
+        &self,
+        calendar: &str,
+        after: &str,
+        before: &str,
+    ) -> Vec<(String, String, String)> {
+        lock(&self.shared)
+            .calendars()
+            .truth(calendar, after, before)
     }
 
     /// The mailbox's automatic replies, as Graph would give them.
@@ -497,7 +555,10 @@ async fn require_token(request: Request, next: Next) -> Response {
     let reading = request.method() == axum::http::Method::GET;
     // Sending is its own permission ("message: send"), and so are the
     // mailbox's settings ("Update user mailbox settings").
-    let allowed = if path.contains("/me/mailboxSettings") || path.contains("/me/outlook/") {
+    // Calendars are read with Calendars.Read ("event: delta").
+    let allowed = if path.contains("/me/calendar") || path.contains("/me/events") {
+        granted.contains(&"Calendars.ReadWrite") || (reading && granted.contains(&"Calendars.Read"))
+    } else if path.contains("/me/mailboxSettings") || path.contains("/me/outlook/") {
         granted.contains(&"MailboxSettings.ReadWrite")
             || (reading && granted.contains(&"MailboxSettings.Read"))
     } else if path.ends_with("/send") {
@@ -514,6 +575,51 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+async fn calendars(State(shared): State<Shared>) -> Response {
+    axum::Json(lock(&shared).calendars().list()).into_response()
+}
+
+fn view_answer(view: calendar::View) -> Response {
+    match view {
+        calendar::View::Page(body) => axum::Json(body).into_response(),
+        calendar::View::Gone => error(
+            StatusCode::GONE,
+            "syncStateNotFound",
+            "The sync state is no longer valid. Sync again from the start.",
+        ),
+        calendar::View::NoSuchCalendar => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such calendar.",
+        ),
+    }
+}
+
+async fn events_delta(
+    State(shared): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let mut inner = lock(&shared);
+    let link = format!("{}/me/calendarView/delta", inner.base);
+    let size = page_size(&headers);
+
+    view_answer(inner.calendars().delta(&query, size, &link))
+}
+
+async fn calendar_view(
+    State(shared): State<Shared>,
+    Path(calendar): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let mut inner = lock(&shared);
+    let link = format!("{}/me/calendars/{calendar}/calendarView", inner.base);
+    let size = page_size(&headers);
+
+    view_answer(inner.calendars().view(&calendar, &query, size, &link))
 }
 
 /// "List masterCategories" (SOURCES.md). Read with the mailbox's settings.

@@ -611,6 +611,8 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "brolga-calendar",
+ "jiff",
  "reqwest",
  "serde_json",
  "sha2 0.11.0",
@@ -696,11 +698,13 @@ dependencies = [
 name = "brolga-sync"
 version = "0.0.1"
 dependencies = [
+ "brolga-calendar",
  "brolga-fake-graph",
  "brolga-graph",
  "brolga-mail",
  "brolga-store",
  "futures",
+ "jiff",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",

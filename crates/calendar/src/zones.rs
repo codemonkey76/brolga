@@ -55,6 +55,23 @@ pub fn iana_zone(name: &str) -> Option<&str> {
     jiff::tz::TimeZone::get(name).ok().map(|_| name)
 }
 
+/// A date and time as Graph writes one, with the zone it says it is in,
+/// as that moment in UTC: `2026-10-20T03:00:00Z`. Nothing if the time or
+/// the zone cannot be read.
+pub fn utc(date_time: &str, zone: &str) -> Option<String> {
+    // Graph writes seven places of seconds; none are kept.
+    let whole = date_time.split('.').next()?;
+    let local: jiff::civil::DateTime = whole.parse().ok()?;
+    let zone = jiff::tz::TimeZone::get(iana_zone(zone)?).ok()?;
+    let moment = zone
+        .to_ambiguous_zoned(local)
+        .compatible()
+        .ok()?
+        .timestamp();
+
+    Some(moment.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +99,24 @@ mod tests {
         assert_eq!(iana_zone("Australia/Brisbane"), Some("Australia/Brisbane"));
         assert_eq!(iana_zone("Mars/Olympus Mons"), None);
         assert_eq!(iana_zone(""), None);
+    }
+
+    #[test]
+    fn a_time_in_any_zone_graph_names_is_put_in_utc() {
+        assert_eq!(
+            utc("2026-10-20T03:00:00.0000000", "UTC").as_deref(),
+            Some("2026-10-20T03:00:00Z")
+        );
+        assert_eq!(
+            utc("2026-10-20T09:00:00.0000000", "E. Australia Standard Time").as_deref(),
+            Some("2026-10-19T23:00:00Z")
+        );
+        assert_eq!(
+            utc("2026-01-20T09:00:00", "Australia/Sydney").as_deref(),
+            Some("2026-01-19T22:00:00Z")
+        );
+        assert_eq!(utc("not a time", "UTC"), None);
+        assert_eq!(utc("2026-10-20T03:00:00", "tzone://Microsoft/Custom"), None);
     }
 
     /// The table is data from outside. Every zone it names must be one the

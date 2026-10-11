@@ -18,7 +18,7 @@ pub use client::{GraphClient, TokenSource};
 pub use delta::{DeltaItem, DeltaPage, Next};
 pub use error::GraphError;
 pub use mail::{
-    Attachment, EmailAddress, FileAttachment, Flag, ItemBody, MailFolder, Message, Recipient,
-    WELL_KNOWN_FOLDERS,
+    Attachment, DateTimeTimeZone, EmailAddress, FileAttachment, Flag, ItemBody, MailFolder,
+    Message, Recipient, WELL_KNOWN_FOLDERS,
 };
 pub use retry::RetryPolicy;
