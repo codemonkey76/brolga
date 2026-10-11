@@ -434,12 +434,24 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             },
             "mail.drafts.files.add": (args) => {
                 const found = draft(args.draft_id);
-                const name = String(args.path).split("/").pop() ?? "";
+                const name = args.path ? (String(args.path).split("/").pop() ?? "") : String(args.name);
                 if (name.startsWith("huge")) throw { code: "failed", message: `\`${name}\` is over 25 MB, which is more than most mail systems accept. Share it as a link instead.` };
-                const file = { id: Date.now() + Math.random(), name, content_type: "application/pdf", size: 184_320 };
+                const id = (found?.files as unknown[]).length + 1;
+                const content = (args.content_base64 as string) ?? "";
+                const file = {
+                    id,
+                    name,
+                    content_type: args.inline ? "image/png" : "application/pdf",
+                    size: args.path ? 184_320 : Math.floor((content.length * 3) / 4),
+                    content_id: args.inline ? `picture-${id}@brolga` : null,
+                    content_base64: content,
+                };
                 (found?.files as unknown[]).push(file);
                 return { file };
             },
+            "mail.drafts.files.get": (args) => ({
+                file: (draft(args.draft_id)?.files as { id: number }[]).find((each) => each.id === args.file_id),
+            }),
             "mail.drafts.files.remove": (args) => {
                 const found = draft(args.draft_id);
                 if (found) found.files = (found.files as { id: number }[]).filter((each) => each.id !== args.file_id);

@@ -224,6 +224,11 @@ const STEPS: &[&str] = &[
     -- empty where it has none.
     ALTER TABLE messages ADD COLUMN flag_due TEXT NOT NULL DEFAULT '';
 ",
+    "
+    -- A picture shown within a draft's body is a file of the draft with a
+    -- name the body refers to it by: <img src=\"cid:…\">.
+    ALTER TABLE draft_files ADD COLUMN content_id TEXT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -248,16 +248,23 @@ impl GraphClient {
         name: &str,
         content_type: &str,
         content: &[u8],
+        content_id: Option<&str>,
     ) -> Result<(), GraphError> {
         use base64::Engine;
 
         let url = format!("{}/me/messages/{message_id}/attachments", self.base);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "@odata.type": "#microsoft.graph.fileAttachment",
             "name": name,
             "contentType": content_type,
             "contentBytes": base64::engine::general_purpose::STANDARD.encode(content),
         });
+        // A picture shown within the body: the body refers to it by this
+        // name, as `cid:` and the name ("fileAttachment resource type").
+        if let Some(content_id) = content_id {
+            body["isInline"] = serde_json::json!(true);
+            body["contentId"] = serde_json::json!(content_id);
+        }
         self.send(reqwest::Method::POST, &url, None, Some(&body), false)
             .await?;
 
@@ -277,6 +284,7 @@ impl GraphClient {
         message_id: &str,
         name: &str,
         content: &[u8],
+        content_id: Option<&str>,
     ) -> Result<(), GraphError> {
         // "Keep each byte range less than 4 MB."
         const PIECE: usize = 3 * 1024 * 1024;
@@ -285,9 +293,13 @@ impl GraphClient {
             "{}/me/messages/{message_id}/attachments/createUploadSession",
             self.base
         );
-        let item = serde_json::json!({
+        let mut item = serde_json::json!({
             "AttachmentItem": { "attachmentType": "file", "name": name, "size": content.len() }
         });
+        if let Some(content_id) = content_id {
+            item["AttachmentItem"]["isInline"] = serde_json::json!(true);
+            item["AttachmentItem"]["contentId"] = serde_json::json!(content_id);
+        }
         let session: UploadSession = decode(
             &self
                 .send(reqwest::Method::POST, &url, None, Some(&item), false)

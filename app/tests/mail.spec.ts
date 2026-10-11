@@ -1005,3 +1005,80 @@ test("a message is forwarded as an attachment: a new message with it attached wh
     // The original is attached, not quoted underneath.
     await expect(form.getByText("The original message is added underneath")).toHaveCount(0);
 });
+
+/** The smallest PNG there is: one clear pixel. */
+const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+test("a picture is put within a message, shown there, and sent by its name", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    const words = form.getByRole("textbox", { name: "Message" });
+    await form.getByRole("combobox", { name: "To" }).fill("jo@example.test");
+    await words.click();
+    await page.keyboard.type("Here is the chart:");
+
+    await form.getByLabel("Choose pictures").setInputFiles({ name: "chart.png", mimeType: "image/png", buffer: Buffer.from(PIXEL, "base64") });
+
+    // It shows in the message, and is not listed as a file beside it.
+    const image = words.locator("img");
+    await expect(image).toHaveCount(1);
+    await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/);
+    await expect(form.getByRole("list", { name: "Attached files" })).toHaveCount(0);
+
+    // Put aside and opened again, it is still shown.
+    await page.keyboard.press("Escape");
+    await page.getByRole("list", { name: "Being written" }).getByRole("button").first().click();
+    await expect(words.locator("img")).toHaveAttribute("src", /^data:image\/png;base64,/);
+
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form).toHaveCount(0);
+    const went = (await sent(page))[0] as { body: string; files: { content_id: string | null }[] };
+    // What is kept and sent refers to the picture by name, and does not carry it in the words.
+    expect(went.body).toContain('src="cid:picture-1@brolga"');
+    expect(went.body).not.toContain("base64");
+    expect(went.files.map((file) => file.content_id)).toEqual(["picture-1@brolga"]);
+});
+
+test("a picture taken out of a message stops being one of its files", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    const words = form.getByRole("textbox", { name: "Message" });
+    await form.getByRole("combobox", { name: "To" }).fill("jo@example.test");
+    await words.click();
+    await form.getByLabel("Choose pictures").setInputFiles({ name: "chart.png", mimeType: "image/png", buffer: Buffer.from(PIXEL, "base64") });
+    await expect(words.locator("img")).toHaveCount(1);
+
+    await words.click();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.type("No picture after all.");
+    await form.getByRole("button", { name: "Send" }).click();
+
+    await expect(form).toHaveCount(0);
+    expect(((await sent(page))[0] as { files: unknown[] }).files).toHaveLength(0);
+});
+
+test("files dropped on a message being written are attached to it", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+
+    const carried = await page.evaluateHandle(() => {
+        const data = new DataTransfer();
+        data.items.add(new File(["Some notes."], "notes.txt", { type: "text/plain" }));
+        data.items.add(new File(["a,b"], "figures.csv", { type: "text/csv" }));
+        return data;
+    });
+    await form.dispatchEvent("dragover", { dataTransfer: carried });
+    await expect(form).toHaveClass(/over/);
+    await form.dispatchEvent("drop", { dataTransfer: carried });
+
+    const attached = form.getByRole("list", { name: "Attached files" });
+    await expect(attached.getByRole("listitem")).toHaveCount(2);
+    await expect(attached).toContainText("notes.txt");
+    await expect(attached).toContainText("figures.csv");
+    await expect(form).not.toHaveClass(/over/);
+    const added = (await ran(page)).filter((r) => r.command === "mail.drafts.files.add");
+    expect(added[0].args).toMatchObject({ name: "notes.txt", content_base64: "U29tZSBub3Rlcy4=" });
+});

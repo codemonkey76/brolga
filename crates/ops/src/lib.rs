@@ -250,13 +250,14 @@ impl Outbox {
             self.db.draft_file_upload_tried(file.id).map_err(kept)?;
             // "Add attachment" takes a file of under 3 MB; a larger one
             // goes up in pieces.
+            let content_id = file.content_id.as_deref();
             if data.len() < SMALL_FILE {
                 self.graph
-                    .add_attachment(server_id, &file.name, &file.content_type, &data)
+                    .add_attachment(server_id, &file.name, &file.content_type, &data, content_id)
                     .await?;
             } else {
                 self.graph
-                    .upload_attachment(server_id, &file.name, &data)
+                    .upload_attachment(server_id, &file.name, &data, content_id)
                     .await?;
             }
             self.db.draft_file_uploaded(file.id).map_err(kept)?;

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { chooseFiles, say } from "./commands";
     import Recipients from "./Recipients.svelte";
-    import { type Draft, type DraftFile, type Person, attachFile, discardDraft, editDraft, removeFile, sendDraft, size } from "./mail";
+    import { type Draft, type DraftFile, type Person, attachContent, attachFile, base64Of, discardDraft, editDraft, readFile, removeFile, sendDraft, size } from "./mail";
 
     interface Props {
         accountId: string;
@@ -53,11 +53,109 @@
         if (editor && editor.dataset.filled !== start.id) {
             editor.dataset.filled = start.id;
             editor.innerHTML = body;
+            showPictures(editor);
         }
     });
 
+    /**
+     * A picture within the message is kept as `cid:` and a name, which is how
+     * it is sent. That shows nothing here, so each is given its picture to
+     * show, and keeps its name beside it to be written back by.
+     */
+    function showPictures(within: HTMLElement) {
+        for (const image of within.querySelectorAll<HTMLImageElement>('img[src^="cid:"]')) {
+            const name = image.getAttribute("src")?.slice(4) ?? "";
+            const file = files.find((each) => each.content_id === name);
+            image.dataset.cid = name;
+            image.removeAttribute("src");
+            if (!file) continue;
+            readFile(accountId, start.id, file.id)
+                .then((got) => (image.src = `data:${got.content_type};base64,${got.content_base64}`))
+                .catch(() => {});
+        }
+    }
+
+    /** The editor's contents as they are kept: each picture by its name again, not by its contents. */
+    function written(): string {
+        if (!editor) return body;
+        const copy = editor.cloneNode(true) as HTMLElement;
+        for (const image of copy.querySelectorAll<HTMLImageElement>("img")) {
+            const name = image.dataset.cid;
+            // A picture that is not one of the draft's own is not sent.
+            if (!name) image.remove();
+            else {
+                image.setAttribute("src", `cid:${name}`);
+                image.removeAttribute("data-cid");
+            }
+        }
+        return copy.innerHTML;
+    }
+
     function edited() {
-        if (editor) body = editor.innerHTML;
+        if (editor) body = written();
+    }
+
+    let picker = $state<HTMLInputElement>();
+    /** Where the cursor was when the picture was asked for, since choosing a file takes the focus. */
+    let placed: Range | null = null;
+
+    function choosePicture() {
+        const selection = window.getSelection();
+        placed = selection && selection.rangeCount > 0 && editor?.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
+        picker?.click();
+    }
+
+    /** Put pictures within the message, where the cursor was. */
+    async function addPictures(chosen: FileList | File[] | null) {
+        for (const file of chosen ?? []) {
+            try {
+                const content = await base64Of(file);
+                const kept = await attachContent(accountId, start.id, file.name, content, true);
+                files = [...files, kept];
+                editor?.focus();
+                if (placed) {
+                    const selection = window.getSelection();
+                    selection?.removeAllRanges();
+                    selection?.addRange(placed);
+                }
+                document.execCommand("insertHTML", false, `<img src="data:${kept.content_type};base64,${content}" data-cid="${kept.content_id}" alt="">`);
+                placed = null;
+                edited();
+                changed();
+            } catch (failure) {
+                problem = say(failure);
+            }
+        }
+        if (picker) picker.value = "";
+    }
+
+    /** Pictures that are no longer in the message are no longer its files. */
+    async function dropUnused() {
+        for (const file of files.filter((each) => each.content_id && !body.includes(`cid:${each.content_id}`))) {
+            await removeFile(accountId, start.id, file.id).catch(() => {});
+            files = files.filter((each) => each.id !== file.id);
+        }
+    }
+
+    const MOST = 25 * 1024 * 1024;
+    let over = $state(false);
+
+    /** Files dropped on the message are attached to it. */
+    async function dropped(event: DragEvent) {
+        event.preventDefault();
+        over = false;
+        for (const file of event.dataTransfer?.files ?? []) {
+            if (file.size > MOST) {
+                problem = `\`${file.name}\` is over 25 MB, which is more than most mail systems accept. Share it as a link instead.`;
+                continue;
+            }
+            try {
+                files = [...files, await attachContent(accountId, start.id, file.name, await base64Of(file))];
+                onKept();
+            } catch (failure) {
+                problem = say(failure);
+            }
+        }
     }
 
     /** Bold, a list and the like, on what is selected. */
@@ -181,6 +279,7 @@
         kept = "keeping";
         try {
             await editDraft(accountId, start.id, { to: people(to), cc: people(cc), bcc: people(bcc), subject, body, format });
+            await dropUnused();
             if (kept === "keeping") kept = "kept";
             problem = null;
             onKept();
@@ -238,7 +337,22 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<form class="compose" aria-label={titles[start.kind]} onsubmit={(event) => (event.preventDefault(), send())} onkeydown={keydown} oninput={changed}>
+<form
+    class="compose"
+    class:over
+    aria-label={titles[start.kind]}
+    onsubmit={(event) => (event.preventDefault(), send())}
+    onkeydown={keydown}
+    oninput={changed}
+    ondragover={(event) => {
+        if (event.dataTransfer?.types.includes("Files")) {
+            event.preventDefault();
+            over = true;
+        }
+    }}
+    ondragleave={() => (over = false)}
+    ondrop={dropped}
+>
     <div class="bar">
         <button type="submit" class="primary" disabled={sending} title="Ctrl+Enter">{sending ? "Sending…" : "Send"}</button>
         <button type="button" disabled={choosing} onclick={attach}>{choosing ? "Choosing…" : "Attach…"}</button>
@@ -264,9 +378,9 @@
     {/if}
     <label><span>Subject</span><input bind:value={subject} type="text" autocomplete="off" /></label>
 
-    {#if files.length > 0}
+    {#if files.some((file) => !file.content_id)}
         <ul class="files" aria-label="Attached files">
-            {#each files as each (each.id)}
+            {#each files.filter((file) => !file.content_id) as each (each.id)}
                 <li>
                     📎 {each.name} <span class="muted">{size(each.size)}</span>
                     <button type="button" class="link" aria-label="Remove {each.name}" title="Remove" onclick={() => detach(each)}>✕</button>
@@ -283,6 +397,8 @@
             <button type="button" title="Bulleted list" aria-label="Bulleted list" onclick={() => style("insertUnorderedList")}>• List</button>
             <button type="button" title="Numbered list" aria-label="Numbered list" onclick={() => style("insertOrderedList")}>1. List</button>
             <button type="button" title="Link" aria-label="Link" onmousedown={(event) => event.preventDefault()} onclick={startLink}>Link</button>
+            <button type="button" title="Put a picture in the message" aria-label="Picture" onmousedown={(event) => event.preventDefault()} onclick={choosePicture}>Picture</button>
+            <input bind:this={picker} class="unseen" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple aria-label="Choose pictures" tabindex="-1" onchange={(event) => addPictures(event.currentTarget.files)} />
             <button type="button" title="Remove formatting" aria-label="Remove formatting" onclick={() => style("removeFormat")}>Clear</button>
         {/if}
         <label class="plainly"><input type="checkbox" checked={format === "text"} onchange={(event) => switchFormat(event.currentTarget.checked)} /> Plain text</label>
@@ -454,6 +570,24 @@
 
     .words :global(p) {
         margin: 0 0 0.75em;
+    }
+
+    .words :global(img) {
+        max-width: 100%;
+        height: auto;
+    }
+
+    .unseen {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .compose.over {
+        outline: 2px dashed var(--accent);
+        outline-offset: -6px;
     }
 
     .words :global(a) {

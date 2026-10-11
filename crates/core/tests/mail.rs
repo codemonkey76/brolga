@@ -1673,3 +1673,79 @@ async fn a_message_is_forwarded_as_an_attachment_whole() {
     // The original is not quoted in the body as well.
     assert!(!sent.body_html.contains("At ten."));
 }
+
+#[tokio::test]
+async fn a_picture_is_put_within_a_message_and_arrives_within_it() {
+    use base64::Engine;
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let png = b"\x89PNG\r\n\x1a\nnot really a picture";
+    let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Chart", "format": "html" }),
+        )
+        .await["draft"]["id"]
+        .clone();
+    let picture = f
+        .run(
+            "mail.drafts.files.add",
+            json!({ "draft_id": draft, "name": "chart.png", "content_base64": encoded, "inline": true }),
+        )
+        .await["file"]
+        .clone();
+    let cid = picture["content_id"].as_str().unwrap();
+    assert_eq!(picture["content_type"], "image/png");
+
+    // Whatever it is called, only a real picture goes within a message.
+    let not_a_picture = f
+        .registry
+        .execute(
+            "mail.drafts.files.add",
+            json!({ "draft_id": draft, "name": "evil.png", "content_base64": "PHN2Zz48L3N2Zz4=", "inline": true }),
+        )
+        .await;
+    assert!(not_a_picture.is_err());
+
+    let kept = f
+        .run(
+            "mail.drafts.edit",
+            json!({ "draft_id": draft, "body": format!("<p>See the chart:</p><img src=\"cid:{cid}\">") }),
+        )
+        .await;
+    assert!(
+        kept["draft"]["body"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("src=\"cid:{cid}\""))
+    );
+    let back = f
+        .run(
+            "mail.drafts.files.get",
+            json!({ "draft_id": draft, "file_id": picture["id"] }),
+        )
+        .await;
+    assert_eq!(back["file"]["content_base64"], encoded);
+
+    f.run("mail.drafts.send", json!({ "draft_id": draft }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+    let sent = &f.graph.sent()[0];
+    assert!(
+        sent.body_html.contains(&format!("<img src=\"cid:{cid}\">")),
+        "{}",
+        sent.body_html
+    );
+    assert_eq!(sent.attachments.len(), 1);
+    assert!(sent.attachments[0].inline);
+    assert_eq!(sent.attachments[0].content_id.as_deref(), Some(cid));
+    assert_eq!(sent.attachments[0].content, png);
+    assert!(
+        !sent.has_attachments,
+        "a picture in the body is not an attachment beside it"
+    );
+}

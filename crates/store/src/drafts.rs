@@ -56,6 +56,9 @@ pub struct DraftFile {
     pub upload_tried: bool,
     /// The server has it.
     pub uploaded: bool,
+    /// For a picture shown within the body: the name the body refers to
+    /// it by, without the `cid:`.
+    pub content_id: Option<String>,
 }
 
 /// What may be changed about a draft. `None` leaves a part as it is.
@@ -72,6 +75,18 @@ pub struct DraftEdit {
 
 const COLUMNS: &str = "id, kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body, state, \
                        error, updated_at, server_id, quoted, send_tried, format, rev, server_rev";
+
+fn read_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<DraftFile> {
+    Ok(DraftFile {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        content_type: row.get(2)?,
+        size: row.get(3)?,
+        upload_tried: row.get(4)?,
+        uploaded: row.get(5)?,
+        content_id: row.get(6)?,
+    })
+}
 
 fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
     Ok(Draft {
@@ -194,6 +209,29 @@ impl AccountDb {
         content_type: &str,
         data: &[u8],
     ) -> Result<Option<DraftFile>, StoreError> {
+        self.attach(draft_id, name, content_type, data, false)
+    }
+
+    /// Attach a picture to be shown within the body. It is given a name
+    /// for the body to refer to it by, which comes back with it.
+    pub fn attach_inline_to_draft(
+        &self,
+        draft_id: &str,
+        name: &str,
+        content_type: &str,
+        data: &[u8],
+    ) -> Result<Option<DraftFile>, StoreError> {
+        self.attach(draft_id, name, content_type, data, true)
+    }
+
+    fn attach(
+        &self,
+        draft_id: &str,
+        name: &str,
+        content_type: &str,
+        data: &[u8],
+        inline: bool,
+    ) -> Result<Option<DraftFile>, StoreError> {
         let connection = self.connection();
         let added = connection.execute(
             "INSERT INTO draft_files (draft_id, name, content_type, size, data)
@@ -203,38 +241,54 @@ impl AccountDb {
         if added == 0 {
             return Ok(None);
         }
+        let id = connection.last_insert_rowid();
+        // Made from the file's own number, so no two are alike.
+        let content_id = inline.then(|| format!("picture-{id}@brolga"));
+        connection.execute(
+            "UPDATE draft_files SET content_id = ?2 WHERE id = ?1",
+            params![id, content_id],
+        )?;
         connection.execute(
             "UPDATE drafts SET updated_at = unixepoch() WHERE id = ?1",
             [draft_id],
         )?;
 
         Ok(Some(DraftFile {
-            id: connection.last_insert_rowid(),
+            id,
             name: name.to_owned(),
             content_type: content_type.to_owned(),
             size: data.len() as i64,
             upload_tried: false,
             uploaded: false,
+            content_id,
         }))
+    }
+
+    /// One file of a draft, with its contents.
+    pub fn draft_file(
+        &self,
+        draft_id: &str,
+        file_id: i64,
+    ) -> Result<Option<(DraftFile, Vec<u8>)>, StoreError> {
+        Ok(self
+            .connection()
+            .query_row(
+                "SELECT id, name, content_type, size, upload_tried, uploaded, content_id, data
+                 FROM draft_files WHERE draft_id = ?1 AND id = ?2",
+                params![draft_id, file_id],
+                |row| Ok((read_file(row)?, row.get(7)?)),
+            )
+            .optional()?)
     }
 
     /// The files attached to a draft, in the order they were attached.
     pub fn draft_files(&self, draft_id: &str) -> Result<Vec<DraftFile>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT id, name, content_type, size, upload_tried, uploaded FROM draft_files WHERE draft_id = ?1 ORDER BY id",
+            "SELECT id, name, content_type, size, upload_tried, uploaded, content_id FROM draft_files WHERE draft_id = ?1 ORDER BY id",
         )?;
         let files = statement
-            .query_map([draft_id], |row| {
-                Ok(DraftFile {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    content_type: row.get(2)?,
-                    size: row.get(3)?,
-                    upload_tried: row.get(4)?,
-                    uploaded: row.get(5)?,
-                })
-            })?
+            .query_map([draft_id], read_file)?
             .collect::<Result<_, _>>()?;
 
         Ok(files)
@@ -592,6 +646,31 @@ mod tests {
 
         db.draft_sent(&draft.id).unwrap();
         assert!(db.draft_files(&draft.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_picture_for_the_body_gets_a_name_of_its_own_to_be_referred_to_by() {
+        let db = AccountDb::in_memory().unwrap();
+        let draft = db.create_draft("new", None, &start("One")).unwrap();
+
+        let one = db
+            .attach_inline_to_draft(&draft.id, "a.png", "image/png", b"one")
+            .unwrap()
+            .unwrap();
+        let two = db
+            .attach_inline_to_draft(&draft.id, "a.png", "image/png", b"two")
+            .unwrap()
+            .unwrap();
+        let plain = db
+            .attach_to_draft(&draft.id, "a.png", "image/png", b"x")
+            .unwrap()
+            .unwrap();
+
+        assert!(one.content_id.is_some() && one.content_id != two.content_id);
+        assert_eq!(plain.content_id, None);
+        let (file, data) = db.draft_file(&draft.id, two.id).unwrap().unwrap();
+        assert_eq!((file.content_id, data), (two.content_id, b"two".to_vec()));
+        assert!(db.draft_file("draft-9", two.id).unwrap().is_none());
     }
 
     #[test]

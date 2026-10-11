@@ -63,6 +63,32 @@ struct AddFile {
     /// Or the file itself: its name and its contents in base64.
     name: Option<String>,
     content_base64: Option<String>,
+    /// A picture to show within the body, not a file beside it.
+    inline: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct GetFile {
+    account_id: Option<String>,
+    draft_id: String,
+    file_id: i64,
+}
+
+/// What kind of picture some bytes are, by how they begin. Only the plain
+/// kinds a mail program will show within a message; not by its name, which
+/// can say anything.
+fn picture_type(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if data.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if data.len() > 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 #[derive(Deserialize)]
@@ -112,7 +138,10 @@ fn content_type(name: &str) -> &'static str {
 }
 
 fn file_shown(file: &DraftFile) -> Value {
-    json!({ "id": file.id, "name": file.name, "content_type": file.content_type, "size": file.size })
+    json!({
+        "id": file.id, "name": file.name, "content_type": file.content_type, "size": file.size,
+        "content_id": file.content_id,
+    })
 }
 
 #[derive(Deserialize)]
@@ -427,11 +456,16 @@ async fn add_file(mailboxes: Arc<Mailboxes>, args: AddFile) -> Result<Value, Com
             "That would take this message's files over 25 MB, which is more than most mail systems accept.",
         ));
     }
-    let file = mailbox
-        .db
-        .attach_to_draft(&args.draft_id, &name, content_type(&name), &data)
-        .map_err(failed)?
-        .ok_or_else(|| failed("There is no such draft, or it is already on its way out."))?;
+    let file = if args.inline.unwrap_or(false) {
+        let kind = picture_type(&data).ok_or_else(|| {
+            failed(format!("`{name}` is not a picture that can be shown within a message. PNG, JPEG, GIF and WebP can."))
+        })?;
+        mailbox.db.attach_inline_to_draft(&args.draft_id, &name, kind, &data)
+    } else {
+        mailbox.db.attach_to_draft(&args.draft_id, &name, content_type(&name), &data)
+    }
+    .map_err(failed)?
+    .ok_or_else(|| failed("There is no such draft, or it is already on its way out."))?;
 
     Ok(json!({ "file": file_shown(&file) }))
 }
@@ -440,6 +474,21 @@ fn too_large(name: &str) -> CommandError {
     failed(format!(
         "`{name}` is over 25 MB, which is more than most mail systems accept. Share it as a link instead."
     ))
+}
+
+async fn get_file(mailboxes: Arc<Mailboxes>, args: GetFile) -> Result<Value, CommandError> {
+    use base64::Engine;
+
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let (file, data) = mailbox
+        .db
+        .draft_file(&args.draft_id, args.file_id)
+        .map_err(failed)?
+        .ok_or_else(|| failed("This draft has no such file."))?;
+    let mut shown = file_shown(&file);
+    shown["content_base64"] = json!(base64::engine::general_purpose::STANDARD.encode(data));
+
+    Ok(json!({ "file": shown }))
 }
 
 async fn remove_file(mailboxes: Arc<Mailboxes>, args: RemoveFile) -> Result<Value, CommandError> {
@@ -814,7 +863,9 @@ fn file_schema() -> Value {
             "id": { "type": "integer" },
             "name": { "type": "string" },
             "content_type": { "type": "string" },
-            "size": { "type": "integer", "description": "In bytes." }
+            "size": { "type": "integer", "description": "In bytes." },
+            "content_id": { "type": ["string", "null"], "description": "For a picture shown within the body: what the body calls it, as <img src=\"cid:…\">." },
+            "content_base64": { "type": "string", "description": "The contents, where they were asked for." }
         },
         "required": ["id", "name", "content_type", "size"]
     })
@@ -1035,7 +1086,8 @@ pub(crate) fn register(
                     "draft_id": { "type": "string" },
                     "path": { "type": "string", "description": "The full path of a file on this computer." },
                     "name": { "type": "string" },
-                    "content_base64": { "type": "string" }
+                    "content_base64": { "type": "string" },
+                    "inline": { "type": "boolean", "description": "A picture to show within the body: PNG, JPEG, GIF or WebP. It comes back with a `content_id`; put <img src=\"cid:CONTENT_ID\"> in a formatted body where it should appear." }
                 },
                 "required": ["draft_id"],
                 "additionalProperties": false
@@ -1048,6 +1100,37 @@ pub(crate) fn register(
             examples: vec![json!({ "draft_id": "draft-1", "name": "notes.txt", "content_base64": "U29tZSBub3Rlcy4=" })],
         },
         handler(&mailboxes, add_file),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.drafts.files.get".to_owned(),
+            title: "Read an attached file".to_owned(),
+            description: "One file of a draft with its contents in base64, by the id mail.drafts.get lists it under. \
+                          The window uses it to show a draft's pictures; the draft and its files are the user's own."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "draft_id": { "type": "string" },
+                    "file_id": { "type": "integer" }
+                },
+                "required": ["draft_id", "file_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "file": file_schema() },
+                "required": ["file"]
+            }),
+            // The file the example of mail.drafts.files.add attached.
+            examples: vec![json!({ "draft_id": "draft-1", "file_id": 1 })],
+        },
+        handler(&mailboxes, get_file),
     )?;
 
     registry.register(

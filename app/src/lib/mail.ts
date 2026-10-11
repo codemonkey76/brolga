@@ -177,7 +177,25 @@ export interface DraftFile {
     content_type: string;
     /** In bytes. */
     size: number;
+    /** For a picture shown within the body: what the body calls it, after `cid:`. */
+    content_id?: string | null;
 }
+
+/** A file's bytes as base64, a piece at a time so a large one does not overrun the stack. */
+export async function base64Of(file: Blob): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+    return btoa(binary);
+}
+
+/** Attach a file given whole, as one dropped on the window is. `inline` makes it a picture for the body. */
+export const attachContent = async (account_id: string, draft_id: string, name: string, content_base64: string, inline = false) =>
+    (await execute<{ file: DraftFile }>("mail.drafts.files.add", { account_id, draft_id, name, content_base64, ...(inline ? { inline } : {}) })).file;
+
+/** A file of a draft, with its contents. */
+export const readFile = async (account_id: string, draft_id: string, file_id: number) =>
+    (await execute<{ file: DraftFile & { content_base64: string } }>("mail.drafts.files.get", { account_id, draft_id, file_id })).file;
 
 export const attachFile = async (account_id: string, draft_id: string, path: string) =>
     (await execute<{ file: DraftFile }>("mail.drafts.files.add", { account_id, draft_id, path })).file;

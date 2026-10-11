@@ -825,13 +825,14 @@ async fn add_attachment(
             .unwrap_or("application/octet-stream")
             .to_owned(),
         content,
-        inline: false,
+        inline: attachment["isInline"] == true,
         kind: "file",
-        content_id: None,
+        content_id: attachment["contentId"].as_str().map(str::to_owned),
     };
     inner.mailbox.edit(&message, |m| {
+        // A picture within the body does not make a message one "with attachments".
+        m.has_attachments |= !file.inline;
         m.attachments.push(file);
-        m.has_attachments = true;
     });
     if std::mem::take(&mut inner.lose_next_attachment_answer) {
         // Attached, and the caller never hears of it.
