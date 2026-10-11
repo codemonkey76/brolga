@@ -77,14 +77,12 @@ impl AccountDb {
         source_id: Option<&str>,
         start: &DraftEdit,
     ) -> Result<Draft, StoreError> {
-        let connection = self.connection();
-        let id: String =
-            connection.query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))?;
-        connection.execute(
-            "INSERT INTO drafts (id, kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body)
-             VALUES (?1, ?2, ?3, coalesce(?4, '[]'), coalesce(?5, '[]'), coalesce(?6, '[]'), coalesce(?7, ''), coalesce(?8, ''))",
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO drafts (kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body)
+             VALUES (?1, ?2, coalesce(?3, '[]'), coalesce(?4, '[]'), coalesce(?5, '[]'), coalesce(?6, ''), coalesce(?7, ''))",
             params![
-                id,
                 kind,
                 source_id,
                 start.to_recipients,
@@ -94,6 +92,12 @@ impl AccountDb {
                 start.body
             ],
         )?;
+        let id = format!("draft-{}", transaction.last_insert_rowid());
+        transaction.execute(
+            "UPDATE drafts SET id = ?1 WHERE seq = last_insert_rowid()",
+            [&id],
+        )?;
+        transaction.commit()?;
 
         Ok(connection.query_row(
             &format!("SELECT {COLUMNS} FROM drafts WHERE id = ?1"),
@@ -117,7 +121,7 @@ impl AccountDb {
     pub fn drafts(&self) -> Result<Vec<Draft>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(&format!(
-            "SELECT {COLUMNS} FROM drafts ORDER BY updated_at DESC, id"
+            "SELECT {COLUMNS} FROM drafts ORDER BY updated_at DESC, seq DESC"
         ))?;
         let drafts = statement.query_map([], read)?.collect::<Result<_, _>>()?;
 
@@ -186,7 +190,7 @@ impl AccountDb {
     pub fn queued_drafts(&self) -> Result<Vec<Draft>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(&format!(
-            "SELECT {COLUMNS} FROM drafts WHERE state = 'queued' ORDER BY updated_at, id"
+            "SELECT {COLUMNS} FROM drafts WHERE state = 'queued' ORDER BY updated_at, seq"
         ))?;
         let drafts = statement.query_map([], read)?.collect::<Result<_, _>>()?;
 

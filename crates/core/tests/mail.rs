@@ -989,3 +989,102 @@ async fn deleting_is_a_move_that_shows_at_once_and_can_be_undone() {
         .await;
     assert!(nowhere.is_err());
 }
+
+#[tokio::test]
+async fn a_message_is_written_sent_and_turns_up_in_sent_items() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "name": "Jo", "address": " jo@example.test " }], "subject": "Lunch" }),
+        )
+        .await["draft"]
+        .clone();
+    f.run(
+        "mail.drafts.edit",
+        json!({ "draft_id": draft["id"], "body": "Friday?\n\nRobin" }),
+    )
+    .await;
+    assert_eq!(draft["to"][0]["address"], "jo@example.test");
+
+    let sent = f
+        .run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    assert_eq!(sent["queued"], true);
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+
+    let went = f.graph.sent();
+    assert_eq!(went.len(), 1);
+    assert_eq!(went[0].subject, "Lunch");
+    assert_eq!(
+        went[0].body_html,
+        "<html><body><p>Friday?</p><p>Robin</p></body></html>"
+    );
+    assert!(
+        f.run("mail.drafts.list", json!({})).await["drafts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    f.sync().await;
+    let in_sent = f
+        .run(
+            "mail.messages.list",
+            json!({ "folder_id": f.graph.folder_id("sentitems") }),
+        )
+        .await;
+    assert_eq!(in_sent["messages"][0]["subject"], "Lunch");
+}
+
+#[tokio::test]
+async fn an_answer_is_addressed_and_titled_and_a_message_to_nobody_is_not_sent() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Lunch", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+    let from = f
+        .run("mail.messages.list", json!({ "folder_id": f.inbox }))
+        .await["messages"][0]["from"]["address"]
+        .clone();
+
+    let reply = f
+        .run(
+            "mail.drafts.create",
+            json!({ "kind": "reply", "message_id": id }),
+        )
+        .await["draft"]
+        .clone();
+    let forward = f
+        .run(
+            "mail.drafts.create",
+            json!({ "kind": "forward", "message_id": id }),
+        )
+        .await["draft"]
+        .clone();
+
+    assert_eq!(reply["subject"], "RE: Lunch");
+    assert_eq!(reply["to"][0]["address"], from);
+    assert_eq!(forward["subject"], "FW: Lunch");
+    assert!(forward["to"].as_array().unwrap().is_empty());
+
+    let to_nobody = f
+        .registry
+        .execute("mail.drafts.send", json!({ "draft_id": forward["id"] }))
+        .await;
+    assert!(to_nobody.unwrap_err().to_string().contains("recipient"));
+    let not_an_address = f
+        .registry
+        .execute(
+            "mail.drafts.edit",
+            json!({ "draft_id": forward["id"], "to": [{ "address": "jo at example" }] }),
+        )
+        .await;
+    assert!(not_an_address.is_err());
+    assert!(f.graph.sent().is_empty());
+}

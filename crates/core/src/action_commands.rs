@@ -144,7 +144,8 @@ async fn outbox(mailboxes: Arc<Mailboxes>) -> Result<Value, CommandError> {
                 })
             })
             .collect();
-        accounts.push(json!({ "account_id": account.id, "queued": queued, "refused": refused }));
+        let sending = mailbox.db.queued_drafts().map_err(failed)?.len();
+        accounts.push(json!({ "account_id": account.id, "queued": queued, "sending": sending, "refused": refused }));
     }
 
     Ok(json!({ "accounts": accounts }))
@@ -326,7 +327,7 @@ pub(crate) fn register(
         CommandSpec {
             id: "app.outbox.status".to_owned(),
             title: "Outbox status".to_owned(),
-            description: "For each account: how many changes made on this computer are still waiting to be sent to Microsoft 365, \
+            description: "For each account: how many changes made on this computer and how many messages are still waiting to be sent to Microsoft 365, \
                           and the changes it refused, each with the message and the reason. A refused change has been taken back here."
                 .to_owned(),
             kind: CommandKind::Query,
@@ -343,6 +344,7 @@ pub(crate) fn register(
                             "properties": {
                                 "account_id": { "type": "string" },
                                 "queued": { "type": "integer" },
+                                "sending": { "type": "integer", "description": "Messages waiting to be sent. mail.drafts.list has them." },
                                 "refused": {
                                     "type": "array",
                                     "items": {

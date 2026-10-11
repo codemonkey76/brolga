@@ -164,7 +164,9 @@ const STEPS: &[&str] = &[
     "
     -- Messages being written, and those waiting to be sent.
     CREATE TABLE drafts (
-        id TEXT PRIMARY KEY NOT NULL,
+        -- Never used twice, so neither is an id made from it.
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT UNIQUE,
         -- new, reply, reply_all or forward.
         kind TEXT NOT NULL,
         source_id TEXT,
