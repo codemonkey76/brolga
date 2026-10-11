@@ -1,8 +1,8 @@
 <script lang="ts">
     import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash } from "@lucide/svelte";
     import type { Account } from "./accounts";
-    import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Asked, chooseSavePath, say } from "./commands";
+    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -13,9 +13,13 @@
         accounts: Account[];
         /** Show a day in the calendar. */
         onCalendar: (day: Date) => void;
+        /** A message a mailto: link asked to be started. */
+        linked?: Asked | null;
+        /** It has been started. */
+        onLinked?: () => void;
     }
 
-    let { accounts, onCalendar }: Props = $props();
+    let { accounts, onCalendar, linked = null, onLinked }: Props = $props();
 
     const PAGE = 100;
     let accountId = $state<string | null>(null);
@@ -90,29 +94,56 @@
         noticeTimer = setTimeout(() => (notice = null), 6_000);
     }
 
-    /** Start a new message, or an answer to the one being read. */
-    async function write(kind: Starting) {
-        if (!accountId) return;
+    /** Make the draft for a new message, or an answer to the one being read. Nothing if it cannot be. */
+    async function begin(kind: Starting): Promise<Draft | null> {
+        if (!accountId) return null;
         // An archive has no server to send through.
         if (account?.archive) {
             problem = "An archive can be read and searched, but nothing can be sent from it. Choose one of your accounts to write.";
-            return;
+            return null;
         }
-        if (kind !== "new" && !opened) return;
+        if (kind !== "new" && !opened) return null;
+        // Formatted unless the last message written was switched to plain text.
+        let plain = false;
         try {
-            // Formatted unless the last message written was switched to plain text.
-            let plain = false;
-            try {
-                plain = localStorage.getItem("brolga.compose.plain") === "1";
-            } catch {
-                // Formatted, then.
-            }
-            writing = await createDraft(accountId, kind, plain ? "text" : "html", kind === "new" ? undefined : opened?.message.id);
+            plain = localStorage.getItem("brolga.compose.plain") === "1";
+        } catch {
+            // Formatted, then.
+        }
+        return createDraft(accountId, kind, plain ? "text" : "html", kind === "new" ? undefined : opened?.message.id);
+    }
+
+    /** Start a new message, or an answer to the one being read. */
+    async function write(kind: Starting) {
+        try {
+            const started = await begin(kind);
+            if (!started) return;
+            writing = started;
             await loadDrafts();
         } catch (failure) {
             problem = say(failure);
         }
     }
+
+    // A mailto: link starts a new message with what it names filled in. The
+    // words are put above the signature, as if they had been typed.
+    $effect(() => {
+        if (!linked || !accountId) return;
+        const { to, cc, bcc, subject, body } = linked;
+        onLinked?.();
+        (async () => {
+            try {
+                const started = await begin("new");
+                if (!started || !accountId) return;
+                const escaped = body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                const words = !body ? started.body : started.format === "html" ? `<p>${escaped.replace(/\n/g, "<br>")}</p>${started.body}` : `${body}\n${started.body}`;
+                writing = (await editDraft(accountId, started.id, { to, cc, bcc, subject, body: words })).draft;
+                await loadDrafts();
+            } catch (failure) {
+                problem = say(failure);
+            }
+        })();
+    });
 
     async function doneWriting(how: "sent" | "discarded" | "closed") {
         writing = null;

@@ -51,6 +51,8 @@ export interface FakeMail {
     blocked?: number;
     /** The body once the pictures have been asked for. */
     bodyWithPictures?: string;
+    /** Whether the mailbox thinks it matters. Left out, it does. */
+    focused?: boolean;
 }
 
 const person = (name: string) => ({ name, address: `${name.toLowerCase().replace(/ /g, ".")}@example.test` });
@@ -166,6 +168,8 @@ export const bulk = (count: number): FakeMail[] =>
     }));
 
 export interface FakeCore {
+    /** A message a mailto: link asks the window to start. */
+    asked?: { to: { address: string; name: string | null }[]; cc: never[]; bcc: never[]; subject: string; body: string };
     accounts?: FakeAccount[];
     mail?: FakeMail[];
     /** Mail that turns up at the second sync, as new mail does. */
@@ -381,7 +385,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             flag_status: flags.get(m.id) ?? "notFlagged",
             flag_due: dues.get(m.id) ?? null,
             categories: tags.get(m.id) ?? [],
-            focused: true,
+            focused: m.focused ?? true,
         });
         const inFolder = (id: unknown) => mail.filter((m) => m.folder_id === id);
         const pinned = new Set<unknown>(core.pinned ?? []);
@@ -1008,6 +1012,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     if (name === "notify") {
                         notified.push(payload as unknown as { title: string; body: string });
                         return null;
+                    }
+                    // A mailto: link clicked elsewhere: handed over once, and then nothing more comes.
+                    if (name === "next_request") {
+                        const link = core.asked;
+                        core.asked = undefined;
+                        return link ?? new Promise(() => {});
                     }
                     if (name !== "execute_command") throw new Error(`The frontend called ${name}, which is not a command.`);
                     const run = commands[payload.command];

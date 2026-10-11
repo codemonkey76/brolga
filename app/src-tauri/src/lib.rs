@@ -4,18 +4,19 @@
 //! on the control channel so the CLI and agents can run the same commands in
 //! this process while it is open.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use brolga_auth::Authority;
 use brolga_commands::{CommandError, Registry};
-use brolga_control::{Server, default_endpoint};
+use brolga_control::{Client, Server, ServerError, default_endpoint};
 use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID, safe_file_name};
 use brolga_platform::{SystemSecrets, data_dir, downloads_dir, open_in_browser};
 use serde::Serialize;
 use serde_json::Value;
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
+use tokio::sync::mpsc;
 
 /// A command that did not run, as the frontend receives it.
 #[derive(Serialize)]
@@ -105,11 +106,58 @@ fn notify(app: tauri::AppHandle, title: String, body: String) {
         .show();
 }
 
+/// Messages the window has been asked to start, by a `mailto:` link, each
+/// waiting for the window to take it.
+struct Asked(tokio::sync::Mutex<mpsc::UnboundedReceiver<Value>>);
+
+/// The next message the window has been asked to start: who to, the subject
+/// and the words, as `app.window.show` read them from a link. It answers
+/// when there is one, however long that is.
+#[tauri::command]
+async fn next_request(asked: State<'_, Asked>) -> Result<Option<Value>, ()> {
+    Ok(asked.0.lock().await.recv().await)
+}
+
+fn bring_forward(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// What `app.window.show` is given: nothing, or the link this was started with.
+fn showing(link: Option<&str>) -> Value {
+    match link {
+        Some(link) => serde_json::json!({ "mailto": link }),
+        None => serde_json::json!({}),
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // A mailto: link clicked somewhere else arrives as the one argument.
+    let link = std::env::args().skip(1).find(|arg| {
+        arg.get(..7)
+            .is_some_and(|s| s.eq_ignore_ascii_case("mailto:"))
+    });
+
     // Opening the channel is how a second copy finds out it is one, so it is
     // done first, before any data is opened or there is a window to show.
     let endpoint = default_endpoint()?;
-    let server = tauri::async_runtime::block_on(Server::bind(&endpoint))?;
+    let server = match tauri::async_runtime::block_on(Server::bind(&endpoint)) {
+        Ok(server) => server,
+        // The copy already running is brought forward, and given the link.
+        Err(ServerError::AlreadyRunning) => {
+            return tauri::async_runtime::block_on(async {
+                let mut running = Client::connect(&endpoint).await?;
+                running
+                    .execute("app.window.show", showing(link.as_deref()))
+                    .await?;
+                Ok(())
+            });
+        }
+        Err(other) => return Err(other.into()),
+    };
 
     let core = Core::open(CoreOptions {
         data_dir: Some(
@@ -126,21 +174,59 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let registry = core.registry();
     let control = registry.clone();
 
+    let (ask, asked) = mpsc::unbounded_channel();
+    let window: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
+    let shown = window.clone();
+    core.on_show_window(Arc::new(move |writing| {
+        if let Some(writing) = writing {
+            let _ = ask.send(writing);
+        }
+        if let Some(app) = shown.get() {
+            bring_forward(app);
+        }
+    }));
+    let opening = registry.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(registry)
-        .setup(move |_app| {
+        .manage(Asked(tokio::sync::Mutex::new(asked)))
+        .setup(move |app| {
+            let _ = window.set(app.handle().clone());
             tauri::async_runtime::spawn(server.run(control));
+            if link.is_some() {
+                tauri::async_runtime::spawn(async move {
+                    let _ = opening
+                        .execute("app.window.show", showing(link.as_deref()))
+                        .await;
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             execute_command,
             choose_save_path,
             choose_files,
-            notify
+            notify,
+            next_request
         ])
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?
+        .run(|_app, _event| {
+            // macOS hands a clicked link to the running app, not to a new one.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                let registry = _app.state::<Arc<Registry>>().inner().clone();
+                for url in urls {
+                    let registry = registry.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = registry
+                            .execute("app.window.show", showing(Some(url.as_str())))
+                            .await;
+                    });
+                }
+            }
+        });
 
     Ok(())
 }

@@ -2,11 +2,13 @@
     import { Bot, CalendarDays, CircleUser, Mail as MailIcon, Users } from "@lucide/svelte";
     import { type Account, type Archive, type SharedMailbox, listAccounts, listArchives, listShared, mailboxes } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
+    import { type Asked, nextRequest } from "./lib/commands";
     import Agents from "./lib/Agents.svelte";
     import Calendar from "./lib/Calendar.svelte";
     import Questions from "./lib/Questions.svelte";
     import Reminders from "./lib/Reminders.svelte";
     import Mail from "./lib/Mail.svelte";
+    import NewMail from "./lib/NewMail.svelte";
     import People from "./lib/People.svelte";
 
     type View = "mail" | "calendar" | "people" | "accounts" | "agents";
@@ -40,6 +42,23 @@
         .catch(() => {})
         .finally(() => (started = true));
 
+    /** A message a mailto: link asked for, until Mail has started it. */
+    let asked = $state<Asked | null>(null);
+    // Each link clicked is waited for in turn, for as long as the window is open.
+    (async () => {
+        for (;;) {
+            let next: Asked | null;
+            try {
+                next = await nextRequest();
+            } catch {
+                return;
+            }
+            if (!next) return;
+            asked = next;
+            if (accounts.length > 0) view = "mail";
+        }
+    })();
+
     function changed(now: Account[]) {
         const first = accounts.length === 0 && now.length > 0;
         accounts = now;
@@ -62,6 +81,7 @@
 
 <Questions />
 <Reminders {accounts} onOpen={() => (view = "calendar")} />
+<NewMail {accounts} fetched={view === "mail" || view === "calendar"} />
 
 <div class="shell">
     <nav class="rail" aria-label="Sections">
@@ -93,6 +113,8 @@
         {:else if view === "mail" && accounts.length > 0}
             <Mail
                 accounts={mailboxes(accounts, shared, false, archives)}
+                linked={asked}
+                onLinked={() => (asked = null)}
                 onCalendar={(day) => {
                     calendarDay = day;
                     view = "calendar";

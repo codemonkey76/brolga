@@ -29,6 +29,18 @@ export const chooseFiles = () => invoke<string[]>("choose_files");
 /** Show a notification on the desktop. If the desktop will not, nothing is lost: the window shows it too. */
 export const notify = (title: string, body: string) => invoke<void>("notify", { title, body }).catch(() => {});
 
+/** A message a `mailto:` link asked to be started: who to, the subject and the words, as plain text. */
+export interface Asked {
+    to: { address: string; name: string | null }[];
+    cc: { address: string; name: string | null }[];
+    bcc: { address: string; name: string | null }[];
+    subject: string;
+    body: string;
+}
+
+/** The next message the window is asked to start. It answers when there is one, however long that is. */
+export const nextRequest = () => invoke<Asked | null>("next_request");
+
 export function isCommandFailure(value: unknown): value is CommandFailure {
     return typeof value === "object" && value !== null && "code" in value && "message" in value;
 }

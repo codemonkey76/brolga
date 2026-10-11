@@ -40,6 +40,8 @@ export interface Message {
     /** The day a flagged message is to be followed up by, `YYYY-MM-DD`. */
     flag_due?: string | null;
     categories: string[];
+    /** False for what the mailbox has put under Other. */
+    focused?: boolean;
 }
 
 export interface Category {

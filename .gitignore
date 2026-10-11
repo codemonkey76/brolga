@@ -10,3 +10,6 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/coverage/
+
+# The command line program, copied in beside the app when a release is packaged.
+app/src-tauri/binaries/

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=Mail and Calendar
+Comment={{comment}}
+Exec={{exec}} %u
+Icon={{icon}}
+Terminal=false
+Categories=Network;Email;Office;Calendar;ContactManagement;
+Keywords=mail;email;e-mail;calendar;contacts;
+MimeType=x-scheme-handler/mailto;
+StartupNotify=true
+StartupWMClass={{exec}}

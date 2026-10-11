@@ -22,6 +22,7 @@ mod rule_commands;
 mod saving;
 mod shared_commands;
 mod sharing_commands;
+mod window_commands;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,6 +32,7 @@ use brolga_commands::{Registry, RegistryError, builtin_registry};
 use brolga_store::{GlobalDb, StoreError};
 
 pub use saving::safe_name as safe_file_name;
+pub use window_commands::ShowWindow;
 
 /// Brolga's own app registration with Microsoft: multi-tenant, a public
 /// client, redirecting to `http://localhost`. A client ID is not a secret;
@@ -90,6 +92,7 @@ pub enum CoreError {
 pub struct Core {
     accounts: Arc<Accounts>,
     registry: Arc<Registry>,
+    window: Arc<std::sync::OnceLock<ShowWindow>>,
 }
 
 impl Core {
@@ -139,6 +142,8 @@ impl Core {
             },
         )?;
         link_commands::register(&mut registry, options.open_browser.clone())?;
+        let window = Arc::new(std::sync::OnceLock::new());
+        window_commands::register(&mut registry, window.clone())?;
         account_commands::register(
             &mut registry,
             account_commands::Context {
@@ -152,12 +157,19 @@ impl Core {
         Ok(Self {
             accounts,
             registry: Arc::new(registry),
+            window,
         })
     }
 
     /// Every command the client has.
     pub fn registry(&self) -> Arc<Registry> {
         self.registry.clone()
+    }
+
+    /// Say how the window is brought forward, for `app.window.show`. Said
+    /// once, by whatever has a window; a second saying is ignored.
+    pub fn on_show_window(&self, show: ShowWindow) {
+        let _ = self.window.set(show);
     }
 
     pub fn accounts(&self) -> Arc<Accounts> {

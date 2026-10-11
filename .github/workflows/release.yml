@@ -1,0 +1,122 @@
+name: Release
+
+# Packages for every platform, from a tag like v0.1.0. Run by hand, it
+# builds the same packages and keeps them with the run, releasing nothing.
+#
+# Nothing here is signed yet: Windows and macOS will warn about, or refuse,
+# an app from a publisher they do not know. Signing waits on a certificate
+# for each and on whose name they are in.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Package (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest Ubuntu still supported, so the packages run on
+          # anything newer.
+          - { name: Linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, bundles: "deb,rpm,appimage" }
+          - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc, bundles: "nsis,msi" }
+          - { name: macOS, os: macos-latest, target: universal-apple-darwin, bundles: "dmg" }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the window's system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev build-essential rpm libfuse2 file
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install the frontend's dependencies
+        working-directory: app
+        run: bun install --frozen-lockfile
+
+      # The command line program goes inside every package, beside the app.
+      - name: Build the command line program
+        shell: bash
+        run: |
+          mkdir -p app/src-tauri/binaries dist
+          if [ "$RUNNER_OS" = macOS ]; then
+            cargo build --release --locked -p brolga-cli --target aarch64-apple-darwin
+            cargo build --release --locked -p brolga-cli --target x86_64-apple-darwin
+            lipo -create -output app/src-tauri/binaries/brolga-cli-universal-apple-darwin \
+              target/aarch64-apple-darwin/release/brolga-cli target/x86_64-apple-darwin/release/brolga-cli
+            cp app/src-tauri/binaries/brolga-cli-universal-apple-darwin dist/brolga-cli
+            tar -C dist -czf dist/brolga-cli-macos-universal.tar.gz brolga-cli
+            rm dist/brolga-cli
+          elif [ "$RUNNER_OS" = Windows ]; then
+            cargo build --release --locked -p brolga-cli
+            cp target/release/brolga-cli.exe "app/src-tauri/binaries/brolga-cli-${{ matrix.target }}.exe"
+            cp target/release/brolga-cli.exe dist/brolga-cli.exe
+            (cd dist && 7z a -bso0 brolga-cli-windows-x64.zip brolga-cli.exe && rm brolga-cli.exe)
+          else
+            cargo build --release --locked -p brolga-cli
+            cp target/release/brolga-cli "app/src-tauri/binaries/brolga-cli-${{ matrix.target }}"
+            tar -C target/release -czf dist/brolga-cli-linux-x64.tar.gz brolga-cli
+          fi
+
+      - name: Package the app
+        working-directory: app
+        shell: bash
+        run: |
+          target=""
+          if [ "$RUNNER_OS" = macOS ]; then target="--target ${{ matrix.target }}"; fi
+          bun run tauri build $target --bundles "${{ matrix.bundles }}" --config src-tauri/release.conf.json
+
+      - name: Gather the packages
+        shell: bash
+        run: |
+          find target -path '*/release/bundle/*' -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \) \
+            -exec cp {} dist/ \;
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  # A draft, for a person to read over and publish.
+  release:
+    name: Draft the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Say what each file should be
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --draft --generate-notes \
+            --title "Brolga ${GITHUB_REF_NAME#v}"

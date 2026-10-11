@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { bulk, inbox, lunch, ran, robin, sam, sent, withCore } from "./core";
+import { bulk, inbox, lunch, notified, ran, robin, sam, sent, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -171,6 +171,35 @@ test("new mail appears at the top without losing the place in the list", async (
     // What was being read is still being read.
     await expect(messages(page).getByRole("option", { selected: true })).toContainText("Invoice 2041 attached");
     await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Invoice 2041 attached");
+});
+
+test("the desktop is told of new mail that matters, once, and not of what was already there", async ({ page }) => {
+    await page.clock.install({ time: new Date("2026-10-09T09:01:00Z") });
+    const fresh = { ...inbox[0], id: "fresh", subject: "Just arrived", is_read: false, received_at: "2026-10-09T09:00:00Z" };
+    const bulletin = { ...fresh, id: "bulletin", subject: "Weekly bulletin", focused: false, received_at: "2026-10-09T09:00:30Z" };
+    await withCore(page, { accounts: [robin], mail: inbox, arrives: [fresh, bulletin] });
+    await expect(messages(page).getByRole("option")).toHaveCount(4);
+    await page.clock.fastForward(31_000);
+    expect(await notified(page)).toEqual([]);
+
+    await page.keyboard.press("F9");
+    await expect(messages(page).getByRole("option")).toHaveCount(6);
+    await page.clock.fastForward(31_000);
+
+    await expect.poll(() => notified(page)).toEqual([{ title: "Sam Taylor", body: "Just arrived" }]);
+    await page.clock.fastForward(61_000);
+    expect(await notified(page)).toHaveLength(1);
+});
+
+test("a mailto link clicked elsewhere starts a message with what it names, and sends nothing", async ({ page }) => {
+    const asked = { to: [{ address: "sam.taylor@example.test", name: null }], cc: [], bcc: [], subject: "Thursday", body: "See you <then>.\nRobin" };
+    await withCore(page, { accounts: [robin], mail: inbox, asked });
+
+    const form = page.getByRole("form", { name: "New message" });
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Thursday");
+    await expect(form.getByRole("combobox", { name: "To" })).toHaveValue("sam.taylor@example.test");
+    await expect(form).toContainText("See you <then>.");
+    expect(await sent(page)).toEqual([]);
 });
 
 test("a sync that fails says why and leaves the mail on screen", async ({ page }) => {
