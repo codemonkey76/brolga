@@ -7,6 +7,9 @@ export interface Calendar {
     hex_color: string;
     is_default: boolean;
     can_edit: boolean;
+    /** Whose calendar it is, where Microsoft 365 says: someone else's for one shared or delegated. */
+    owner_name?: string;
+    owner_address?: string;
     shown: boolean;
 }
 

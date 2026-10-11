@@ -796,3 +796,34 @@ test("a room is found for a meeting and booked with it", async ({ page }) => {
     await change.getByRole("button", { name: "Save" }).click();
     expect((await ran(page)).filter((r) => r.command === "calendar.events.update").at(-1)?.args).toMatchObject({ attendees: [] });
 });
+
+test("a shared mailbox's calendar is chosen beside the account's own, and other people's calendars say whose they are", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:20:00Z"));
+    const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
+    const otherCalendars = [
+        { id: "alex", name: "Alex Chen", color: "auto", hex_color: "", is_default: false, can_edit: false, shown: true, owner_name: "Alex Chen", owner_address: "alex@example.test" },
+        { id: "jo", name: "Jo Nguyen", color: "auto", hex_color: "", is_default: false, can_edit: true, shown: true, owner_name: "Jo Nguyen", owner_address: "jo@example.test" },
+    ];
+    await withCore(page, { accounts: [robin], events: week, shared, otherCalendars });
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    const side = page.getByRole("complementary", { name: "Calendars" });
+
+    // One someone shared says whose it is, and whether it can only be read.
+    const rows = side.getByRole("list", { name: "Calendars" }).getByRole("listitem");
+    await expect(rows.nth(2)).toContainText("Alex Chen (read only)");
+    await expect(rows.nth(3)).toContainText("· Jo Nguyen");
+    await expect(rows.nth(3)).not.toContainText("read only");
+    await expect(rows.nth(0)).not.toContainText("·");
+
+    const picker = side.getByRole("combobox", { name: "Account" });
+    await expect(picker.getByRole("option")).toHaveText(["robin@example.test", "↳ support@example.test (shared)"]);
+    await picker.selectOption({ label: "↳ support@example.test (shared)" });
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "calendar.events.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test" });
+    await picture(page, "calendar-shared");
+});
+
+test("with one mailbox there is no choice of whose calendar", async ({ page }) => {
+    const view = await calendar(page);
+    await expect(view).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "Calendars" }).getByRole("combobox", { name: "Account" })).toHaveCount(0);
+});

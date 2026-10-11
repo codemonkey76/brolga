@@ -16,8 +16,9 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     "MailboxSettings.ReadWrite",
     // The calendar, to read and to change.
     "Calendars.ReadWrite",
-    // Meeting times suggested by the server ("user: findMeetingTimes").
-    "Calendars.Read.Shared",
+    // Meeting times suggested by the server ("user: findMeetingTimes"), and
+    // the calendars other people have shared or delegated.
+    "Calendars.ReadWrite.Shared",
     // The organisation's meeting rooms ("List place objects").
     "Place.Read.All",
     // Personal contacts, and looking people up in the organisation.

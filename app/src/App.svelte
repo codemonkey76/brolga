@@ -93,7 +93,7 @@
                 }}
             />
         {:else if view === "calendar" && accounts.length > 0}
-            <Calendar {accounts} startOn={calendarDay} />
+            <Calendar accounts={mailboxes(accounts, shared)} startOn={calendarDay} />
         {:else if view === "people" && accounts.length > 0}
             <People {accounts} />
         {:else if view === "agents"}

@@ -188,6 +188,8 @@ export interface FakeCore {
     busy?: Record<string, string>;
     /** What agents have asked for, the latest first. */
     agentLog?: { at: string; client: string; command: string; args: unknown; outcome: string; detail: string }[];
+    /** Calendars beside the two every test has: other people's, shared or delegated. */
+    otherCalendars?: { id: string; name: string; color: string; hex_color: string; is_default: boolean; can_edit: boolean; shown: boolean; owner_name?: string; owner_address?: string }[];
     /** The inbox's rules, as `mail.rules.list` gives them, less the sentence. */
     rules?: Record<string, unknown>[];
     /** Why automatic replies cannot be read, if they cannot. */
@@ -257,6 +259,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const diaries = [
             { id: "main", name: "Calendar", color: "auto", hex_color: "", is_default: true, can_edit: true, shown: true },
             { id: "family", name: "Family", color: "auto", hex_color: "#b3305f", is_default: false, can_edit: true, shown: true },
+            ...(core.otherCalendars ?? []),
         ];
         const event = (e: NonNullable<typeof core.events>[number]) => ({
             id: e.id,

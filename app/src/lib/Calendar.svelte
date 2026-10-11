@@ -76,6 +76,8 @@
     let loading = 0;
 
     let selected = $state<CalendarEvent | null>(null);
+    /** The address of the mailbox shown, to tell its own calendars from other people's. */
+    const me = $derived(accounts.find((each) => each.id === accountId)?.username ?? "");
     let description = $state<{ text: string; complete: boolean } | null>(null);
     /** How the selected event's series repeats, where it is of one and it is known. */
     let repeat = $state<Repeat | null>(null);
@@ -205,7 +207,8 @@
     // What is on this computer is shown at once, and then brought up to date.
     $effect(() => {
         const first = accounts[0];
-        if (first && !accountId) {
+        // The first there is, and again if the one shown is taken away.
+        if (first && !accounts.some((each) => each.id === accountId)) {
             accountId = first.id;
             load().then(sync);
         }
@@ -368,6 +371,13 @@
 
 <div class="calendar">
     <aside aria-label="Calendars">
+        {#if accounts.length > 1}
+            <select class="whose" aria-label="Account" value={accountId} onchange={(event) => ((accountId = event.currentTarget.value), (selected = null), (editing = null), load().then(sync))}>
+                {#each accounts as each (each.id)}
+                    <option value={each.id}>{each.shared_with ? `↳ ${each.username} (shared)` : each.username}</option>
+                {/each}
+            </select>
+        {/if}
         <div class="mini" aria-label="Month to steer by">
             <div class="mini-head">
                 <button type="button" aria-label="Previous month" onclick={() => (mini = new Date(mini.getFullYear(), mini.getMonth() - 1, 1))}>‹</button>
@@ -408,7 +418,14 @@
                     <label>
                         <input type="checkbox" checked={each.shown} onchange={() => toggle(each)} />
                         <span class="dot" style:background={calendarColour(calendars, each.id)}></span>
-                        <span class="name">{each.name}</span>
+                        <span class="name">
+                            {each.name}
+                            {#if each.owner_address && each.owner_address.toLowerCase() !== me.toLowerCase()}
+                                <span class="muted owner" title={each.can_edit ? `${each.owner_address}'s calendar, which you may change` : `${each.owner_address}'s calendar, which you may only read`}>
+                                    · {each.owner_name || each.owner_address}{each.can_edit ? "" : " (read only)"}
+                                </span>
+                            {/if}
+                        </span>
                     </label>
                     {#if dropping === each.id}
                         <span class="drop">
@@ -744,6 +761,17 @@
         height: 100%;
         min-height: 0;
         display: flex;
+    }
+
+    .whose {
+        width: 100%;
+        margin-bottom: 0.5rem;
+        font: inherit;
+        font-size: 0.85rem;
+    }
+
+    .owner {
+        font-size: 0.75rem;
     }
 
     aside {

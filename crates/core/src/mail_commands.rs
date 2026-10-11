@@ -196,27 +196,29 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             // And the calendar. Trouble with it is said beside the mail's
             // result and does not make the mail's sync a failure: a sign-in
             // from before calendars were built has no leave to read them.
-            // A mailbox someone shared brings its mail, and no calendar or
-            // contacts of its own.
-            if mailbox.shared.is_some() {
-                return Ok(Some((synced, bodies, Ok(0), Ok(()))));
-            }
             let calendar = mailbox
                 .calendars
                 .sync_all(jiff::Timestamp::now())
                 .await
                 .map(|synced| synced.changed + synced.removed)
                 .map_err(|error| match error {
+                    brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }) if mailbox.shared.is_some() => {
+                        "You have not been given this mailbox's calendar, or this sign-in is from before shared calendars could be read: \
+                         sign in to the account again, from the accounts screen, to grant that.".to_owned()
+                    }
                     brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }) => {
                         "This sign-in was not given permission to read the calendar. Sign in to the account again, from the accounts screen, to grant it.".to_owned()
                     }
                     other => other.to_string(),
                 });
-            // And contacts, the same way.
-            let contacts = mailbox
-                .contacts
-                .sync_all(false)
-                .await
+            // And contacts, the same way. A mailbox someone shared brings
+            // its mail and its calendar, and no contacts of its own.
+            let contacts = if mailbox.shared.is_some() {
+                Ok(None)
+            } else {
+                mailbox.contacts.sync_all(false).await
+            };
+            let contacts = contacts
                 .map(|_| ())
                 .map_err(|error| match error {
                     brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }) => {

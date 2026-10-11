@@ -3757,3 +3757,77 @@ async fn a_rule_made_whose_answer_is_lost_is_found_and_not_made_twice() {
     assert_eq!(made["rule"]["name"], "Once");
     assert_eq!(f.graph.rules().len(), 1);
 }
+
+#[tokio::test]
+async fn a_shared_mailbox_brings_its_calendar_which_is_read_and_written_in_that_mailbox() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_shared_mailbox("support@example.test", true);
+    f.graph.add_shared_event(
+        "support@example.test",
+        brolga_fake_graph::FakeEvent::new(
+            "Roster handover",
+            "2026-10-14T01:00:00Z",
+            "2026-10-14T02:00:00Z",
+        ),
+    );
+    f.sync().await;
+    let added = f
+        .run(
+            "accounts.shared.add",
+            json!({ "address": "support@example.test" }),
+        )
+        .await;
+    let shared = added["mailbox"]["id"].as_str().unwrap().to_owned();
+    f.run("mail.sync", json!({})).await;
+    let week = json!({ "account_id": shared, "start": "2026-10-12T00:00:00Z", "end": "2026-10-19T00:00:00Z" });
+
+    // Its events are its own, and not among the account's.
+    let theirs = f.run("calendar.events.list", week.clone()).await;
+    assert_eq!(theirs["events"].as_array().unwrap().len(), 1);
+    assert_eq!(theirs["events"][0]["subject"], "Roster handover");
+    let mine = f
+        .run(
+            "calendar.events.list",
+            json!({ "start": "2026-10-12T00:00:00Z", "end": "2026-10-19T00:00:00Z" }),
+        )
+        .await;
+    assert!(mine["events"].as_array().unwrap().is_empty());
+
+    // An event made there is made in that mailbox's calendar, not one's own.
+    let made = f
+        .run(
+            "calendar.events.create",
+            json!({
+                "account_id": shared,
+                "subject": "Stocktake",
+                "start": "2026-10-15T09:00:00",
+                "end": "2026-10-15T10:00:00",
+                "time_zone": "Australia/Brisbane"
+            }),
+        )
+        .await;
+    assert_eq!(made["event"]["subject"], "Stocktake");
+    assert_eq!(
+        f.graph
+            .shared_events(
+                "support@example.test",
+                "2026-10-12T00:00:00Z",
+                "2026-10-19T00:00:00Z"
+            )
+            .len(),
+        2
+    );
+    let own = f.graph.default_calendar();
+    assert!(
+        f.graph
+            .events(&own, "2026-10-12T00:00:00Z", "2026-10-19T00:00:00Z")
+            .is_empty()
+    );
+    assert_eq!(
+        f.run("calendar.events.list", week).await["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

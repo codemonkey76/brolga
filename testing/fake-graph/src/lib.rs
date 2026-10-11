@@ -47,6 +47,9 @@ struct Inner {
     /// Other people's mailboxes the owner has been given: each by its
     /// address, with whether the owner may also send as it.
     others: HashMap<String, (mailbox::Mailbox, bool)>,
+    /// The calendars of each of those mailboxes, which stand in the owner's
+    /// place with it.
+    other_calendars: HashMap<String, Option<calendar::Calendars>>,
     /// One request at a time: a request for another mailbox stands that
     /// mailbox in the owner's place while it is answered.
     turn: Arc<tokio::sync::Mutex<()>>,
@@ -357,6 +360,38 @@ impl FakeGraph {
             address.to_lowercase(),
             (mailbox::Mailbox::default(), may_send_as),
         );
+    }
+
+    /// Put an event in the main calendar of a mailbox the owner was given. Gives its id.
+    pub fn add_shared_event(&self, address: &str, event: FakeEvent) -> String {
+        let mut inner = lock(&self.shared);
+        let calendars = inner
+            .other_calendars
+            .entry(address.to_lowercase())
+            .or_default()
+            .get_or_insert_with(calendar::Calendars::with_default);
+        let calendar = calendars.default_calendar();
+
+        calendars.add_event(&calendar, event)
+    }
+
+    /// Every occurrence there truly is in the main calendar of a mailbox
+    /// the owner was given, between two moments in UTC, as (id, start, end).
+    pub fn shared_events(
+        &self,
+        address: &str,
+        after: &str,
+        before: &str,
+    ) -> Vec<(String, String, String)> {
+        let mut inner = lock(&self.shared);
+        let calendars = inner
+            .other_calendars
+            .entry(address.to_lowercase())
+            .or_default()
+            .get_or_insert_with(calendar::Calendars::with_default);
+        let calendar = calendars.default_calendar();
+
+        calendars.truth(&calendar, after, before)
     }
 
     /// Take a mailbox the owner was given away again.
@@ -772,6 +807,9 @@ async fn other_mailbox(State(shared): State<Shared>, mut request: Request, next:
     let reading = request.method() == axum::http::Method::GET;
     let allowed = if rest.ends_with("/send") {
         has("Mail.Send.Shared")
+    } else if rest.starts_with("calendar") || rest.starts_with("events") {
+        // "Get shared or delegated Outlook calendar and its events".
+        has("Calendars.ReadWrite.Shared") || (reading && has("Calendars.Read.Shared"))
     } else {
         has("Mail.ReadWrite.Shared") || (reading && has("Mail.Read.Shared"))
     };
@@ -809,6 +847,10 @@ async fn other_mailbox(State(shared): State<Shared>, mut request: Request, next:
         let inner = &mut *inner;
         if let Some((other, _)) = inner.others.get_mut(&address) {
             std::mem::swap(&mut inner.mailbox, other);
+            std::mem::swap(
+                &mut inner.calendars,
+                inner.other_calendars.entry(address.clone()).or_default(),
+            );
         }
     };
     swap(&shared);
