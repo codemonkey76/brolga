@@ -26,7 +26,7 @@ export interface CodeSignIn {
 
 export const listAccounts = async () => (await execute<{ accounts: Account[] }>("accounts.list")).accounts;
 
-export const signInOptions = () => execute<{ needs_client_id: boolean }>("accounts.sign_in_options");
+export const signInOptions = () => execute<{ needs_client_id: boolean; remembered_client_id?: string | null }>("accounts.sign_in_options");
 
 export const signIn = async (under: Under) =>
     (await execute<{ account: Account }>("accounts.sign_in", { ...under })).account;

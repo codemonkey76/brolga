@@ -267,6 +267,54 @@ async fn the_window_can_ask_whether_a_client_id_is_needed() {
         .await
         .unwrap();
 
-    assert_eq!(without, json!({ "needs_client_id": true }));
-    assert_eq!(with, json!({ "needs_client_id": false }));
+    assert_eq!(without["needs_client_id"], true);
+    assert_eq!(with["needs_client_id"], false);
+}
+
+#[tokio::test]
+async fn the_client_id_is_typed_once_and_remembered_for_the_next_account() {
+    let identity = FakeIdentity::start().await.unwrap();
+    let registry = core(&identity, None).registry();
+    let options = || async {
+        registry
+            .execute("accounts.sign_in_options", json!({}))
+            .await
+            .unwrap()
+    };
+
+    assert_eq!(options().await["needs_client_id"], true);
+    assert!(
+        registry
+            .execute("accounts.sign_in", json!({}))
+            .await
+            .is_err()
+    );
+
+    registry
+        .execute("accounts.sign_in", json!({ "client_id": CLIENT_ID }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        options().await,
+        json!({ "needs_client_id": false, "remembered_client_id": CLIENT_ID })
+    );
+    // The next sign-in needs none, and goes out under the same one.
+    registry
+        .execute("accounts.sign_in", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        identity.authorize_requests().last().unwrap()["client_id"],
+        CLIENT_ID
+    );
+
+    // It outlasts the account it came with.
+    let id =
+        registry.execute("accounts.list", json!({})).await.unwrap()["accounts"][0]["id"].clone();
+    registry
+        .execute("accounts.remove", json!({ "id": id }))
+        .await
+        .unwrap();
+    assert_eq!(options().await["needs_client_id"], false);
 }

@@ -9,7 +9,8 @@ use crate::migrate::migrate;
 
 /// The schema, one step a version. Steps are only ever added: a released one
 /// is never edited, because databases out in the world have already run it.
-const STEPS: &[&str] = &["
+const STEPS: &[&str] = &[
+    "
     CREATE TABLE accounts (
         id TEXT PRIMARY KEY NOT NULL,
         tenant_id TEXT NOT NULL,
@@ -21,7 +22,15 @@ const STEPS: &[&str] = &["
         needs_sign_in INTEGER NOT NULL DEFAULT 0,
         added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     ) STRICT;
-"];
+",
+    "
+    -- Small things remembered on this computer, between accounts.
+    CREATE TABLE settings (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL
+    ) STRICT;
+",
+];
 
 /// A signed-in Microsoft 365 account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,10 +129,33 @@ impl GlobalDb {
             ],
         )?;
 
+        // The registration that last worked is offered for the next account,
+        // so its client ID is typed once and not for every mailbox. A client
+        // ID is not a secret: it names the app, and is in every sign-in link.
+        self.connection().execute(
+            "INSERT INTO settings (key, value) VALUES ('client_id', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = ?1",
+            [&account.client_id],
+        )?;
+
         // Just written, so there to read; if it is somehow not, say what was asked for.
         Ok(self
             .account(&account.id)?
             .unwrap_or_else(|| account.clone()))
+    }
+
+    /// The client ID the last successful sign-in used, if there has been one.
+    pub fn remembered_client_id(&self) -> Result<Option<String>, StoreError> {
+        use rusqlite::OptionalExtension;
+
+        Ok(self
+            .connection()
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'client_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub fn set_needs_sign_in(&self, id: &str, needs_sign_in: bool) -> Result<(), StoreError> {

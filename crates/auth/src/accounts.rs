@@ -59,6 +59,11 @@ impl Accounts {
         &self.client
     }
 
+    /// The client ID the last successful sign-in on this computer used.
+    pub fn remembered_client_id(&self) -> Option<String> {
+        self.db.remembered_client_id().ok().flatten()
+    }
+
     pub fn list(&self) -> Result<Vec<Account>, AccountError> {
         Ok(self.db.accounts()?)
     }

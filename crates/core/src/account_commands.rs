@@ -64,6 +64,8 @@ impl Context {
             .client_id
             .filter(|id| !id.trim().is_empty())
             .or_else(|| self.default_client_id.clone())
+            // The one that worked last time, so it is typed once.
+            .or_else(|| self.accounts.remembered_client_id())
             .ok_or_else(|| {
                 failed(
                     "Brolga does not have its own app registration with Microsoft yet. Enter the client ID your \
@@ -178,7 +180,12 @@ impl Context {
     }
 
     async fn options(self) -> Result<Value, CommandError> {
-        Ok(json!({ "needs_client_id": self.default_client_id.is_none() }))
+        let remembered = self.accounts.remembered_client_id();
+
+        Ok(json!({
+            "needs_client_id": self.default_client_id.is_none() && remembered.is_none(),
+            "remembered_client_id": remembered,
+        }))
     }
 
     async fn remove(self, args: AccountId) -> Result<Value, CommandError> {
@@ -324,7 +331,13 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             args_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
             result_schema: json!({
                 "type": "object",
-                "properties": { "needs_client_id": { "type": "boolean" } },
+                "properties": {
+                    "needs_client_id": { "type": "boolean" },
+                    "remembered_client_id": {
+                        "type": ["string", "null"],
+                        "description": "The client ID the last successful sign-in on this computer used, which is used again when none is given."
+                    }
+                },
                 "required": ["needs_client_id"],
                 "additionalProperties": false
             }),

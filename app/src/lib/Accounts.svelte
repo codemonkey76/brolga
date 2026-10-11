@@ -24,6 +24,8 @@
     let needsClientId = $state(false);
     let showAdvanced = $state(false);
     let clientId = $state("");
+    /** The client ID that worked last time, which is used again unless another is typed. */
+    let remembered = $state<string | null>(null);
     let tenant = $state("");
     /** What is under way, if anything: nothing else can be started meanwhile. */
     let waiting = $state<null | "browser" | "code" | "removing">(null);
@@ -63,7 +65,10 @@
 
     async function start() {
         try {
-            [accounts, { needs_client_id: needsClientId }] = await Promise.all([listAccounts(), signInOptions()]);
+            const [listed, options] = await Promise.all([listAccounts(), signInOptions()]);
+            accounts = listed;
+            needsClientId = options.needs_client_id;
+            remembered = options.remembered_client_id ?? null;
             showAdvanced = needsClientId;
         } catch (failure) {
             problem = say(failure);
@@ -140,7 +145,8 @@
                         {/if}
                         <label>
                             Client ID
-                            <input bind:value={clientId} autocomplete="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000" />
+                            <input bind:value={clientId} autocomplete="off" spellcheck="false" placeholder={remembered ?? "00000000-0000-0000-0000-000000000000"} />
+                            {#if remembered}<span class="muted">Left empty, the one used last time is used again.</span>{/if}
                         </label>
                         <label>
                             Tenant ID or domain
