@@ -60,8 +60,8 @@ and why, and nothing is lost: an unsent message stays in Drafts.
 Microsoft 365 does not list the mailboxes you have been given access to, so
 add each by its address under your account on the Accounts screen. It then
 sits beside your own mail, and you can send from it. A calendar someone has
-shared with you appears in the calendar list once you have accepted the
-invitation, labelled with whose it is.
+shared with you appears in the calendar list once it is among your calendars
+in Microsoft 365, labelled with whose it is.
 
 ## Old mail from Outlook
 
