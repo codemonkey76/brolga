@@ -58,6 +58,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         authority: Authority::default(),
         graph_base: None,
         default_client_id: DEFAULT_CLIENT_ID.map(str::to_owned),
+        fetch_images_from_private_hosts: false,
     })?;
     let registry = core.registry();
     let control = registry.clone();

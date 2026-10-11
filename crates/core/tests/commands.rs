@@ -24,6 +24,10 @@ fn core_with_mail(
         data_dir: None,
         secrets: Arc::new(MemorySecrets::default()),
         open_browser: Arc::new(|url| {
+            // The example link is not the sign-in page, and goes nowhere.
+            if !url.contains("/oauth2/") {
+                return Ok(());
+            }
             let url = url.to_owned();
             tokio::spawn(async move {
                 let _ = reqwest::get(url).await;
@@ -33,6 +37,7 @@ fn core_with_mail(
         authority: Authority::new(identity.base_url()),
         graph_base: graph.map(FakeGraph::base_url),
         default_client_id: default_client_id.map(str::to_owned),
+        fetch_images_from_private_hosts: false,
     })
     .unwrap()
 }

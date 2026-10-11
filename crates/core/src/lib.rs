@@ -7,8 +7,10 @@
 //! runs in the app, headless in the CLI, and in tests.
 
 mod account_commands;
+mod link_commands;
 mod mail_commands;
 mod mailboxes;
+mod remote_images;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,6 +36,9 @@ pub struct CoreOptions {
     /// Where Microsoft Graph is. `None` is the real one; tests name a stand-in.
     pub graph_base: Option<String>,
     pub default_client_id: Option<String>,
+    /// Let a message's remote images be fetched from this computer or a
+    /// private network. Always false outside tests.
+    pub fetch_images_from_private_hosts: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,7 +75,11 @@ impl Core {
         ));
 
         let mut registry = builtin_registry()?;
-        mail_commands::register(&mut registry, mailboxes)?;
+        let images = Arc::new(remote_images::RemoteImages::new(
+            options.fetch_images_from_private_hosts,
+        ));
+        mail_commands::register(&mut registry, mail_commands::Context { mailboxes, images })?;
+        link_commands::register(&mut registry, options.open_browser.clone())?;
         account_commands::register(
             &mut registry,
             account_commands::Context {

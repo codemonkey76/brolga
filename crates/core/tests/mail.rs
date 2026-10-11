@@ -34,6 +34,7 @@ impl Fixture {
             authority: Authority::new(identity.base_url()),
             graph_base: Some(graph.base_url()),
             default_client_id: Some("client".to_owned()),
+            fetch_images_from_private_hosts: true,
         })
         .unwrap();
         let registry = core.registry();
@@ -202,18 +203,14 @@ async fn as_html_a_message_is_safe_to_show_and_its_remote_images_are_held_back()
         "{html}"
     );
     assert_eq!(blocked["body"]["blocked_remote_content"], 1);
+    // Asked for, the image is fetched by the core and never left for the
+    // view to fetch. This one cannot be had, so it is left out and counted.
+    let shown = allowed["body"]["content"].as_str().unwrap();
     assert!(
-        allowed["body"]["content"]
-            .as_str()
-            .unwrap()
-            .contains("https://tracker.test/open.gif")
+        !shown.contains("tracker.test") && !shown.contains("script"),
+        "{shown}"
     );
-    assert!(
-        !allowed["body"]["content"]
-            .as_str()
-            .unwrap()
-            .contains("script")
-    );
+    assert_eq!(allowed["body"]["blocked_remote_content"], 1);
 }
 
 #[tokio::test]

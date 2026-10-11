@@ -173,6 +173,7 @@ fn core() -> Result<Core, Failure> {
         authority: Authority::default(),
         graph_base: None,
         default_client_id: DEFAULT_CLIENT_ID.map(str::to_owned),
+        fetch_images_from_private_hosts: false,
     })
     .map_err(failed)
 }
