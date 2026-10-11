@@ -55,6 +55,8 @@ struct Inner {
     drafts_created: u32,
     /// Send the next draft and then answer as if it had failed.
     lose_next_send_answer: bool,
+    /// Attach the next file and then answer as if it had failed.
+    lose_next_attachment_answer: bool,
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
     /// Messages every change to which is refused.
@@ -108,7 +110,10 @@ impl FakeGraph {
                 "/v1.0/me/messages/{message}/createForward",
                 axum::routing::post(create_forward),
             )
-            .route("/v1.0/me/messages/{message}/attachments", get(attachments))
+            .route(
+                "/v1.0/me/messages/{message}/attachments",
+                get(attachments).post(add_attachment),
+            )
             .route(
                 "/v1.0/me/messages/{message}/attachments/{attachment}",
                 get(attachment),
@@ -210,6 +215,11 @@ impl FakeGraph {
     /// How many drafts have been created on the server.
     pub fn drafts_created(&self) -> u32 {
         lock(&self.shared).drafts_created
+    }
+
+    /// The next file is attached, but the answer to the request is an error.
+    pub fn lose_next_attachment_answer(&self) {
+        lock(&self.shared).lose_next_attachment_answer = true;
     }
 
     /// The next draft is sent, but the answer to the request is an error.
@@ -603,6 +613,66 @@ async fn update_message(
         Some(updated) => axum::Json(updated).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// "Add attachment" (SOURCES.md): a file of under 3 MB, onto a draft.
+async fn add_attachment(
+    State(shared): State<Shared>,
+    Path(message): Path<String>,
+    axum::Json(attachment): axum::Json<Value>,
+) -> Response {
+    use base64::Engine;
+
+    let mut inner = lock(&shared);
+    if !inner.mailbox.stored(&message).is_some_and(|m| m.is_draft) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "fakeGraphNotADraft",
+            "A file can be attached only to a draft.",
+        );
+    }
+    let Ok(content) = base64::engine::general_purpose::STANDARD
+        .decode(attachment["contentBytes"].as_str().unwrap_or_default())
+    else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "badRequest",
+            "contentBytes is not base64.",
+        );
+    };
+    if content.len() >= 3 * 1024 * 1024 {
+        return error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "fakeGraphTooLarge",
+            "A file of 3 MB or more needs an upload session.",
+        );
+    }
+
+    let file = FakeAttachment {
+        name: attachment["name"].as_str().unwrap_or_default().to_owned(),
+        content_type: attachment["contentType"]
+            .as_str()
+            .unwrap_or("application/octet-stream")
+            .to_owned(),
+        content,
+        inline: false,
+        kind: "file",
+        content_id: None,
+    };
+    inner.mailbox.edit(&message, |m| {
+        m.attachments.push(file);
+        m.has_attachments = true;
+    });
+    if std::mem::take(&mut inner.lose_next_attachment_answer) {
+        // Attached, and the caller never hears of it.
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
+
+    (
+        StatusCode::CREATED,
+        axum::Json(json!({ "id": "attachment" })),
+    )
+        .into_response()
 }
 
 /// Recipients as Graph writes them, read into `(name, address)`.

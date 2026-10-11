@@ -358,22 +358,33 @@
     }
 
     async function search() {
+        clearTimeout(searchSoon);
         if (!accountId) return;
         if (!query.trim()) {
-            if (folderId) await showFolder(folderId);
+            if (searching && folderId) await showFolder(folderId);
             return;
         }
-        searching = true;
-        reset();
+        // The list is replaced when the answer is in, not emptied first, so
+        // it does not flicker with every letter typed.
+        listing += 1;
+        asked.clear();
         const mine = listing;
         try {
             const found = await searchMail(accountId, query);
             if (mine !== listing) return;
+            searching = true;
             rows = found;
             total = found.length;
         } catch (failure) {
             problem = say(failure);
         }
+    }
+
+    /** Search as the words are typed, a moment after the typing pauses. */
+    let searchSoon: ReturnType<typeof setTimeout> | undefined;
+    function typedSearch() {
+        clearTimeout(searchSoon);
+        searchSoon = setTimeout(search, query.trim() ? 150 : 0);
     }
 
     /** Choose a line of the list. For a conversation, its other messages are fetched to read beside it. */
@@ -431,6 +442,16 @@
         if (syncing) return;
         syncing = true;
         problem = null;
+        // A first sync of a large mailbox takes minutes. What has arrived so
+        // far is shown as it comes, not held back until the last of it.
+        const showing = setInterval(async () => {
+            try {
+                await loadFolders();
+                await refresh();
+            } catch {
+                // The sync itself says what is wrong, when it ends.
+            }
+        }, 2_000);
         try {
             const results = await syncNow();
             const failed = results.find((r) => r.account_id === accountId && !r.ok) ?? results.find((r) => !r.ok);
@@ -442,6 +463,7 @@
         } catch (failure) {
             problem = say(failure);
         } finally {
+            clearInterval(showing);
             syncing = false;
             lastSync = Date.now();
         }
@@ -612,7 +634,7 @@
                     type="search"
                     aria-label="Search mail"
                     placeholder="Search mail"
-                    oninput={() => query === "" && search()}
+                    oninput={typedSearch}
                 />
             </form>
             <button type="button" disabled={syncing} onclick={sync} title="Sync now (F9)">{syncing ? "Syncing…" : "Sync"}</button>

@@ -191,6 +191,22 @@ const STEPS: &[&str] = &[
         value TEXT NOT NULL
     ) STRICT;
 ",
+    "
+    -- Files attached to a draft, kept whole until the draft has been sent.
+    CREATE TABLE draft_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        draft_id TEXT NOT NULL REFERENCES drafts (id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        data BLOB NOT NULL,
+        -- A request to attach it has gone out and may have reached the server.
+        upload_tried INTEGER NOT NULL DEFAULT 0,
+        uploaded INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+
+    CREATE INDEX draft_files_by_draft ON draft_files (draft_id, id);
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

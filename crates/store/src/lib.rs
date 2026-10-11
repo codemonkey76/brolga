@@ -16,7 +16,7 @@ pub use account::{
     AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, InlineImage,
     MessageChange, MessageRow, Order, Round, SyncState,
 };
-pub use drafts::{Draft, DraftEdit};
+pub use drafts::{Draft, DraftEdit, DraftFile};
 pub use global::{Account, GlobalDb};
 pub use ops::{FailedOp, MessageEdit, Op};
 

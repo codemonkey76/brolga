@@ -156,10 +156,51 @@ impl Outbox {
         });
         self.graph.update_message(&server_id, &content).await?;
 
+        self.attach_files(draft, &server_id).await?;
+
         self.db
             .draft_send_tried(&draft.id)
             .map_err(|e| GraphError::Decode(e.to_string()))?;
         self.graph.send_draft(&server_id).await
+    }
+
+    /// Put a draft's files on the server's copy of it, each once. Attaching
+    /// is not safe to repeat blindly, so where an earlier request for a file
+    /// may have arrived, the server's list is looked at first.
+    async fn attach_files(&self, draft: &Draft, server_id: &str) -> Result<(), GraphError> {
+        let kept = |e: StoreError| GraphError::Decode(e.to_string());
+        let files = self.db.draft_files(&draft.id).map_err(kept)?;
+        let unsure = files.iter().any(|f| f.upload_tried && !f.uploaded);
+        let mut there = if unsure {
+            self.graph.attachments(server_id).await?
+        } else {
+            Vec::new()
+        };
+
+        for file in files.iter().filter(|f| !f.uploaded) {
+            if file.upload_tried {
+                // One the server already has is claimed, so that two files
+                // alike in name and size are each attached.
+                let found = there.iter().position(|a| {
+                    a.name.as_deref() == Some(file.name.as_str()) && a.size.is_some()
+                });
+                if let Some(found) = found {
+                    there.remove(found);
+                    self.db.draft_file_uploaded(file.id).map_err(kept)?;
+                    continue;
+                }
+            }
+            let Some(data) = self.db.draft_file_data(file.id).map_err(kept)? else {
+                continue;
+            };
+            self.db.draft_file_upload_tried(file.id).map_err(kept)?;
+            self.graph
+                .add_attachment(server_id, &file.name, &file.content_type, &data)
+                .await?;
+            self.db.draft_file_uploaded(file.id).map_err(kept)?;
+        }
+
+        Ok(())
     }
 
     async fn send(&self, op: &Op) -> Result<(), GraphError> {

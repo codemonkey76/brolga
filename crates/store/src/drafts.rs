@@ -37,6 +37,20 @@ pub struct Draft {
     pub send_tried: bool,
 }
 
+/// A file attached to a draft, without its contents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftFile {
+    pub id: i64,
+    pub name: String,
+    pub content_type: String,
+    /// In bytes.
+    pub size: i64,
+    /// A request to attach it has gone out and may have reached the server.
+    pub upload_tried: bool,
+    /// The server has it.
+    pub uploaded: bool,
+}
+
 /// What may be changed about a draft. `None` leaves a part as it is.
 #[derive(Debug, Clone, Default)]
 pub struct DraftEdit {
@@ -152,6 +166,112 @@ impl AccountDb {
         )?;
 
         Ok(changed > 0)
+    }
+
+    /// Attach a file to a draft that is not on its way out. Nothing if
+    /// there is no such draft or it is queued.
+    pub fn attach_to_draft(
+        &self,
+        draft_id: &str,
+        name: &str,
+        content_type: &str,
+        data: &[u8],
+    ) -> Result<Option<DraftFile>, StoreError> {
+        let connection = self.connection();
+        let added = connection.execute(
+            "INSERT INTO draft_files (draft_id, name, content_type, size, data)
+             SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ?1 AND state <> 'queued')",
+            params![draft_id, name, content_type, data.len() as i64, data],
+        )?;
+        if added == 0 {
+            return Ok(None);
+        }
+        connection.execute(
+            "UPDATE drafts SET updated_at = unixepoch() WHERE id = ?1",
+            [draft_id],
+        )?;
+
+        Ok(Some(DraftFile {
+            id: connection.last_insert_rowid(),
+            name: name.to_owned(),
+            content_type: content_type.to_owned(),
+            size: data.len() as i64,
+            upload_tried: false,
+            uploaded: false,
+        }))
+    }
+
+    /// The files attached to a draft, in the order they were attached.
+    pub fn draft_files(&self, draft_id: &str) -> Result<Vec<DraftFile>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, name, content_type, size, upload_tried, uploaded FROM draft_files WHERE draft_id = ?1 ORDER BY id",
+        )?;
+        let files = statement
+            .query_map([draft_id], |row| {
+                Ok(DraftFile {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    content_type: row.get(2)?,
+                    size: row.get(3)?,
+                    upload_tried: row.get(4)?,
+                    uploaded: row.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(files)
+    }
+
+    /// How many bytes of files a draft carries.
+    pub fn draft_files_size(&self, draft_id: &str) -> Result<i64, StoreError> {
+        Ok(self.connection().query_row(
+            "SELECT coalesce(sum(size), 0) FROM draft_files WHERE draft_id = ?1",
+            [draft_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn draft_file_data(&self, file_id: i64) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self
+            .connection()
+            .query_row(
+                "SELECT data FROM draft_files WHERE id = ?1",
+                [file_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Take a file off a draft that is not on its way out.
+    pub fn detach_from_draft(&self, draft_id: &str, file_id: i64) -> Result<bool, StoreError> {
+        let gone = self.connection().execute(
+            "DELETE FROM draft_files WHERE id = ?2 AND draft_id = ?1
+                 AND EXISTS (SELECT 1 FROM drafts WHERE id = ?1 AND state <> 'queued')",
+            params![draft_id, file_id],
+        )?;
+
+        Ok(gone > 0)
+    }
+
+    /// A request to attach the file is about to go out.
+    pub fn draft_file_upload_tried(&self, file_id: i64) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE draft_files SET upload_tried = 1 WHERE id = ?1",
+            [file_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// The server has the file.
+    pub fn draft_file_uploaded(&self, file_id: i64) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE draft_files SET uploaded = 1 WHERE id = ?1",
+            [file_id],
+        )?;
+
+        Ok(())
     }
 
     /// Throw a draft away. One that is queued is on its way and cannot be.
@@ -303,6 +423,48 @@ mod tests {
         db.queue_draft(&draft.id).unwrap();
         db.draft_send_tried(&draft.id).unwrap();
         assert!(!db.unqueue_draft(&draft.id).unwrap());
+    }
+
+    #[test]
+    fn files_stay_with_a_draft_and_go_when_it_does() {
+        let db = AccountDb::in_memory().unwrap();
+        let draft = db.create_draft("new", None, &start("One")).unwrap();
+
+        let file = db
+            .attach_to_draft(&draft.id, "notes.txt", "text/plain", b"Some notes.")
+            .unwrap()
+            .unwrap();
+        db.attach_to_draft(&draft.id, "more.txt", "text/plain", b"More.")
+            .unwrap();
+        assert!(
+            db.attach_to_draft("no-such", "x", "text/plain", b"x")
+                .unwrap()
+                .is_none()
+        );
+
+        assert_eq!(db.draft_files(&draft.id).unwrap().len(), 2);
+        assert_eq!(db.draft_files_size(&draft.id).unwrap(), 16);
+        assert_eq!(
+            db.draft_file_data(file.id).unwrap().unwrap(),
+            b"Some notes."
+        );
+        assert!(db.detach_from_draft(&draft.id, file.id).unwrap());
+        assert_eq!(db.draft_files(&draft.id).unwrap()[0].name, "more.txt");
+
+        // Once queued the files are the outbox's, like the rest of it.
+        db.queue_draft(&draft.id).unwrap();
+        assert!(
+            db.attach_to_draft(&draft.id, "late.txt", "text/plain", b"x")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !db.detach_from_draft(&draft.id, db.draft_files(&draft.id).unwrap()[0].id)
+                .unwrap()
+        );
+
+        db.draft_sent(&draft.id).unwrap();
+        assert!(db.draft_files(&draft.id).unwrap().is_empty());
     }
 
     #[test]

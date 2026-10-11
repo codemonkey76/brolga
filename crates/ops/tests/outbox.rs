@@ -422,3 +422,34 @@ async fn a_sign_in_that_may_not_send_does_not() {
     assert!(f.graph.sent().is_empty());
     assert_eq!(f.db.draft(&draft.id).unwrap().unwrap().state, "failed");
 }
+
+#[tokio::test]
+async fn files_go_with_the_message_each_once() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.attach_to_draft(&draft.id, "notes.txt", "text/plain", b"Some notes.")
+        .unwrap();
+    f.db.attach_to_draft(&draft.id, "more.txt", "text/plain", b"More.")
+        .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    // The first file is attached, and the answer to that is lost.
+    f.graph.lose_next_attachment_answer();
+
+    let first = f.outbox.drain().await.unwrap();
+    assert_eq!(first.waiting, 1);
+    assert!(f.graph.sent().is_empty());
+
+    let second = f.outbox.drain().await.unwrap();
+    assert_eq!(second.sent, 1);
+    let sent = &f.graph.sent()[0];
+    let names: Vec<&str> = sent.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["notes.txt", "more.txt"],
+        "a file went twice or not at all"
+    );
+    assert_eq!(sent.attachments[0].content, b"Some notes.");
+    assert_eq!(sent.attachments[0].content_type, "text/plain");
+}

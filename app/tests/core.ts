@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** The sync is still going for as long as the test runs. */
+    syncNeverEnds?: boolean;
     /** Why Microsoft 365 will not send anything, if it will not. */
     sendRefused?: string;
     /** Changes Microsoft 365 refused, to be told of after the next sync. */
@@ -279,6 +281,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.sync": () => {
                 syncs += 1;
                 if (syncs === 2) mail.unshift(...(core.arrives ?? []));
+                // A first sync that is still going: mail is on this computer, and the sync has not ended.
+                if (core.syncNeverEnds) return never;
                 return sync();
             },
             "mail.folders.list": (args) => ({
@@ -468,6 +472,18 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         };
 
         Object.assign(window, {
+            arrive: () =>
+                mail.push({
+                    id: "arrived",
+                    folder_id: "inbox",
+                    subject: "Just in",
+                    preview: "",
+                    from: { name: "Sam Taylor", address: "sam.taylor@example.test" },
+                    received_at: "2026-10-09T05:00:00Z",
+                    is_read: false,
+                    has_attachments: false,
+                    body: "<p>Just in.</p>",
+                }),
             ran,
             sent,
             __TAURI_INTERNALS__: {

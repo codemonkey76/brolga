@@ -694,3 +694,30 @@ test("a signature is set on the accounts screen and starts new messages", async 
     await page.getByRole("button", { name: "Reply", exact: true }).click();
     await expect(page.getByRole("form", { name: "Reply" }).getByRole("textbox", { name: "Message" })).toHaveValue("");
 });
+
+test("mail shows as it arrives, while a long first sync is still going", async ({ page }) => {
+    await page.clock.install();
+    await withCore(page, { accounts: [robin], mail: [], syncNeverEnds: true });
+    await expect(page.getByText("Fetching your mail…")).toBeVisible();
+
+    // Mail lands on this computer part-way through the sync.
+    await page.evaluate(() => (window as unknown as { arrive: () => void }).arrive());
+    await page.clock.fastForward(2_500);
+
+    await expect(messages(page).getByRole("option")).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Syncing…" })).toBeDisabled();
+});
+
+test("search filters as the words are typed", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    await expect(rows).toHaveCount(4);
+
+    await page.getByRole("searchbox", { name: "Search mail" }).pressSequentially("invo");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Invoice 2041");
+
+    await page.getByRole("searchbox", { name: "Search mail" }).fill("");
+    await expect(rows).toHaveCount(4);
+    await expect(page.getByText("4 messages")).toBeVisible();
+});

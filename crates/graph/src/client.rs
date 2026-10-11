@@ -239,6 +239,31 @@ impl GraphClient {
         )
     }
 
+    /// Attach a file of under 3 MB to a draft ("Add attachment",
+    /// SOURCES.md). Not safe to repeat blindly: a second request attaches
+    /// the file a second time.
+    pub async fn add_attachment(
+        &self,
+        message_id: &str,
+        name: &str,
+        content_type: &str,
+        content: &[u8],
+    ) -> Result<(), GraphError> {
+        use base64::Engine;
+
+        let url = format!("{}/me/messages/{message_id}/attachments", self.base);
+        let body = serde_json::json!({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": name,
+            "contentType": content_type,
+            "contentBytes": base64::engine::general_purpose::STANDARD.encode(content),
+        });
+        self.send(reqwest::Method::POST, &url, None, Some(&body), false)
+            .await?;
+
+        Ok(())
+    }
+
     /// Send a draft ("message: send", SOURCES.md). It is saved in Sent
     /// Items. Never repeated here: a second request could send a second copy.
     pub async fn send_draft(&self, message_id: &str) -> Result<(), GraphError> {
