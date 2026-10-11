@@ -178,6 +178,8 @@ export interface FakeCore {
     asking?: { id: number; client: string; command: string; args: Record<string, unknown> }[];
     /** Microsoft 365 cannot be reached. */
     offline?: boolean;
+    /** Mailboxes other people have shared with an account. */
+    shared?: { id: string; account_id: string; address: string; name: string }[];
     /** Personal contacts. */
     contacts?: Record<string, unknown>[];
     /** People of the organisation, for looking up. */
@@ -831,6 +833,19 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             },
             "app.open_link": () => ({ opened: true }),
             "accounts.list": () => ({ accounts }),
+            "accounts.shared.list": () => ({ mailboxes: core.shared ?? [] }),
+            "accounts.shared.add": (args) => {
+                if (!String(args.address).startsWith("support")) {
+                    throw { code: "failed", message: `There is no mailbox \`${args.address}\`, or you have not been given access to it.` };
+                }
+                const added = { id: `${args.account_id}~${args.address}`, account_id: args.account_id as string, address: args.address as string, name: "Support" };
+                core.shared = [...(core.shared ?? []), added];
+                return { mailbox: added };
+            },
+            "accounts.shared.remove": (args) => {
+                core.shared = (core.shared ?? []).filter((each) => each.id !== args.mailbox_id);
+                return { removed: true };
+            },
             "accounts.sign_in_options": () => ({ needs_client_id: core.needsClientId ?? false }),
             "accounts.sign_in": () => (core.signInHangs ? never : signedIn()),
             "accounts.sign_in_with_code.begin": () => ({

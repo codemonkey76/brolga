@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ran, robin, sam, withCore } from "./core";
+import { inbox, ran, robin, sam, withCore } from "./core";
 
 /** Pictures for the README, taken only when asked for: `SCREENSHOTS=1 bun run test`. */
 const picture = async (page: import("@playwright/test").Page, name: string) => {
@@ -216,4 +216,34 @@ test("an agent that wants to send is put to the user, who can say no", async ({ 
         { id: 1, allow: false },
         { id: 2, allow: true },
     ]);
+});
+
+test("a shared mailbox is added by its address, read in Mail, and removed", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Shared mailboxes" }).click();
+    const section = page.getByRole("region", { name: "Shared mailboxes of robin@example.test" });
+
+    // One there is no access to is not added, and says why.
+    await section.getByRole("textbox", { name: "Address of a shared mailbox" }).fill("payroll@example.test");
+    await section.getByRole("button", { name: "Add" }).click();
+    await expect(section.getByRole("alert")).toContainText("not been given access");
+
+    await section.getByRole("textbox", { name: "Address of a shared mailbox" }).fill("support@example.test");
+    await section.getByRole("button", { name: "Add" }).click();
+    await expect(section.getByRole("listitem")).toContainText("Support · support@example.test");
+    await expect(section.getByRole("alert")).toHaveCount(0);
+
+    // In Mail it is chosen beside the account, and what is asked for is asked of it.
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    const picker = page.getByRole("combobox", { name: "Account" });
+    await expect(picker.getByRole("option")).toHaveText(["robin@example.test", "↳ support@example.test (shared)"]);
+    await picker.selectOption({ label: "↳ support@example.test (shared)" });
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.folders.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test" });
+
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Shared mailboxes" }).click();
+    await page.getByRole("button", { name: "Remove support@example.test" }).click();
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Account" })).toHaveCount(0);
 });

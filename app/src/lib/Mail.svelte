@@ -712,7 +712,7 @@
         {#if accounts.length > 1}
             <select aria-label="Account" value={accountId} onchange={(event) => chooseAccount(event.currentTarget.value)}>
                 {#each accounts as each (each.id)}
-                    <option value={each.id}>{each.username}</option>
+                    <option value={each.id}>{each.shared_with ? `↳ ${each.username} (shared)` : each.username}</option>
                 {/each}
             </select>
         {:else if account}

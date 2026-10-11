@@ -96,7 +96,7 @@
         {#if accounts.length > 0}
             <ul class="card" aria-label="Accounts">
                 {#each accounts as account (account.id)}
-                    <AccountRow {account} busy={waiting !== null} onSignInAgain={again} onRemove={remove} />
+                    <AccountRow {account} busy={waiting !== null} onSignInAgain={again} onRemove={remove} onShared={() => onChanged(accounts)} />
                 {/each}
             </ul>
         {:else}

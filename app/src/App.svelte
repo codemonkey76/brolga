@@ -1,6 +1,6 @@
 <script lang="ts">
     import { Bot, CalendarDays, CircleUser, Mail as MailIcon, Users } from "@lucide/svelte";
-    import { type Account, listAccounts } from "./lib/accounts";
+    import { type Account, type SharedMailbox, listAccounts, listShared, mailboxes } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
     import Agents from "./lib/Agents.svelte";
     import Calendar from "./lib/Calendar.svelte";
@@ -17,10 +17,18 @@
     /** A day the calendar is to open on, when it is come to from a message about a meeting. */
     let calendarDay = $state<Date | null>(null);
 
+    /** Mailboxes other people have shared, which are read beside the accounts' own. */
+    let shared = $state<SharedMailbox[]>([]);
+    const reload = () =>
+        listShared()
+            .then((found) => (shared = found))
+            .catch(() => {});
+
     // With an account, the window opens on its mail. Without one, on adding one.
     listAccounts()
         .then((found) => {
             accounts = found;
+            reload();
             view = found.length > 0 ? "mail" : "accounts";
         })
         .catch(() => {})
@@ -29,6 +37,7 @@
     function changed(now: Account[]) {
         const first = accounts.length === 0 && now.length > 0;
         accounts = now;
+        reload();
         if (first) view = "mail";
     }
 
@@ -77,7 +86,7 @@
             <p class="muted starting" role="status">Starting…</p>
         {:else if view === "mail" && accounts.length > 0}
             <Mail
-                {accounts}
+                accounts={mailboxes(accounts, shared)}
                 onCalendar={(day) => {
                     calendarDay = day;
                     view = "calendar";

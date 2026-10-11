@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type { Account } from "./accounts";
+    import { type Account, type SharedMailbox, addShared, listShared, removeShared } from "./accounts";
     import AutoReplies from "./AutoReplies.svelte";
     import { execute, say } from "./commands";
 
@@ -8,9 +8,49 @@
         busy: boolean;
         onSignInAgain: (account: Account) => void;
         onRemove: (account: Account) => void;
+        /** A mailbox was shared or unshared, so what there is to read has changed. */
+        onShared?: () => void;
     }
 
-    let { account, busy, onSignInAgain, onRemove }: Props = $props();
+    let { account, busy, onSignInAgain, onRemove, onShared }: Props = $props();
+
+    /** The mailboxes shared with this account, once the section is opened. */
+    let sharing = $state<SharedMailbox[] | null>(null);
+    let address = $state("");
+    let adding = $state(false);
+    let sharedProblem = $state<string | null>(null);
+
+    async function openShared() {
+        if (sharing) {
+            sharing = null;
+            return;
+        }
+        sharedProblem = null;
+        sharing = (await listShared().catch(() => [])).filter((each) => each.account_id === account.id);
+    }
+
+    async function share(submitted: SubmitEvent) {
+        submitted.preventDefault();
+        if (!address.trim()) return;
+        adding = true;
+        sharedProblem = null;
+        try {
+            const added = await addShared(account.id, address.trim());
+            sharing = [...(sharing ?? []), added];
+            address = "";
+            onShared?.();
+        } catch (failure) {
+            sharedProblem = failure && typeof failure === "object" && "message" in failure ? String(failure.message) : String(failure);
+        } finally {
+            adding = false;
+        }
+    }
+
+    async function unshare(mailbox: SharedMailbox) {
+        await removeShared(mailbox.id).catch(() => {});
+        sharing = (sharing ?? []).filter((each) => each.id !== mailbox.id);
+        onShared?.();
+    }
     let confirming = $state(false);
 
     let replies = $state(false);
@@ -74,10 +114,29 @@
     {:else}
         <button type="button" aria-expanded={signature !== null} onclick={editSignature}>Signature</button>
         <button type="button" aria-expanded={replies} onclick={() => ((replies = !replies), (signatureSaid = null))}>Automatic replies</button>
+        <button type="button" aria-expanded={sharing !== null} disabled={account.needs_sign_in} onclick={openShared}>Shared mailboxes</button>
         <button type="button" disabled={busy} onclick={() => (confirming = true)}>Remove</button>
     {/if}
     </div>
 
+    {#if sharing}
+        <section class="shared" aria-label="Shared mailboxes of {account.username}">
+            <p class="muted">A mailbox someone has given you access to. Microsoft 365 will not list them, so add each by its address.</p>
+            <ul>
+                {#each sharing as each (each.id)}
+                    <li>
+                        <span>{each.name ? `${each.name} · ` : ""}{each.address}</span>
+                        <button type="button" aria-label={`Remove ${each.address}`} onclick={() => unshare(each)}>Remove</button>
+                    </li>
+                {/each}
+            </ul>
+            <form onsubmit={share}>
+                <input type="email" aria-label="Address of a shared mailbox" placeholder="shared@example.com" bind:value={address} />
+                <button type="submit" class="primary" disabled={adding || !address.trim()}>{adding ? "Looking…" : "Add"}</button>
+            </form>
+            {#if sharedProblem}<p class="problem" role="alert">{sharedProblem}</p>{/if}
+        </section>
+    {/if}
     {#if signature}
         <form class="signature" aria-label="Signature for {account.username}" onsubmit={(event) => (event.preventDefault(), saveSignature())}>
             <textarea bind:value={signature.text} aria-label="Signature" rows="5" placeholder="Your name, and whatever else should end your messages"></textarea>
@@ -105,6 +164,42 @@
 </li>
 
 <style>
+    .shared {
+        margin: 0.5rem 0 0 3rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        max-width: 34rem;
+    }
+
+    .shared p {
+        margin: 0;
+    }
+
+    .shared ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .shared li,
+    .shared form {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.15rem 0;
+    }
+
+    .shared input {
+        flex: 1;
+        font: inherit;
+    }
+
+    .shared .problem {
+        color: var(--danger);
+    }
+
     li {
         padding: 0.75rem 1rem;
         border-bottom: 1px solid var(--line);

@@ -688,7 +688,7 @@ test("a signature is set on the accounts screen and starts new messages", async 
     await editor.getByRole("button", { name: "Save" }).click();
     await expect(page.getByText("Signature saved.")).toBeVisible();
 
-    await page.getByRole("button", { name: "Mail" }).click();
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
     await page.getByRole("button", { name: "New message" }).click();
     const form = page.getByRole("form", { name: "New message" });
     const words = form.getByRole("textbox", { name: "Message" });
