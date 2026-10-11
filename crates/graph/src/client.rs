@@ -214,6 +214,139 @@ impl GraphClient {
         Ok(())
     }
 
+    /// Every page of a plain list, each item as Graph gives it.
+    async fn list_values(&self, first: String) -> Result<Vec<serde_json::Value>, GraphError> {
+        let mut url = first;
+        let mut all = Vec::new();
+        loop {
+            let page: serde_json::Value = decode(&self.get(&url, Some(100)).await?)?;
+            all.extend(page["value"].as_array().cloned().unwrap_or_default());
+            match page["@odata.nextLink"].as_str() {
+                // A list without end is a server gone wrong, and is not followed for ever.
+                Some(next) if all.len() < 50_000 => url = next.to_owned(),
+                _ => return Ok(all),
+            }
+        }
+    }
+
+    /// The folders of contacts beside the main one, as `(id, name)` ("List
+    /// contactFolders", SOURCES.md).
+    pub async fn contact_folders(&self) -> Result<Vec<(String, String)>, GraphError> {
+        let all = self
+            .list_values(format!("{}/me/contactFolders", self.base))
+            .await?;
+
+        Ok(all
+            .iter()
+            .filter_map(|each| {
+                Some((
+                    each["id"].as_str()?.to_owned(),
+                    each["displayName"].as_str().unwrap_or_default().to_owned(),
+                ))
+            })
+            .collect())
+    }
+
+    /// Every contact in a folder, or with none named in the main Contacts
+    /// folder ("List contacts", SOURCES.md).
+    pub async fn contacts(
+        &self,
+        folder_id: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, GraphError> {
+        self.list_values(match folder_id {
+            Some(folder) => format!("{}/me/contactFolders/{folder}/contacts", self.base),
+            None => format!("{}/me/contacts", self.base),
+        })
+        .await
+    }
+
+    /// Make a contact ("Create contact", SOURCES.md). Not safe to repeat
+    /// blindly: a second request makes a second contact.
+    pub async fn create_contact(
+        &self,
+        folder_id: Option<&str>,
+        contact: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let url = match folder_id {
+            Some(folder) => format!("{}/me/contactFolders/{folder}/contacts", self.base),
+            None => format!("{}/me/contacts", self.base),
+        };
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(contact), false)
+                .await?,
+        )
+    }
+
+    /// Change a contact: only what is given ("Update contact", SOURCES.md).
+    pub async fn update_contact(
+        &self,
+        contact_id: &str,
+        changes: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/contacts/{contact_id}", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::PATCH, &url, None, Some(changes), true)
+                .await?,
+        )
+    }
+
+    /// Delete a contact ("Delete contact", SOURCES.md). One already gone
+    /// is as good as deleted.
+    pub async fn delete_contact(&self, contact_id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/contacts/{contact_id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// The people most to do with the owner whose names match what was
+    /// typed ("List people", SOURCES.md), each as Graph gives it.
+    pub async fn people_search(&self, typed: &str) -> Result<Vec<serde_json::Value>, GraphError> {
+        let quoted = format!("\"{}\"", typed.replace(['"', '\\'], " "));
+        let url = Url::parse_with_params(
+            &format!("{}/me/people", self.base),
+            [("$search", quoted.as_str()), ("$top", "15")],
+        )
+        .map_err(|e| GraphError::Decode(e.to_string()))?;
+        let page: serde_json::Value = decode(&self.get(url.as_str(), None).await?)?;
+
+        Ok(page["value"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// The people of the organisation whose name or address begins with
+    /// what was typed ("List users", SOURCES.md), each as Graph gives it.
+    pub async fn users_search(&self, typed: &str) -> Result<Vec<serde_json::Value>, GraphError> {
+        // In a filter a quote is written twice.
+        let typed = typed.replace('\'', "''");
+        let filter = format!(
+            "startswith(displayName,'{typed}') or startswith(surname,'{typed}') or startswith(mail,'{typed}')"
+        );
+        let url = Url::parse_with_params(
+            &format!("{}/users", self.base),
+            [
+                ("$filter", filter.as_str()),
+                ("$top", "15"),
+                (
+                    "$select",
+                    "id,displayName,givenName,surname,mail,userPrincipalName",
+                ),
+            ],
+        )
+        .map_err(|e| GraphError::Decode(e.to_string()))?;
+        let page: serde_json::Value = decode(&self.get(url.as_str(), None).await?)?;
+
+        Ok(page["value"].as_array().cloned().unwrap_or_default())
+    }
+
     /// Every meeting room the organisation has ("List place objects",
     /// SOURCES.md), each as Graph gives it.
     pub async fn rooms(&self) -> Result<Vec<serde_json::Value>, GraphError> {

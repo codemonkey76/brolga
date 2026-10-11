@@ -20,6 +20,10 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     "Calendars.Read.Shared",
     // The organisation's meeting rooms ("List place objects").
     "Place.Read.All",
+    // Personal contacts, and looking people up in the organisation.
+    "Contacts.ReadWrite",
+    "People.Read",
+    "User.ReadBasic.All",
 ];
 
 /// The app registration a sign-in is made under.

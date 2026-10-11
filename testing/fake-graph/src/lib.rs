@@ -12,6 +12,7 @@
 mod calendar;
 mod identity;
 mod mailbox;
+mod people;
 
 pub use calendar::{FakeCalendar, FakeEvent};
 pub use identity::FakeIdentity;
@@ -40,6 +41,8 @@ pub enum Fault {
 
 #[derive(Default)]
 struct Inner {
+    /// Contacts, and the organisation's people.
+    people: people::People,
     /// Handed out one a request, oldest first.
     faults: Vec<Fault>,
     /// How many requests to answer normally before handing out faults.
@@ -135,6 +138,18 @@ impl FakeGraph {
                 axum::routing::post(find_meeting_times),
             )
             .route("/v1.0/places/microsoft.graph.room", get(rooms))
+            .route("/v1.0/me/contactFolders", get(contact_folders))
+            .route("/v1.0/me/contacts", get(contacts).post(create_contact))
+            .route(
+                "/v1.0/me/contactFolders/{folder}/contacts",
+                get(contacts_in).post(create_contact_in),
+            )
+            .route(
+                "/v1.0/me/contacts/{contact}",
+                axum::routing::patch(update_contact).delete(delete_contact),
+            )
+            .route("/v1.0/me/people", get(people_search))
+            .route("/v1.0/users", get(users_search))
             .route("/v1.0/me/events", axum::routing::post(create_event))
             .route(
                 "/v1.0/me/calendars/{calendar}/events",
@@ -295,6 +310,34 @@ impl FakeGraph {
     /// Reminders dealt with from a device: (event, `dismissed` or until when).
     pub fn reminders_done(&self) -> Vec<(String, String)> {
         lock(&self.shared).calendars().reminders.clone()
+    }
+
+    /// Put a contact in the mailbox: in a folder, or with none named in the main one. Gives its id.
+    pub fn add_contact(&self, folder: Option<&str>, contact: Value) -> String {
+        let made = lock(&self.shared)
+            .people
+            .create(folder.unwrap_or_default(), &contact);
+        made.and_then(|made| made["id"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    pub fn add_contact_folder(&self, name: &str) -> String {
+        lock(&self.shared).people.add_folder(name)
+    }
+
+    /// Every contact in a folder (empty for the main one), as Graph would give them.
+    pub fn contacts(&self, folder: &str) -> Vec<Value> {
+        lock(&self.shared).people.in_folder(folder)["value"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Put someone in the organisation's directory.
+    pub fn add_person(&self, name: &str, address: &str, title: &str, department: &str) {
+        lock(&self.shared)
+            .people
+            .add_person(name, address, title, department);
     }
 
     /// Give the organisation a meeting room. It is free until said to be busy.
@@ -655,7 +698,14 @@ async fn require_token(request: Request, next: Next) -> Response {
     // Sending is its own permission ("message: send"), and so are the
     // mailbox's settings ("Update user mailbox settings").
     // Calendars are read with Calendars.Read ("event: delta").
-    let allowed = if path.contains("/places/") {
+    let allowed = if path.contains("/me/contact") {
+        // "List contacts", "Create contact".
+        granted.contains(&"Contacts.ReadWrite") || (reading && granted.contains(&"Contacts.Read"))
+    } else if path.ends_with("/me/people") {
+        granted.contains(&"People.Read")
+    } else if path.ends_with("/v1.0/users") {
+        granted.contains(&"User.ReadBasic.All")
+    } else if path.contains("/places/") {
         // "List place objects".
         granted.contains(&"Place.Read.All")
     } else if path.ends_with("/me/findMeetingTimes") {
@@ -681,6 +731,90 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// "List contactFolders" (SOURCES.md).
+async fn contact_folders(State(shared): State<Shared>) -> Response {
+    axum::Json(lock(&shared).people.folders()).into_response()
+}
+
+/// "List contacts" (SOURCES.md), for the main folder.
+async fn contacts(State(shared): State<Shared>) -> Response {
+    axum::Json(lock(&shared).people.in_folder("")).into_response()
+}
+
+async fn contacts_in(State(shared): State<Shared>, Path(folder): Path<String>) -> Response {
+    let inner = lock(&shared);
+    if !inner.people.has_folder(&folder) {
+        return event_refused("ErrorItemNotFound");
+    }
+    axum::Json(inner.people.in_folder(&folder)).into_response()
+}
+
+fn make_contact(shared: &Shared, folder: &str, body: &Value) -> Response {
+    let mut inner = lock(shared);
+    if !folder.is_empty() && !inner.people.has_folder(folder) {
+        return event_refused("ErrorItemNotFound");
+    }
+    match inner.people.create(folder, body) {
+        Some(made) => (StatusCode::CREATED, axum::Json(made)).into_response(),
+        None => event_refused("ErrorInvalidRequest"),
+    }
+}
+
+/// "Create contact" (SOURCES.md): 201 and the contact.
+async fn create_contact(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    make_contact(&shared, "", &body)
+}
+
+async fn create_contact_in(
+    State(shared): State<Shared>,
+    Path(folder): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    make_contact(&shared, &folder, &body)
+}
+
+/// "Update contact" (SOURCES.md): 200 and the contact as it now is.
+async fn update_contact(
+    State(shared): State<Shared>,
+    Path(contact): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    match lock(&shared).people.update(&contact, &body) {
+        Some(changed) => axum::Json(changed).into_response(),
+        None => event_refused("ErrorItemNotFound"),
+    }
+}
+
+/// "Delete contact" (SOURCES.md): 204.
+async fn delete_contact(State(shared): State<Shared>, Path(contact): Path<String>) -> Response {
+    if lock(&shared).people.delete(&contact) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        event_refused("ErrorItemNotFound")
+    }
+}
+
+/// "List people" (SOURCES.md), searched.
+async fn people_search(
+    State(shared): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let typed = query.get("$search").cloned().unwrap_or_default();
+    axum::Json(lock(&shared).people.search(&typed)).into_response()
+}
+
+/// "List users" (SOURCES.md), filtered.
+async fn users_search(
+    State(shared): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let filter = query.get("$filter").cloned().unwrap_or_default();
+    axum::Json(lock(&shared).people.users(&filter)).into_response()
 }
 
 /// "List place objects" (SOURCES.md).
@@ -1828,7 +1962,7 @@ mod tests {
     async fn something_not_built_says_so() {
         let graph = FakeGraph::start().await.unwrap();
 
-        let response = get(&graph, "/me/contacts", Some("token")).await;
+        let response = get(&graph, "/me/todo/lists", Some("token")).await;
 
         assert_eq!(response.status(), 404);
         let body: Value = response.json().await.unwrap();
@@ -1837,7 +1971,7 @@ mod tests {
             body["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("/v1.0/me/contacts")
+                .contains("/v1.0/me/todo/lists")
         );
     }
 }

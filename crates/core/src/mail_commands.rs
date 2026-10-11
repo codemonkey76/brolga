@@ -207,12 +207,25 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                     }
                     other => other.to_string(),
                 });
-            Ok::<_, String>(Some((synced, bodies, calendar)))
+            // And contacts, the same way.
+            let contacts = mailbox
+                .contacts
+                .sync_all(false)
+                .await
+                .map(|_| ())
+                .map_err(|error| match error {
+                    brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }) => {
+                        "This sign-in was not given permission to read your contacts. Sign in to the account again, from the accounts screen, to grant it.".to_owned()
+                    }
+                    other => other.to_string(),
+                });
+            Ok::<_, String>(Some((synced, bodies, calendar, contacts)))
         }
         .await;
 
         results.push(match outcome {
-            Ok(Some((synced, bodies, calendar))) => json!({
+            Ok(Some((synced, bodies, calendar, contacts))) => json!({
+                "contacts_error": contacts.err(),
                 "account_id": account.id, "ok": true, "changed": synced.changed, "removed": synced.removed,
                 "bodies_downloaded": bodies, "syncing_elsewhere": false, "error": null,
                 "events_changed": calendar.as_ref().ok(), "calendar_error": calendar.as_ref().err(),
@@ -890,7 +903,8 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "syncing_elsewhere": { "type": "boolean", "description": "Another copy of Brolga on this computer was already syncing this account, so this one left it to it." },
                                 "error": { "type": ["string", "null"], "description": "Why this account did not sync, in plain words." },
                                 "events_changed": { "type": ["integer", "null"], "description": "Calendars and events added, updated or removed." },
-                                "calendar_error": { "type": ["string", "null"], "description": "Why the calendar did not sync, where the mail did." }
+                                "calendar_error": { "type": ["string", "null"], "description": "Why the calendar did not sync, where the mail did." },
+                                "contacts_error": { "type": ["string", "null"], "description": "Why contacts did not sync, where the mail did." }
                             },
                             "required": ["account_id", "ok", "changed", "removed", "error"]
                         }

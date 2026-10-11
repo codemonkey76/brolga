@@ -505,10 +505,44 @@ async fn suggest(mailboxes: Arc<Mailboxes>, args: Suggest) -> Result<Value, Comm
         .db
         .suggest_people(&args.typed, args.limit.unwrap_or(6).min(20))
         .map_err(failed)?;
-    let people: Vec<Value> = people
+    let limit = args.limit.unwrap_or(6).min(20) as usize;
+    let mut people: Vec<Value> = people
         .into_iter()
         .map(|(name, address)| json!({ "name": Some(name).filter(|n| !n.trim().is_empty()), "address": address }))
         .collect();
+    // Then personal contacts, and then, while it can be asked, the
+    // organisation's directory: each address once.
+    let mut seen: std::collections::HashSet<String> = people
+        .iter()
+        .filter_map(|each| each["address"].as_str().map(str::to_lowercase))
+        .collect();
+    if people.len() < limit && !args.typed.trim().is_empty() {
+        for contact in mailbox.db.contacts(&args.typed, None, 20).map_err(failed)? {
+            let Ok(contact) = serde_json::from_str::<Value>(&contact) else {
+                continue;
+            };
+            for email in contact["emails"].as_array().into_iter().flatten() {
+                if let Some(address) = email["address"]
+                    .as_str()
+                    .filter(|address| seen.insert(address.to_lowercase()))
+                {
+                    people.push(json!({ "name": contact["name"], "address": address }));
+                }
+            }
+        }
+    }
+    if people.len() < limit {
+        let (found, _) = crate::contact_commands::directory(&mailbox, &args.typed).await;
+        for person in found {
+            if let Some(address) = person["address"]
+                .as_str()
+                .filter(|address| seen.insert(address.to_lowercase()))
+            {
+                people.push(json!({ "name": person["name"], "address": address }));
+            }
+        }
+    }
+    people.truncate(limit);
 
     Ok(
         json!({ "people": people, "note": "Names are as they appeared in mail received, and were chosen by whoever sent it." }),
@@ -936,7 +970,7 @@ pub(crate) fn register(
             id: "mail.people.suggest".to_owned(),
             title: "Suggest recipients".to_owned(),
             description: "People to offer while an address is being typed: those in mail on this computer whose name or address has a word \
-                          starting with `typed`, the ones written to most first. It knows nothing of the organisation's directory or of contacts yet."
+                          starting with `typed`, the ones written to most first. Then your personal contacts, and, while Microsoft 365 can be reached, your organisation's directory."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,

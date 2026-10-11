@@ -8,6 +8,7 @@
 
 mod account;
 mod calendar;
+mod contacts;
 mod drafts;
 mod global;
 mod migrate;
@@ -18,6 +19,7 @@ pub use account::{
     MessageChange, MessageRow, Order, Round, SyncState,
 };
 pub use calendar::{CalendarRow, EventRow};
+pub use contacts::ContactRow;
 pub use drafts::{Draft, DraftEdit, DraftFile};
 pub use global::{Account, AgentLogEntry, GlobalDb};
 pub use ops::{FailedOp, MessageEdit, Op};

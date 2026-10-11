@@ -64,6 +64,11 @@ async fn every_command_is_described_and_its_examples_run() {
         )
         .attach("notes.txt", "text/plain", b"Some notes."),
     );
+    // A contact, for `contacts.get` and `contacts.update`.
+    assert_eq!(
+        graph.add_contact(None, serde_json::json!({ "givenName": "Sam", "surname": "Taylor", "emailAddresses": [{ "address": "sam@example.test" }] })),
+        "contact-0001"
+    );
     // An event, for `calendar.events.get`.
     assert_eq!(
         graph.add_event(

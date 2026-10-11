@@ -10,6 +10,7 @@ mod account_commands;
 mod action_commands;
 mod agent_commands;
 mod calendar_commands;
+mod contact_commands;
 mod draft_commands;
 mod link_commands;
 mod mail_commands;
@@ -114,6 +115,7 @@ impl Core {
         action_commands::register(&mut registry, mailboxes.clone())?;
         draft_commands::register(&mut registry, mailboxes.clone())?;
         calendar_commands::register(&mut registry, mailboxes.clone())?;
+        contact_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;
         mail_commands::register(
             &mut registry,

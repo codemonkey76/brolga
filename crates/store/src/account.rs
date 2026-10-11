@@ -299,6 +299,24 @@ const STEPS: &[&str] = &[
         details TEXT NOT NULL
     ) STRICT;
 ",
+    "
+    -- Personal contacts: each whole as JSON, beside what it is listed and found by.
+    CREATE TABLE contact_folders (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE contacts (
+        id TEXT PRIMARY KEY NOT NULL,
+        -- Empty for the main Contacts folder.
+        folder_id TEXT NOT NULL DEFAULT '',
+        display_name TEXT NOT NULL,
+        search TEXT NOT NULL,
+        data TEXT NOT NULL
+    ) STRICT;
+
+    CREATE INDEX contacts_by_folder ON contacts (folder_id, display_name);
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

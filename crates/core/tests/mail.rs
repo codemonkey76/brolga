@@ -3130,3 +3130,163 @@ async fn rooms_are_found_with_which_are_free_and_the_server_suggests_times() {
     assert_eq!(none["suggestions"], json!([]));
     assert_eq!(none["why_none"], "attendeesUnavailable");
 }
+
+#[tokio::test]
+async fn contacts_sync_are_changed_and_people_are_looked_up_and_suggested() {
+    let f = Fixture::signed_in().await;
+    let suppliers = f.graph.add_contact_folder("Suppliers");
+    let sam = f.graph.add_contact(
+        None,
+        json!({ "givenName": "Sam", "surname": "Taylor", "companyName": "Northwind", "jobTitle": "Buyer",
+                "emailAddresses": [{ "address": "sam@northwind.test", "name": "Sam Taylor" }], "businessPhones": ["07 5550 0101"],
+                "mobilePhone": "0400 000 001", "personalNotes": "Met at the trade show.", "birthday": "1980-05-17T11:59:00Z" }),
+    );
+    f.graph.add_contact(Some(&suppliers), json!({ "companyName": "Harbour Freight Lines", "emailAddresses": [{ "address": "ops@harbour.test" }] }));
+    f.graph.add_person(
+        "Samira Okafor",
+        "samira.okafor@example.test",
+        "Engineer",
+        "Platform",
+    );
+    f.graph.add_person(
+        "Alex Sampson",
+        "alex.sampson@example.test",
+        "Analyst",
+        "Finance",
+    );
+    let synced = f.sync().await;
+    assert_eq!(synced["contacts_error"], Value::Null);
+    let names = |found: &Value| -> Vec<String> {
+        found["contacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Here, by name, with their folders.
+    let all = f.run("contacts.list", json!({})).await;
+    assert_eq!(names(&all), ["Harbour Freight Lines", "Sam Taylor"]);
+    assert_eq!(
+        names(
+            &f.run("contacts.list", json!({ "folder_id": suppliers }))
+                .await
+        ),
+        ["Harbour Freight Lines"]
+    );
+    assert_eq!(
+        names(
+            &f.run("contacts.list", json!({ "query": "north buyer" }))
+                .await
+        ),
+        ["Sam Taylor"]
+    );
+    let folders = f.run("contacts.folders.list", json!({})).await;
+    assert_eq!(folders["folders"][1]["name"], "Suppliers");
+    let read = f.run("contacts.get", json!({ "contact_id": sam })).await["contact"].clone();
+    assert_eq!(read["emails"][0]["address"], "sam@northwind.test");
+    assert_eq!(read["business_phones"], json!(["07 5550 0101"]));
+    assert_eq!(read["birthday"], "1980-05-17");
+    assert_eq!(read["notes"], "Met at the trade show.");
+
+    // Made, changed and deleted: there as here.
+    let made = f
+        .run(
+            "contacts.create",
+            json!({ "given_name": "Jo", "surname": "Nguyen", "emails": [" jo@example.test "], "mobile": "0400 000 002", "folder_id": suppliers }),
+        )
+        .await["contact"]
+        .clone();
+    let jo = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(made["name"], "Jo Nguyen");
+    assert_eq!(made["folder_id"], suppliers);
+    assert_eq!(f.graph.contacts(&suppliers).len(), 2);
+    let changed = f
+        .run("contacts.update", json!({ "contact_id": jo, "job_title": "Director", "emails": ["jo@example.test", "jo@home.test"] }))
+        .await["contact"]
+        .clone();
+    assert_eq!(changed["job_title"], "Director");
+    assert_eq!(changed["emails"].as_array().unwrap().len(), 2);
+    assert_eq!(changed["mobile"], "0400 000 002");
+    f.sync().await;
+    assert_eq!(
+        f.run("contacts.get", json!({ "contact_id": jo })).await["contact"]["job_title"],
+        "Director"
+    );
+
+    for bad in [
+        json!({}),
+        json!({ "given_name": "X", "emails": ["not one"] }),
+        json!({ "given_name": "X", "emails": ["a@b.c", "d@e.f", "g@h.i", "j@k.l"] }),
+    ] {
+        assert!(
+            f.registry
+                .execute("contacts.create", bad.clone())
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+
+    // Looked up: contacts first, then the directory, those nearest first; each address once.
+    let found = f.run("people.search", json!({ "query": "sam" })).await;
+    let who: Vec<(&str, &str)> = found["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["name"].as_str().unwrap(), p["source"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        who,
+        [
+            ("Sam Taylor", "contact"),
+            ("Samira Okafor", "directory"),
+            ("Alex Sampson", "directory")
+        ]
+    );
+    assert_eq!(found["people"][1]["job_title"], "Engineer");
+    assert_eq!(found["directory_searched"], true);
+
+    // Offered while an address is typed, after anyone already written to.
+    let offered = f
+        .run("mail.people.suggest", json!({ "typed": "sam" }))
+        .await;
+    let addresses: Vec<&str> = offered["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["address"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        addresses,
+        [
+            "sam@northwind.test",
+            "samira.okafor@example.test",
+            "alex.sampson@example.test"
+        ]
+    );
+
+    // Out of reach: contacts are still found, and it is said the directory was not asked.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 200));
+    let offline = f.run("people.search", json!({ "query": "sam" })).await;
+    assert_eq!(offline["people"].as_array().unwrap().len(), 1);
+    assert_eq!(offline["directory_searched"], false);
+    assert!(
+        f.registry
+            .execute("contacts.delete", json!({ "contact_id": jo }))
+            .await
+            .is_err()
+    );
+    f.graph.clear_faults();
+
+    f.run("contacts.delete", json!({ "contact_id": jo })).await;
+    assert!(
+        f.registry
+            .execute("contacts.get", json!({ "contact_id": jo }))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.graph.contacts(&suppliers).len(), 1);
+}

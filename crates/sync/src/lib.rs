@@ -14,9 +14,11 @@
 //!   whichever folder's changes arrive first.
 
 mod calendar;
+mod contacts;
 mod mail;
 
 pub use calendar::{CalendarSync, event_row};
+pub use contacts::{ContactSync, contact_row};
 pub use mail::{MailSync, Synced};
 
 use brolga_graph::GraphError;
