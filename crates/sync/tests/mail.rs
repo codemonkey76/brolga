@@ -500,3 +500,102 @@ async fn chaos_ends_with_the_database_matching_the_server() {
         f.assert_in_step();
     }
 }
+
+/// The milestone's acceptance run: a mailbox of 100,000 messages, synced
+/// under throttling and interrupted part-way, then timed for the list and
+/// search targets in the build spec. It takes a while, so it is run on
+/// request: `cargo test --release -p brolga-sync -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "takes a minute; run with --release -- --ignored"]
+async fn a_hundred_thousand_messages_sync_resumably_and_stay_fast() {
+    use std::time::Instant;
+
+    let folder = std::env::temp_dir().join(format!("brolga-100k-{}", std::process::id()));
+    let graph = FakeGraph::start().await.unwrap();
+    let inbox = graph.folder_id("inbox");
+    graph.add_messages(&inbox, 100_000);
+    graph.fail_at_random(50, 3);
+    let open = || Arc::new(AccountDb::open(&folder.join("account.db")).unwrap());
+    let sync = |db: Arc<AccountDb>| {
+        let client = GraphClient::new(
+            graph.base_url(),
+            Arc::new(FixedToken),
+            RetryPolicy::impatient(),
+        )
+        .unwrap();
+        MailSync::new(Arc::new(client), db).with_page_size(100)
+    };
+
+    // Cut off three times on the way, each time starting again as a new process would.
+    let started = Instant::now();
+    for cut_after in [2, 5, 9] {
+        let db = open();
+        let _ = tokio::time::timeout(Duration::from_secs(cut_after), sync(db).sync_all()).await;
+    }
+    let db = open();
+    let before_last = db.message_count(&inbox).unwrap();
+    let mut attempts = 0;
+    while let Err(e) = sync(db.clone()).sync_all().await {
+        attempts += 1;
+        assert!(e.is_transient() && attempts < 200, "{e}");
+    }
+    println!(
+        "synced 100,000 messages in {:.1?}, {before_last} of them before the last restart",
+        started.elapsed()
+    );
+
+    assert_eq!(db.message_count(&inbox).unwrap(), 100_000);
+    assert!(
+        before_last > 0 && before_last < 100_000,
+        "the sync was never interrupted part-way: {before_last}"
+    );
+    let server = graph.messages();
+    let local = db.messages(&inbox, 0, u32::MAX).unwrap();
+    assert!(local.iter().all(|m| server.contains_key(&m.id)));
+
+    // The targets, on a database opened cold.
+    drop(db);
+    let db = open();
+    let time = |what: &str, limit_ms: u128, run: &dyn Fn() -> usize| {
+        let started = Instant::now();
+        let rows = run();
+        let took = started.elapsed();
+        println!("{what}: {rows} rows in {took:.2?} (target under {limit_ms} ms)");
+        assert!(took.as_millis() < limit_ms, "{what} took {took:?}");
+    };
+    time("open a folder, first screen", 100, &|| {
+        db.messages(&inbox, 0, 50).unwrap().len()
+    });
+    time("scroll to the middle", 100, &|| {
+        db.messages(&inbox, 50_000, 50).unwrap().len()
+    });
+    time("scroll to the end", 100, &|| {
+        db.messages(&inbox, 99_950, 50).unwrap().len()
+    });
+    time("open a message", 100, &|| {
+        usize::from(db.message(&local[70_000].id).unwrap().is_some())
+    });
+    time("search, a common word", 200, &|| {
+        db.search("\"message\" *", None, None, None, None, None, 50)
+            .unwrap()
+            .len()
+    });
+    time("search, a rare word", 200, &|| {
+        db.search("\"99999\" *", None, None, None, None, None, 50)
+            .unwrap()
+            .len()
+    });
+    time("search, by sender", 200, &|| {
+        db.search("sender : \"sender42\" *", None, None, None, None, None, 50)
+            .unwrap()
+            .len()
+    });
+    time("search, unread with attachments", 200, &|| {
+        db.search("", None, Some(false), Some(false), None, None, 50)
+            .unwrap()
+            .len()
+    });
+
+    drop(db);
+    let _ = std::fs::remove_dir_all(folder);
+}
