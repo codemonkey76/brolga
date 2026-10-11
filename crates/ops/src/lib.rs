@@ -14,6 +14,9 @@ use brolga_store::{AccountDb, Draft, Op, StoreError};
 use serde_json::json;
 use tokio::sync::Mutex;
 
+/// Below this a file is attached in one request; from it up, in pieces.
+const SMALL_FILE: usize = 3 * 1024 * 1024;
+
 /// What became of the queue in one pass over it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Drained {
@@ -194,9 +197,17 @@ impl Outbox {
                 continue;
             };
             self.db.draft_file_upload_tried(file.id).map_err(kept)?;
-            self.graph
-                .add_attachment(server_id, &file.name, &file.content_type, &data)
-                .await?;
+            // "Add attachment" takes a file of under 3 MB; a larger one
+            // goes up in pieces.
+            if data.len() < SMALL_FILE {
+                self.graph
+                    .add_attachment(server_id, &file.name, &file.content_type, &data)
+                    .await?;
+            } else {
+                self.graph
+                    .upload_attachment(server_id, &file.name, &data)
+                    .await?;
+            }
             self.db.draft_file_uploaded(file.id).map_err(kept)?;
         }
 

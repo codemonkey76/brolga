@@ -1148,7 +1148,7 @@ async fn a_file_is_attached_from_disk_and_goes_with_the_message() {
     let path = folder.join("Quarterly report.pdf");
     std::fs::write(&path, b"%PDF-1.7 not really").unwrap();
     let big = folder.join("big.bin");
-    std::fs::write(&big, vec![0u8; 3 * 1024 * 1024]).unwrap();
+    std::fs::write(&big, vec![0u8; 25 * 1024 * 1024 + 1]).unwrap();
 
     let draft = f
         .run(
@@ -1182,7 +1182,7 @@ async fn a_file_is_attached_from_disk_and_goes_with_the_message() {
     assert_eq!(added["file"]["size"], 19);
     // A name given by a caller is made a plain file name, like any other.
     assert_eq!(extra["file"]["name"], "_note.txt");
-    assert!(too_big.unwrap_err().to_string().contains("3 MB"));
+    assert!(too_big.unwrap_err().to_string().contains("over 25 MB"));
 
     f.run(
         "mail.drafts.files.remove",

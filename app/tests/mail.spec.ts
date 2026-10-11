@@ -738,7 +738,7 @@ test("files are attached from the file dialog, can be removed, and go with the m
     // The one that is too big is said, and does not stop the others.
     await expect(attached.getByRole("listitem")).toHaveCount(2);
     await expect(attached).toContainText("Quarterly report.pdf");
-    await expect(form.getByRole("alert")).toContainText("`huge-video.mov` is 3 MB or more");
+    await expect(form.getByRole("alert")).toContainText("`huge-video.mov` is over 25 MB");
     await picture(page, "compose-with-files");
 
     await attached.getByRole("button", { name: "Remove Budget.xlsx" }).click();

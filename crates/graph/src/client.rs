@@ -264,6 +264,79 @@ impl GraphClient {
         Ok(())
     }
 
+    /// Attach a file of 3 MB or more to a draft, a piece at a time
+    /// ("attachment: createUploadSession" and "Attach large files to
+    /// Outlook messages", SOURCES.md).
+    ///
+    /// The address the pieces go to carries its own authorisation, so it is
+    /// sent no token of ours and is never put in an error or a log. If a
+    /// piece fails the whole upload fails: the caller starts again, having
+    /// first looked whether the file arrived after all.
+    pub async fn upload_attachment(
+        &self,
+        message_id: &str,
+        name: &str,
+        content: &[u8],
+    ) -> Result<(), GraphError> {
+        // "Keep each byte range less than 4 MB."
+        const PIECE: usize = 3 * 1024 * 1024;
+
+        let url = format!(
+            "{}/me/messages/{message_id}/attachments/createUploadSession",
+            self.base
+        );
+        let item = serde_json::json!({
+            "AttachmentItem": { "attachmentType": "file", "name": name, "size": content.len() }
+        });
+        let session: UploadSession = decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&item), false)
+                .await?,
+        )?;
+        let upload_url = Url::parse(&session.upload_url)
+            .map_err(|_| GraphError::Decode("an upload address that is not a URL".to_owned()))?;
+
+        let total = content.len();
+        let mut start = 0;
+        while start < total {
+            let end = (start + PIECE).min(total);
+            let _permit = self
+                .in_flight
+                .acquire()
+                .await
+                .map_err(|e| GraphError::Decode(e.to_string()))?;
+            let response = self
+                .http
+                .put(upload_url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .header(
+                    reqwest::header::CONTENT_RANGE,
+                    format!("bytes {start}-{}/{total}", end - 1),
+                )
+                .body(content[start..end].to_vec())
+                .send()
+                .await
+                .map_err(|e| GraphError::Network(e.without_url()))?;
+
+            let status = response.status();
+            if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
+                return Err(GraphError::Busy {
+                    status: status.as_u16(),
+                });
+            }
+            if !status.is_success() {
+                return Err(GraphError::Refused {
+                    status: status.as_u16(),
+                    code: String::new(),
+                    message: "The file could not be uploaded.".to_owned(),
+                });
+            }
+            start = end;
+        }
+
+        Ok(())
+    }
+
     /// Send a draft ("message: send", SOURCES.md). It is saved in Sent
     /// Items. Never repeated here: a second request could send a second copy.
     pub async fn send_draft(&self, message_id: &str) -> Result<(), GraphError> {
@@ -397,6 +470,12 @@ impl GraphClient {
             return Err(refusal(response).await);
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadSession {
+    upload_url: String,
 }
 
 #[derive(Deserialize)]

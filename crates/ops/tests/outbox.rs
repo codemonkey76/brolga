@@ -453,3 +453,37 @@ async fn files_go_with_the_message_each_once() {
     assert_eq!(sent.attachments[0].content, b"Some notes.");
     assert_eq!(sent.attachments[0].content_type, "text/plain");
 }
+
+#[tokio::test]
+async fn a_large_file_goes_up_in_pieces_and_arrives_whole() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    // Seven megabytes and a bit: three pieces, the last a short one.
+    let big: Vec<u8> = (0..7 * 1024 * 1024 + 123)
+        .map(|n| (n % 251) as u8)
+        .collect();
+    f.db.attach_to_draft(&draft.id, "survey.zip", "application/zip", &big)
+        .unwrap();
+    f.db.attach_to_draft(&draft.id, "note.txt", "text/plain", b"Small.")
+        .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!(
+        drained.sent,
+        1,
+        "{:?}",
+        f.db.draft(&draft.id).unwrap().map(|d| d.error)
+    );
+    let sent = &f.graph.sent()[0];
+    assert_eq!(sent.attachments.len(), 2);
+    assert_eq!(sent.attachments[0].name, "survey.zip");
+    assert!(
+        sent.attachments[0].content == big,
+        "the file did not arrive as it left"
+    );
+    assert_eq!(sent.attachments[1].content, b"Small.");
+}

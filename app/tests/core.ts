@@ -389,7 +389,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.drafts.files.add": (args) => {
                 const found = draft(args.draft_id);
                 const name = String(args.path).split("/").pop() ?? "";
-                if (name.startsWith("huge")) throw { code: "failed", message: `\`${name}\` is 3 MB or more, which Brolga cannot attach yet.` };
+                if (name.startsWith("huge")) throw { code: "failed", message: `\`${name}\` is over 25 MB, which is more than most mail systems accept. Share it as a link instead.` };
                 const file = { id: Date.now() + Math.random(), name, content_type: "application/pdf", size: 184_320 };
                 (found?.files as unknown[]).push(file);
                 return { file };

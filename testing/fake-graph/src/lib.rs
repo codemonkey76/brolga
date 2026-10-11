@@ -59,6 +59,8 @@ struct Inner {
     lose_next_attachment_answer: bool,
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
+    /// Large files on their way up, by session.
+    uploads: HashMap<String, Upload>,
     /// Messages every change to which is refused.
     refused_updates: std::collections::HashSet<String>,
     /// Where this server is, to write links to itself.
@@ -95,6 +97,11 @@ impl FakeGraph {
             )
             .route("/v1.0/me/messages", axum::routing::post(create_draft))
             .route(
+                "/v1.0/me/messages/{message}/attachments/createUploadSession",
+                axum::routing::post(create_upload_session),
+            )
+            .route("/upload/{session}", axum::routing::put(upload_piece))
+            .route(
                 "/v1.0/me/messages/{message}/send",
                 axum::routing::post(send_draft),
             )
@@ -123,6 +130,8 @@ impl FakeGraph {
                 get(attachment_content),
             )
             .fallback(not_built)
+            // Room for a piece of a large file, or a small file in base64.
+            .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
             // Outermost last: a request is logged, then faulted, then checked for a token.
             .layer(middleware::from_fn(require_token))
             .layer(middleware::from_fn_with_state(shared.clone(), inject_fault))
@@ -391,6 +400,19 @@ async fn require_token(request: Request, next: Next) -> Response {
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|token| !token.is_empty())
         .map(str::to_owned);
+    // An upload address carries its own authorisation and must be sent
+    // none of the caller's ("Attach large files", SOURCES.md).
+    if request.uri().path().starts_with("/upload/") {
+        return if token.is_some() {
+            error(
+                StatusCode::BAD_REQUEST,
+                "fakeGraphTokenSent",
+                "An upload address must not be sent an Authorization header.",
+            )
+        } else {
+            next.run(request).await
+        };
+    }
     let Some(token) = token else {
         return error(
             StatusCode::UNAUTHORIZED,
@@ -671,6 +693,145 @@ async fn add_attachment(
     (
         StatusCode::CREATED,
         axum::Json(json!({ "id": "attachment" })),
+    )
+        .into_response()
+}
+
+/// A large file on its way up: which draft it is for, what it will be
+/// called, how big it will be, and what has arrived.
+struct Upload {
+    message: String,
+    name: String,
+    size: usize,
+    received: Vec<u8>,
+}
+
+/// "attachment: createUploadSession" (SOURCES.md): an address to send the
+/// file's bytes to, in order.
+async fn create_upload_session(
+    State(shared): State<Shared>,
+    Path(message): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    if !inner.mailbox.stored(&message).is_some_and(|m| m.is_draft) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "fakeGraphNotADraft",
+            "A file can be attached only to a draft.",
+        );
+    }
+    let item = &body["AttachmentItem"];
+    let (Some(name), Some(size)) = (item["name"].as_str(), item["size"].as_u64()) else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "badRequest",
+            "AttachmentItem needs a name and a size.",
+        );
+    };
+    if item["attachmentType"] != "file" {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "badRequest",
+            "attachmentType must be file.",
+        );
+    }
+
+    let session = format!("session-{}", inner.uploads.len() + 1);
+    inner.uploads.insert(
+        session.clone(),
+        Upload {
+            message,
+            name: name.to_owned(),
+            size: size as usize,
+            received: Vec::new(),
+        },
+    );
+    let root = inner.base.trim_end_matches("/v1.0").to_owned();
+
+    (
+        StatusCode::CREATED,
+        axum::Json(json!({
+            "uploadUrl": format!("{root}/upload/{session}?authtoken=not-for-any-log"),
+            "expirationDateTime": "2099-01-01T00:00:00Z",
+            "nextExpectedRanges": ["0"]
+        })),
+    )
+        .into_response()
+}
+
+/// One piece of a large file. The pieces come in order; the last is
+/// answered 201 and the file is then attached.
+async fn upload_piece(
+    State(shared): State<Shared>,
+    Path(session): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let mut inner = lock(&shared);
+    let range = headers
+        .get(header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes "))
+        .and_then(|v| v.split_once('/'))
+        .and_then(|(range, total)| {
+            let (start, end) = range.split_once('-')?;
+            Some((
+                start.parse::<usize>().ok()?,
+                end.parse::<usize>().ok()?,
+                total.parse::<usize>().ok()?,
+            ))
+        });
+    let Some(upload) = inner.uploads.get_mut(&session) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such upload.",
+        );
+    };
+    let Some((start, end, total)) = range else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "badRequest",
+            "A Content-Range is required.",
+        );
+    };
+    if body.len() > 4 * 1024 * 1024
+        || start != upload.received.len()
+        || end + 1 - start != body.len()
+        || total != upload.size
+    {
+        return error(
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "fakeGraphBadRange",
+            "The piece is too big, out of order, or not the range it says it is.",
+        );
+    }
+    upload.received.extend_from_slice(&body);
+    if upload.received.len() < upload.size {
+        let next = upload.received.len().to_string();
+        return axum::Json(json!({ "nextExpectedRanges": [next] })).into_response();
+    }
+
+    let Some(done) = inner.uploads.remove(&session) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let file = FakeAttachment {
+        name: done.name,
+        content_type: "application/octet-stream".to_owned(),
+        content: done.received,
+        inline: false,
+        kind: "file",
+        content_id: None,
+    };
+    inner.mailbox.edit(&done.message, |m| {
+        m.attachments.push(file);
+        m.has_attachments = true;
+    });
+
+    (
+        StatusCode::CREATED,
+        [(header::LOCATION, format!("{}/attachment", inner.base))],
     )
         .into_response()
 }

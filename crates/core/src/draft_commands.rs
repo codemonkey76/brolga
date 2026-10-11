@@ -70,12 +70,11 @@ struct RemoveFile {
     file_id: i64,
 }
 
-/// The largest file that can be attached yet. Graph takes a file of 3 MB or
-/// more only through an upload session, which is not built.
-const LARGEST_FILE: usize = 3 * 1024 * 1024 - 1;
-/// The most a message's files may come to. Microsoft 365's own default
-/// limit for a whole message is 35 MB, and base64 makes files a third bigger.
+/// The most a message's files may come to, and so the largest one file may
+/// be. Microsoft 365's own default limit for a whole message is 35 MB, and
+/// base64 makes files a third bigger on the way.
 const MOST_FILES_BYTES: i64 = 25 * 1024 * 1024;
+const LARGEST_FILE: usize = MOST_FILES_BYTES as usize;
 
 /// What kind of file a name says it is, for the commonest kinds. Anything
 /// else is sent as plain bytes, which every mail program accepts.
@@ -402,7 +401,7 @@ async fn add_file(mailboxes: Arc<Mailboxes>, args: AddFile) -> Result<Value, Com
 
 fn too_large(name: &str) -> CommandError {
     failed(format!(
-        "`{name}` is 3 MB or more, which Brolga cannot attach yet."
+        "`{name}` is over 25 MB, which is more than most mail systems accept. Share it as a link instead."
     ))
 }
 
@@ -746,7 +745,7 @@ pub(crate) fn register(
             id: "mail.drafts.files.add".to_owned(),
             title: "Attach a file".to_owned(),
             description: "Attach a file to a draft: one on this computer by its `path`, or one given whole as `name` and `content_base64`. \
-                          It is copied into the draft, so the original can change or go. A file must be under 3 MB for now, and a message's files 25 MB in all."
+                          It is copied into the draft, so the original can change or go. A message's files may come to 25 MB in all."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: false,
