@@ -51,10 +51,22 @@ struct RawPage {
 /// data" (SOURCES.md): a page carries a nextLink or a deltaLink, never both,
 /// and a removed item is its `id` and an `@removed` object.
 pub(crate) fn read_page<T: DeserializeOwned>(body: &[u8]) -> Result<DeltaPage<T>, GraphError> {
+    read(body, false)
+}
+
+/// Read a page of an ordinary list, which is not a delta: it has a nextLink
+/// while there is more, and nothing when there is not. The end is given as
+/// `Next::Done` with no link, there being nothing to ask next.
+pub(crate) fn read_list_page<T: DeserializeOwned>(body: &[u8]) -> Result<DeltaPage<T>, GraphError> {
+    read(body, true)
+}
+
+fn read<T: DeserializeOwned>(body: &[u8], list: bool) -> Result<DeltaPage<T>, GraphError> {
     let raw: RawPage =
         serde_json::from_slice(body).map_err(|e| GraphError::Decode(e.to_string()))?;
 
     let next = match (raw.next_link, raw.delta_link) {
+        (None, None) if list => Next::Done(String::new()),
         (Some(next), None) => Next::Page(next),
         (None, Some(delta)) => Next::Done(delta),
         (None, None) => {

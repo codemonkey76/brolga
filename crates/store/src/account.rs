@@ -229,6 +229,57 @@ const STEPS: &[&str] = &[
     -- name the body refers to it by: <img src=\"cid:…\">.
     ALTER TABLE draft_files ADD COLUMN content_id TEXT;
 ",
+    "
+    CREATE TABLE calendars (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        color TEXT NOT NULL DEFAULT 'auto',
+        hex_color TEXT NOT NULL DEFAULT '',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        can_edit INTEGER NOT NULL DEFAULT 0,
+        owner_name TEXT NOT NULL DEFAULT '',
+        owner_address TEXT NOT NULL DEFAULT '',
+        position INTEGER NOT NULL DEFAULT 0,
+        -- Whether its events are shown. This computer's own business.
+        shown INTEGER NOT NULL DEFAULT 1,
+        -- Named in the list just read from the server.
+        seen INTEGER NOT NULL DEFAULT 1
+    ) STRICT;
+
+    -- What a calendar view gives: each occurrence of a repeating event is
+    -- an event of its own. Times are UTC, as 2026-10-20T03:00:00Z.
+    CREATE TABLE events (
+        id TEXT PRIMARY KEY NOT NULL,
+        calendar_id TEXT NOT NULL,
+        subject TEXT NOT NULL DEFAULT '',
+        preview TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        start_at TEXT NOT NULL,
+        end_at TEXT NOT NULL,
+        is_all_day INTEGER NOT NULL DEFAULT 0,
+        start_zone TEXT NOT NULL DEFAULT '',
+        end_zone TEXT NOT NULL DEFAULT '',
+        show_as TEXT NOT NULL DEFAULT 'busy',
+        sensitivity TEXT NOT NULL DEFAULT 'normal',
+        is_cancelled INTEGER NOT NULL DEFAULT 0,
+        is_organizer INTEGER NOT NULL DEFAULT 0,
+        organizer_name TEXT NOT NULL DEFAULT '',
+        organizer_address TEXT NOT NULL DEFAULT '',
+        response TEXT NOT NULL DEFAULT 'none',
+        kind TEXT NOT NULL DEFAULT 'singleInstance',
+        series_master_id TEXT,
+        categories TEXT NOT NULL DEFAULT '[]',
+        reminder_minutes INTEGER,
+        join_url TEXT NOT NULL DEFAULT '',
+        web_link TEXT NOT NULL DEFAULT '',
+        change_key TEXT NOT NULL DEFAULT '',
+        attendees TEXT NOT NULL DEFAULT '[]',
+        generation INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+
+    CREATE INDEX events_by_time ON events (start_at, end_at);
+    CREATE INDEX events_by_calendar ON events (calendar_id, generation);
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1156,7 +1207,7 @@ fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
 }
 
 /// A resource's sync state, as it is or as it starts: a first, full pass.
-fn sync_state(connection: &Connection, resource: &str) -> Result<SyncState, StoreError> {
+pub(crate) fn sync_state(connection: &Connection, resource: &str) -> Result<SyncState, StoreError> {
     let state = connection
         .query_row(
             "SELECT link, complete, generation, reconciling FROM sync_state WHERE resource = ?1",
@@ -1180,7 +1231,7 @@ fn sync_state(connection: &Connection, resource: &str) -> Result<SyncState, Stor
     }))
 }
 
-fn advance(
+pub(crate) fn advance(
     transaction: &Transaction<'_>,
     resource: &str,
     link: &str,
@@ -1201,7 +1252,7 @@ fn advance(
     Ok(())
 }
 
-fn restart(connection: &Connection, resource: &str) -> Result<(), StoreError> {
+pub(crate) fn restart(connection: &Connection, resource: &str) -> Result<(), StoreError> {
     connection.execute(
         "INSERT INTO sync_state (resource, link, generation, reconciling) VALUES (?1, NULL, 2, 1)
          ON CONFLICT (resource) DO UPDATE SET link = NULL, generation = generation + 1, reconciling = 1",

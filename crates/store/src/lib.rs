@@ -7,6 +7,7 @@
 //! system's secret store, and the tests check that none reaches this file.
 
 mod account;
+mod calendar;
 mod drafts;
 mod global;
 mod migrate;
@@ -16,6 +17,7 @@ pub use account::{
     AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, InlineImage,
     MessageChange, MessageRow, Order, Round, SyncState,
 };
+pub use calendar::{CalendarRow, EventRow};
 pub use drafts::{Draft, DraftEdit, DraftFile};
 pub use global::{Account, AgentLogEntry, GlobalDb};
 pub use ops::{FailedOp, MessageEdit, Op};

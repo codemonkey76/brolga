@@ -8,10 +8,11 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::Semaphore;
 
-use crate::delta::read_page;
+use crate::delta::{read_list_page, read_page};
 use crate::mail::{ATTACHMENT_SELECT, FOLDER_SELECT, MESSAGE_SELECT};
 use crate::{
-    Attachment, DeltaPage, FileAttachment, GraphError, ItemBody, MailFolder, Message, RetryPolicy,
+    Attachment, Calendar, DeltaPage, Event, FileAttachment, GraphError, ItemBody, MailFolder,
+    Message, RetryPolicy,
 };
 
 /// How many requests may be in flight for one mailbox at once. Low on
@@ -99,6 +100,68 @@ impl GraphClient {
         );
 
         read_page(&self.get(link.unwrap_or(&start), Some(page_size)).await?)
+    }
+
+    /// Every calendar the mailbox has ("List calendars", SOURCES.md).
+    pub async fn calendars(&self) -> Result<Vec<Calendar>, GraphError> {
+        let mut url = format!("{}/me/calendars", self.base);
+        let mut all = Vec::new();
+        loop {
+            let page: DeltaPage<Calendar> = read_list_page(&self.get(&url, Some(100)).await?)?;
+            for item in page.items {
+                if let crate::DeltaItem::Changed(calendar) = item {
+                    all.push(calendar);
+                }
+            }
+            match page.next {
+                crate::Next::Page(next) => url = next,
+                crate::Next::Done(_) => return Ok(all),
+            }
+        }
+    }
+
+    /// One page of changes to the events of the default calendar between
+    /// two moments ("event: delta"). Each occurrence of a repeating event is
+    /// an event of its own. `link` is where the last page said to go;
+    /// without one the sync starts from the beginning, over `window`: two
+    /// moments in UTC, written as `2026-01-01T00:00:00`.
+    pub async fn events_delta(
+        &self,
+        link: Option<&str>,
+        window: (&str, &str),
+        page_size: u32,
+    ) -> Result<DeltaPage<Event>, GraphError> {
+        let start = format!(
+            "{}/me/calendarView/delta?startDateTime={}&endDateTime={}",
+            self.base, window.0, window.1
+        );
+
+        read_page(&self.get(link.unwrap_or(&start), Some(page_size)).await?)
+    }
+
+    /// One page of the events of a calendar between two moments ("List
+    /// calendarView"). Not a delta: Graph has one only for the default
+    /// calendar, so any other is read whole.
+    pub async fn calendar_view(
+        &self,
+        calendar_id: &str,
+        link: Option<&str>,
+        window: (&str, &str),
+        page_size: u32,
+    ) -> Result<DeltaPage<Event>, GraphError> {
+        let start = format!(
+            "{}/me/calendars/{calendar_id}/calendarView?startDateTime={}&endDateTime={}",
+            self.base, window.0, window.1
+        );
+
+        read_list_page(&self.get(link.unwrap_or(&start), Some(page_size)).await?)
+    }
+
+    /// One event whole, with its body and, for a series master, how it repeats.
+    pub async fn event(&self, event_id: &str) -> Result<Event, GraphError> {
+        let url = format!("{}/me/events/{event_id}", self.base);
+
+        decode(&self.get(&url, None).await?)
     }
 
     /// The id of one of the folders every mailbox has, by its well-known

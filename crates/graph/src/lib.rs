@@ -6,12 +6,14 @@
 //! sync crate's business. Every endpoint used here is listed in `SOURCES.md`
 //! with the document it was checked against.
 
+mod calendar;
 mod client;
 mod delta;
 mod error;
 mod mail;
 mod retry;
 
+pub use calendar::{Attendee, Calendar, Event, Location, OnlineMeeting, ResponseStatus};
 pub use client::{GraphClient, TokenSource};
 pub use delta::{DeltaItem, DeltaPage, Next};
 pub use error::GraphError;
