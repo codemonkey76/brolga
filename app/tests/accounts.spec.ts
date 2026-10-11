@@ -11,7 +11,6 @@ test("with no account, the window says so and offers to add one", async ({ page 
 
     await expect(page.getByText("No account yet")).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign in with your browser" })).toBeEnabled();
-    await picture(page, "no-account");
 });
 
 test("signing in adds the account to the list", async ({ page }) => {
@@ -19,6 +18,9 @@ test("signing in adds the account to the list", async ({ page }) => {
 
     await page.getByRole("button", { name: "Sign in with your browser" }).click();
 
+    // With a first account, the window goes straight to its mail.
+    await expect(page.getByRole("navigation", { name: "Folders" })).toBeVisible();
+    await page.getByRole("button", { name: "Accounts" }).click();
     const row = page.getByRole("list", { name: "Accounts" }).getByRole("listitem");
     await expect(row).toContainText("Robin Example");
     await expect(row).toContainText("robin@example.test");
@@ -42,7 +44,6 @@ test("a sign-in that fails shows why, in the core's own words", async ({ page })
 
     await expect(page.getByRole("alert")).toHaveText(why);
     await expect(page.getByText("No account yet")).toBeVisible();
-    await picture(page, "sign-in-refused");
 });
 
 test("with no app registration of Brolga's own, a client ID is asked for first", async ({ page }) => {
@@ -56,6 +57,7 @@ test("with no app registration of Brolga's own, a client ID is asked for first",
     await page.getByLabel("Tenant ID or domain").fill("contoso.example");
     await signIn.click();
 
+    await page.getByRole("button", { name: "Accounts" }).click();
     await expect(page.getByRole("list", { name: "Accounts" })).toContainText("Robin Example");
     const asked = (await ran(page)).find((r) => r.command === "accounts.sign_in");
     expect(asked?.args).toEqual({ client_id: "11111111-2222-4333-8444-555555555555", tenant: "contoso.example" });
@@ -73,6 +75,7 @@ test("signing in with a code shows the code and where to enter it", async ({ pag
 
 test("an account that needs it can sign in again, as itself", async ({ page }) => {
     await withCore(page, { accounts: [robin, sam], signIn: { ...sam, needs_sign_in: false } });
+    await page.getByRole("button", { name: "Accounts" }).click();
     const row = page.getByRole("listitem").filter({ hasText: "Sam Taylor" });
 
     await expect(row.getByRole("status")).toHaveText("Needs sign-in");
@@ -87,6 +90,7 @@ test("an account that needs it can sign in again, as itself", async ({ page }) =
 
 test("removing an account asks first", async ({ page }) => {
     await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "Accounts" }).click();
     const row = page.getByRole("listitem").filter({ hasText: "Robin Example" });
 
     await row.getByRole("button", { name: "Remove" }).click();
@@ -101,9 +105,12 @@ test("removing an account asks first", async ({ page }) => {
 test("the window works from the keyboard alone", async ({ page }) => {
     await withCore(page, { signIn: robin });
 
-    await page.keyboard.press("Tab");
-    await expect(page.getByRole("button", { name: "Sign in with your browser" })).toBeFocused();
+    const signIn = page.getByRole("button", { name: "Sign in with your browser" });
+    for (let presses = 0; presses < 6 && !(await signIn.evaluate((b) => b === document.activeElement)); presses++) {
+        await page.keyboard.press("Tab");
+    }
+    await expect(signIn).toBeFocused();
     await page.keyboard.press("Enter");
 
-    await expect(page.getByRole("list", { name: "Accounts" })).toContainText("Robin Example");
+    await expect(page.getByRole("navigation", { name: "Folders" })).toBeVisible();
 });

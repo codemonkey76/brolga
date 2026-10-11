@@ -19,3 +19,6 @@ export function execute<T>(command: string, args: Record<string, unknown> = {}):
 export function isCommandFailure(value: unknown): value is CommandFailure {
     return typeof value === "object" && value !== null && "code" in value && "message" in value;
 }
+
+/** Why something failed, in words to show. */
+export const say = (failure: unknown) => (isCommandFailure(failure) ? failure.message : String(failure));

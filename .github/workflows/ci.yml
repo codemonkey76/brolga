@@ -53,13 +53,12 @@ jobs:
           bun run check
           bun run build
 
-      # The frontend behaves the same in every browser engine we can test
-      # here, so once is enough.
+      # In Chromium and in WebKit, under the app's content security policy.
       - name: Frontend tests
         if: runner.os == 'Linux'
         working-directory: app
         run: |
-          bunx playwright install --with-deps chromium
+          bunx playwright install --with-deps chromium webkit
           bun run test
 
       - name: Formatting

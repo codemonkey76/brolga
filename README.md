@@ -5,16 +5,26 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 1, sign-in and accounts.** You can sign in and stay
-signed in. There is no mail or calendar yet.
+**Status: milestone 2, read-only mail.** You can sign in, sync a mailbox and
+read and search it. You cannot send, reply, move or delete yet, and there is
+no calendar.
+
+![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
+
+A message's remote pictures stay out until you ask for them, so a sender
+cannot tell you opened it. A link that says one address and goes to another
+is called out before you click it.
+
+![A message whose remote pictures were not loaded](docs/screenshots/remote-pictures-blocked.png)
+
+![A link whose words name one site while it goes to another, with the warning shown](docs/screenshots/deceptive-link.png)
 
 ![The accounts screen, with one account signed in and one that needs to sign in again](docs/screenshots/accounts.png)
 
-![Signing in with a code, for a computer with no usable browser](docs/screenshots/sign-in-with-code.png)
-
-The people and addresses in these pictures are made up. The pictures are taken
-by the frontend's own tests (`SCREENSHOTS=1 bun run test` in `app/`), with a
-stand-in for the core behind the window, so they show what the tests check.
+The people, addresses and messages in these pictures are made up. The pictures
+are taken by the frontend's own tests (`SCREENSHOTS=1 bun run test` in `app/`),
+with a stand-in for the core behind the window, so they show what the tests
+check.
 
 - [The build spec](docs/build-spec.pdf)
 - [Rules for contributors and agents](AGENTS.md)
