@@ -50,6 +50,8 @@ argument `mcp`.
 | `create_contact` | Add a personal contact. |
 | `update_contact` | Change a personal contact: only what is given. |
 | `delete_contact` | Delete a personal contact. Consequential. |
+| `list_rules` | The inbox's rules in the order they run, each also said as a sentence. |
+| `update_rule` | Turn a rule on or off, rename it, reorder it, or replace what it looks for or does. Consequential. |
 | `find_meeting_times` | Times Microsoft 365 suggests for a meeting with some people. |
 | `find_rooms` | The organisation's meeting rooms, and which are free at a time. |
 | `cancel_event` | Cancel a meeting you organised, with words to everyone invited. Consequential. |

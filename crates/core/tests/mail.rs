@@ -3544,3 +3544,216 @@ async fn a_message_goes_out_under_a_shared_mailbox_s_name_only_with_leave_to() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn the_mailboxes_categories_are_added_recoloured_and_deleted_on_the_server() {
+    let f = Fixture::signed_in().await;
+
+    let made = f
+        .run(
+            "mail.categories.create",
+            json!({ "name": "Training", "color": "preset4" }),
+        )
+        .await;
+    assert_eq!(
+        made["categories"][3],
+        json!({ "name": "Training", "color": "preset4" })
+    );
+    assert!(
+        f.graph
+            .master_categories()
+            .contains(&("Training".to_owned(), "preset4".to_owned()))
+    );
+
+    // A second of the same name is refused before the server is asked for one.
+    let again = f
+        .registry
+        .execute("mail.categories.create", json!({ "name": "training" }))
+        .await
+        .unwrap_err();
+    assert!(again.to_string().contains("already"), "{again}");
+
+    let changed = f
+        .run(
+            "mail.categories.set_color",
+            json!({ "name": "Training", "color": "none" }),
+        )
+        .await;
+    assert_eq!(changed["categories"][3]["color"], "none");
+    // What was read is kept, for when the server cannot be asked.
+    assert_eq!(f.run("mail.categories.list", json!({})).await, changed);
+
+    let gone = f
+        .run("mail.categories.delete", json!({ "name": "Training" }))
+        .await;
+    assert_eq!(gone["categories"].as_array().unwrap().len(), 3);
+    assert_eq!(f.graph.master_categories().len(), 3);
+    // Deleting what is not there is not a failure.
+    f.run("mail.categories.delete", json!({ "name": "Training" }))
+        .await;
+
+    // Out of reach, nothing is changed and it says so.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    let error = f
+        .registry
+        .execute("mail.categories.create", json!({ "name": "Later" }))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("could not be reached"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn rules_are_listed_made_changed_and_deleted_on_the_server() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let archive = f.graph.add_folder("Receipts", None);
+    f.sync().await;
+    f.graph.add_rule(json!({
+        "displayName": "Newsletters",
+        "conditions": { "senderContains": ["newsletter"], "fromAddresses": [{ "emailAddress": { "address": "news@example.test", "name": "News" } }] },
+        "exceptions": { "sentOnlyToMe": true },
+        "actions": { "markAsRead": true, "stopProcessingRules": true }
+    }));
+    let locked = f.graph.add_rule(json!({
+        "displayName": "Set by the organisation",
+        "isReadOnly": true,
+        "actions": { "delete": true }
+    }));
+
+    let listed = f.run("mail.rules.list", json!({})).await;
+    let first = &listed["rules"][0];
+    assert_eq!(first["name"], "Newsletters");
+    assert_eq!(
+        first["conditions"]["fromAddresses"],
+        json!([{ "address": "news@example.test", "name": "News" }])
+    );
+    assert_eq!(
+        first["summary"],
+        "When it is from news@example.test and the sender contains “newsletter”, unless it is sent only to me: mark it read, stop there."
+    );
+    assert_eq!(listed["rules"][1]["read_only"], true);
+    assert_eq!(
+        listed["rules"][1]["summary"],
+        "For every message: delete it."
+    );
+
+    // A folder is named by id or, for a standard one, by what it is.
+    let made = f
+        .run(
+            "mail.rules.create",
+            json!({
+                "name": "Receipts",
+                "conditions": { "subjectContains": ["receipt", "tax invoice"], "hasAttachments": true },
+                "actions": { "moveToFolder": archive, "forwardTo": ["books@example.test"] }
+            }),
+        )
+        .await;
+    let id = made["rule"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(made["rule"]["sequence"], 3);
+    assert_eq!(
+        made["rule"]["summary"],
+        "When the subject contains “receipt” or “tax invoice” and it has attachments: move it to Receipts, forward it to books@example.test."
+    );
+    let server = f.graph.rules();
+    assert_eq!(server[2]["actions"]["moveToFolder"], archive);
+    assert_eq!(
+        server[2]["actions"]["forwardTo"][0]["emailAddress"]["address"],
+        "books@example.test"
+    );
+
+    // Only what is given changes, and a part given is replaced whole.
+    let changed = f
+        .run(
+            "mail.rules.update",
+            json!({ "rule_id": id, "enabled": false, "actions": { "moveToFolder": "archive" } }),
+        )
+        .await;
+    assert_eq!(changed["rule"]["enabled"], false);
+    assert_eq!(changed["rule"]["name"], "Receipts");
+    assert!(changed["rule"]["actions"].get("forwardTo").is_none());
+    assert_eq!(
+        f.graph.rules()[2]["conditions"]["hasAttachments"],
+        json!(true)
+    );
+
+    // What cannot be a rule is refused here, before anything is sent.
+    for (wrong, why) in [
+        (json!({ "name": "x", "actions": {} }), "less than 1"),
+        (
+            json!({ "name": "x", "actions": { "moveToFolder": "no-such-folder" } }),
+            "no folder",
+        ),
+        (
+            json!({ "name": "x", "actions": { "forwardTo": ["not an address"] } }),
+            "not an email address",
+        ),
+        (
+            json!({ "name": "x", "actions": { "markAsRead": true }, "conditions": { "subjectHas": ["x"] } }),
+            "subjectHas",
+        ),
+    ] {
+        let error = f
+            .registry
+            .execute("mail.rules.create", wrong)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(why), "{error}");
+    }
+    assert_eq!(f.graph.rules().len(), 3);
+
+    // A read-only rule is seen and not touched.
+    for command in ["mail.rules.update", "mail.rules.delete"] {
+        let error = f
+            .registry
+            .execute(command, json!({ "rule_id": locked, "enabled": false }))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("read-only") || error.to_string().contains("enabled"),
+            "{error}"
+        );
+    }
+
+    assert_eq!(
+        f.run("mail.rules.delete", json!({ "rule_id": id })).await["deleted"],
+        true
+    );
+    assert_eq!(f.graph.rules().len(), 2);
+
+    // Out of reach, it says so and nothing is made.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    let error = f
+        .registry
+        .execute(
+            "mail.rules.create",
+            json!({ "name": "Later", "actions": { "markAsRead": true } }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("could not be reached"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_rule_made_whose_answer_is_lost_is_found_and_not_made_twice() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    f.graph.lose_next_rule_answer();
+
+    let made = f
+        .run(
+            "mail.rules.create",
+            json!({ "name": "Once", "actions": { "markAsRead": true } }),
+        )
+        .await;
+
+    assert_eq!(made["rule"]["name"], "Once");
+    assert_eq!(f.graph.rules().len(), 1);
+}

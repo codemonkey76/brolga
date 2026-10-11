@@ -63,6 +63,13 @@ struct Account {
     account_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct Category {
+    account_id: Option<String>,
+    name: String,
+    color: Option<String>,
+}
+
 fn failed(reason: impl std::fmt::Display) -> CommandError {
     CommandError::Failed(reason.to_string())
 }
@@ -200,7 +207,7 @@ async fn categories(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, C
     if let Ok(list) = mailbox.graph.master_categories().await {
         let list: Vec<Value> = list
             .into_iter()
-            .map(|(name, color)| json!({ "name": name, "color": color }))
+            .map(|(_, name, color)| json!({ "name": name, "color": color }))
             .collect();
         let _ = mailbox
             .db
@@ -212,6 +219,93 @@ async fn categories(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, C
         .unwrap_or_else(|| json!([]));
 
     Ok(json!({ "categories": list }))
+}
+
+/// Keep the list as the server has just given it, and say it.
+async fn categories_now(mailbox: &Mailbox) -> Result<Value, CommandError> {
+    let list: Vec<Value> = mailbox
+        .graph
+        .master_categories()
+        .await
+        .map_err(failed)?
+        .into_iter()
+        .map(|(_, name, color)| json!({ "name": name, "color": color }))
+        .collect();
+    let list = Value::Array(list);
+    let _ = mailbox.db.set_setting("categories", &list.to_string());
+
+    Ok(json!({ "categories": list }))
+}
+
+fn categories_unreached(error: brolga_graph::GraphError) -> CommandError {
+    if error.is_transient() {
+        failed(
+            "Microsoft 365 could not be reached, so the list of categories was not changed. It is kept there, and can only be changed while it can be.",
+        )
+    } else {
+        failed(error)
+    }
+}
+
+/// The id Microsoft 365 knows a category by, given its name.
+async fn category_id(mailbox: &Mailbox, name: &str) -> Result<Option<String>, CommandError> {
+    Ok(mailbox
+        .graph
+        .master_categories()
+        .await
+        .map_err(categories_unreached)?
+        .into_iter()
+        .find(|(_, each, _)| each.eq_ignore_ascii_case(name.trim()))
+        .map(|(id, _, _)| id))
+}
+
+async fn create_category(mailboxes: Arc<Mailboxes>, args: Category) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let name = args.name.trim();
+    if name.is_empty() {
+        return Err(failed("A category needs a name."));
+    }
+    if category_id(&mailbox, name).await?.is_some() {
+        return Err(failed(format!("There is already a category `{name}`.")));
+    }
+    mailbox
+        .graph
+        .create_category(name, args.color.as_deref().unwrap_or("none"))
+        .await
+        .map_err(categories_unreached)?;
+
+    categories_now(&mailbox).await
+}
+
+async fn colour_category(mailboxes: Arc<Mailboxes>, args: Category) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let id = category_id(&mailbox, &args.name).await?.ok_or_else(|| {
+        failed(format!(
+            "There is no category `{}`. The mailbox's are in mail.categories.list.",
+            args.name
+        ))
+    })?;
+    mailbox
+        .graph
+        .update_category(&id, args.color.as_deref().unwrap_or("none"))
+        .await
+        .map_err(categories_unreached)?;
+
+    categories_now(&mailbox).await
+}
+
+async fn delete_category(mailboxes: Arc<Mailboxes>, args: Category) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    // One that is not there is as good as deleted.
+    if let Some(id) = category_id(&mailbox, &args.name).await? {
+        mailbox
+            .graph
+            .delete_category(&id)
+            .await
+            .map_err(categories_unreached)?;
+    }
+
+    categories_now(&mailbox).await
 }
 
 /// Delete for good. This is not queued: it cannot be undone, so it is done
@@ -493,6 +587,96 @@ pub(crate) fn register(
             examples: vec![json!({})],
         },
         handler(&mailboxes, categories),
+    )?;
+
+    let colour = json!({
+        "type": "string",
+        "pattern": "^(none|preset([0-9]|1[0-9]|2[0-4]))$",
+        "description": "`none`, or `preset0` to `preset24`: red, orange, brown, yellow, green, teal, olive, blue, purple, cranberry, steel, dark steel, grey, dark grey, black, \
+                        then the dark of red, orange, brown, yellow, green, teal, olive, blue, purple and cranberry."
+    });
+    let listed = json!({
+        "type": "object",
+        "properties": {
+            "categories": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" }, "color": { "type": "string" } },
+                    "required": ["name", "color"]
+                }
+            }
+        },
+        "required": ["categories"]
+    });
+
+    registry.register(
+        CommandSpec {
+            id: "mail.categories.create".to_owned(),
+            title: "Add a category".to_owned(),
+            description: "Add a category to the list this mailbox has, with a colour. A name cannot be changed once made. \
+                          The list is kept by Microsoft 365, so this works only while it can be reached. Gives the list as it then is."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+                    "color": colour
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+            result_schema: listed.clone(),
+            examples: vec![json!({ "name": "Training", "color": "preset4" })],
+        },
+        handler(&mailboxes, create_category),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.categories.delete".to_owned(),
+            title: "Delete a category".to_owned(),
+            description: "Take a category off the list this mailbox has. Works only while Microsoft 365 can be reached. Gives the list as it then is."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id(), "name": { "type": "string", "minLength": 1 } },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+            result_schema: listed.clone(),
+            examples: vec![json!({ "name": "Training" })],
+        },
+        handler(&mailboxes, delete_category),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.categories.set_color".to_owned(),
+            title: "Change a category's colour".to_owned(),
+            description: "Give one of the mailbox's categories another colour, which is all of a category that can be changed. \
+                          Works only while Microsoft 365 can be reached. Gives the list as it then is."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id(), "name": { "type": "string", "minLength": 1 }, "color": colour },
+                "required": ["name", "color"],
+                "additionalProperties": false
+            }),
+            result_schema: listed,
+            examples: vec![json!({ "name": "Clients", "color": "preset22" })],
+        },
+        handler(&mailboxes, colour_category),
     )?;
 
     registry.register(

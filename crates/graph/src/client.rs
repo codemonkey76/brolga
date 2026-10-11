@@ -808,29 +808,113 @@ impl GraphClient {
         Ok(())
     }
 
-    /// The categories the mailbox has, each a name and a colour
-    /// ("List masterCategories", SOURCES.md), as `(name, colour)` where the
-    /// colour is `none` or `preset0` to `preset24`.
-    pub async fn master_categories(&self) -> Result<Vec<(String, String)>, GraphError> {
-        let url = format!("{}/me/outlook/masterCategories", self.base);
-        let list: serde_json::Value = decode(&self.get(&url, None).await?)?;
+    /// The categories the mailbox has ("List masterCategories", SOURCES.md),
+    /// as `(id, name, colour)` where the colour is `none` or `preset0` to
+    /// `preset24`.
+    pub async fn master_categories(&self) -> Result<Vec<(String, String, String)>, GraphError> {
+        let all = self
+            .list_values(format!("{}/me/outlook/masterCategories", self.base))
+            .await?;
 
-        Ok(list["value"]
-            .as_array()
-            .map(|all| {
-                all.iter()
-                    .filter_map(|each| {
-                        Some((
-                            each["displayName"].as_str()?.to_owned(),
-                            each["color"]
-                                .as_str()
-                                .unwrap_or("none")
-                                .to_ascii_lowercase(),
-                        ))
-                    })
-                    .collect()
+        Ok(all
+            .iter()
+            .filter_map(|each| {
+                Some((
+                    each["id"].as_str().unwrap_or_default().to_owned(),
+                    each["displayName"].as_str()?.to_owned(),
+                    each["color"]
+                        .as_str()
+                        .unwrap_or("none")
+                        .to_ascii_lowercase(),
+                ))
             })
-            .unwrap_or_default())
+            .collect())
+    }
+
+    /// Add a category to the mailbox's list ("Create Outlook category",
+    /// SOURCES.md). A name already there is refused, so this may be repeated.
+    pub async fn create_category(&self, name: &str, colour: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/outlook/masterCategories", self.base);
+        let body = serde_json::json!({ "displayName": name, "color": colour });
+        self.send(reqwest::Method::POST, &url, None, Some(&body), true)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Change a category's colour, which is all of one that can be changed
+    /// ("Update outlookCategory", SOURCES.md).
+    pub async fn update_category(&self, id: &str, colour: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/outlook/masterCategories/{id}", self.base);
+        let body = serde_json::json!({ "color": colour });
+        self.send(reqwest::Method::PATCH, &url, None, Some(&body), true)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Take a category off the mailbox's list ("Delete outlookCategory",
+    /// SOURCES.md). One already gone is as good as deleted.
+    pub async fn delete_category(&self, id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/outlook/masterCategories/{id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// The inbox's rules, each as Graph gives it ("List rules", SOURCES.md).
+    pub async fn message_rules(&self) -> Result<Vec<serde_json::Value>, GraphError> {
+        self.list_values(format!("{}/me/mailFolders/inbox/messageRules", self.base))
+            .await
+    }
+
+    /// Make a rule ("Create rule", SOURCES.md). Not safe to repeat blindly:
+    /// a second request makes a second rule.
+    pub async fn create_rule(
+        &self,
+        rule: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/mailFolders/inbox/messageRules", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(rule), false)
+                .await?,
+        )
+    }
+
+    /// Change a rule: only what is given ("Update rule", SOURCES.md).
+    pub async fn update_rule(
+        &self,
+        rule_id: &str,
+        changes: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/mailFolders/inbox/messageRules/{rule_id}", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::PATCH, &url, None, Some(changes), true)
+                .await?,
+        )
+    }
+
+    /// Delete a rule ("Delete rule", SOURCES.md). One already gone is as
+    /// good as deleted.
+    pub async fn delete_rule(&self, rule_id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/mailFolders/inbox/messageRules/{rule_id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
     }
 
     /// Send a draft ("message: send", SOURCES.md). It is saved in Sent

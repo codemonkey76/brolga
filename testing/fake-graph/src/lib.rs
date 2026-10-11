@@ -13,6 +13,7 @@ mod calendar;
 mod identity;
 mod mailbox;
 mod people;
+mod rules;
 
 pub use calendar::{FakeCalendar, FakeEvent};
 pub use identity::FakeIdentity;
@@ -51,6 +52,9 @@ struct Inner {
     turn: Arc<tokio::sync::Mutex<()>>,
     /// Contacts, and the organisation's people.
     people: people::People,
+    /// The inbox's rules, and the categories the mailbox has.
+    rules: rules::Rules,
+    categories: rules::Categories,
     /// Handed out one a request, oldest first.
     faults: Vec<Fault>,
     /// How many requests to answer normally before handing out faults.
@@ -74,6 +78,8 @@ struct Inner {
     lose_next_move_answer: bool,
     /// The next event is made, and the caller is told the server is busy.
     lose_next_event_answer: bool,
+    /// The next rule is made, and the caller is told the server is busy.
+    lose_next_rule_answer: bool,
     /// The next answer to an invitation is taken, and the caller is not told.
     lose_next_response_answer: bool,
     /// Every answer to an invitation: (event, answer, comment, organiser told).
@@ -126,7 +132,22 @@ impl FakeGraph {
         let shared = Shared::default();
         let app = Router::new()
             .route("/v1.0/me", get(me))
-            .route("/v1.0/me/outlook/masterCategories", get(master_categories))
+            .route(
+                "/v1.0/me/outlook/masterCategories",
+                get(master_categories).post(create_category),
+            )
+            .route(
+                "/v1.0/me/outlook/masterCategories/{category}",
+                axum::routing::patch(update_category).delete(delete_category),
+            )
+            .route(
+                "/v1.0/me/mailFolders/inbox/messageRules",
+                get(message_rules).post(create_rule),
+            )
+            .route(
+                "/v1.0/me/mailFolders/inbox/messageRules/{rule}",
+                axum::routing::patch(update_rule).delete(delete_rule),
+            )
             .route("/v1.0/me/calendars", get(calendars).post(create_calendar))
             .route(
                 "/v1.0/me/calendars/{calendar}",
@@ -361,6 +382,41 @@ impl FakeGraph {
             .people
             .create(folder.unwrap_or_default(), &contact);
         made.and_then(|made| made["id"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// Make the next rule asked for, and answer as if the server were busy.
+    pub fn lose_next_rule_answer(&self) {
+        lock(&self.shared).lose_next_rule_answer = true;
+    }
+
+    /// Put a rule on the inbox, as Graph would hold it. Gives its id.
+    pub fn add_rule(&self, rule: Value) -> String {
+        lock(&self.shared).rules.add(rule)
+    }
+
+    /// The inbox's rules as the server has them, in the order they run.
+    pub fn rules(&self) -> Vec<Value> {
+        lock(&self.shared).rules.list()["value"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The mailbox's categories as the server has them: (name, colour).
+    pub fn master_categories(&self) -> Vec<(String, String)> {
+        lock(&self.shared).categories.list()["value"]
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .map(|each| {
+                        (
+                            each["displayName"].as_str().unwrap_or_default().to_owned(),
+                            each["color"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -833,7 +889,11 @@ async fn require_token(request: Request, next: Next) -> Response {
     // Sending is its own permission ("message: send"), and so are the
     // mailbox's settings ("Update user mailbox settings").
     // Calendars are read with Calendars.Read ("event: delta").
-    let allowed = if path.contains("/me/contact") {
+    let allowed = if path.contains("/messageRules") {
+        // "List rules", "Create rule": the mailbox's settings, not its mail.
+        granted.contains(&"MailboxSettings.ReadWrite")
+            || (reading && granted.contains(&"MailboxSettings.Read"))
+    } else if path.contains("/me/contact") {
         // "List contacts", "Create contact".
         granted.contains(&"Contacts.ReadWrite") || (reading && granted.contains(&"Contacts.Read"))
     } else if path.ends_with("/me/people") {
@@ -1245,13 +1305,104 @@ async fn one_event(State(shared): State<Shared>, Path(event): Path<String>) -> R
 }
 
 /// "List masterCategories" (SOURCES.md). Read with the mailbox's settings.
-async fn master_categories() -> Response {
-    axum::Json(json!({ "value": [
-        { "id": "1", "displayName": "Red category", "color": "preset0" },
-        { "id": "2", "displayName": "Clients", "color": "preset7" },
-        { "id": "3", "displayName": "Plain", "color": "none" }
-    ] }))
-    .into_response()
+async fn master_categories(State(shared): State<Shared>) -> Response {
+    axum::Json(lock(&shared).categories.list()).into_response()
+}
+
+fn rule_refused(refusal: rules::Refusal) -> Response {
+    match refusal {
+        rules::Refusal::Missing => event_refused("ErrorItemNotFound"),
+        rules::Refusal::Invalid(why) => error(StatusCode::BAD_REQUEST, "ErrorInvalidArgument", why),
+        rules::Refusal::ReadOnly => error(
+            StatusCode::FORBIDDEN,
+            "ErrorAccessDenied",
+            "The rule is read-only and cannot be changed here.",
+        ),
+    }
+}
+
+/// "Create Outlook category" (SOURCES.md): 201 and the category.
+async fn create_category(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    match lock(&shared).categories.create(&body) {
+        Ok(made) => (StatusCode::CREATED, axum::Json(made)).into_response(),
+        Err(refusal) => rule_refused(refusal),
+    }
+}
+
+/// "Update outlookCategory" (SOURCES.md): 200 and the category as it now is.
+async fn update_category(
+    State(shared): State<Shared>,
+    Path(category): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    match lock(&shared).categories.update(&category, &body) {
+        Ok(changed) => axum::Json(changed).into_response(),
+        Err(refusal) => rule_refused(refusal),
+    }
+}
+
+/// "Delete outlookCategory" (SOURCES.md): 204.
+async fn delete_category(State(shared): State<Shared>, Path(category): Path<String>) -> Response {
+    match lock(&shared).categories.delete(&category) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refusal) => rule_refused(refusal),
+    }
+}
+
+/// "List rules" (SOURCES.md).
+async fn message_rules(State(shared): State<Shared>) -> Response {
+    axum::Json(lock(&shared).rules.list()).into_response()
+}
+
+/// "Create rule" (SOURCES.md): 201 and the rule.
+async fn create_rule(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let inner = &mut *inner;
+    let mailbox = &inner.mailbox;
+    match inner
+        .rules
+        .create(&body, &|folder| mailbox.folder(folder).is_some())
+    {
+        Ok(_) if std::mem::take(&mut inner.lose_next_rule_answer) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "serviceNotAvailable",
+            "The service is temporarily unavailable.",
+        ),
+        Ok(made) => (StatusCode::CREATED, axum::Json(made)).into_response(),
+        Err(refusal) => rule_refused(refusal),
+    }
+}
+
+/// "Update rule" (SOURCES.md): 200 and the rule as it now is.
+async fn update_rule(
+    State(shared): State<Shared>,
+    Path(rule): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let inner = &mut *inner;
+    let mailbox = &inner.mailbox;
+    match inner
+        .rules
+        .update(&rule, &body, &|folder| mailbox.folder(folder).is_some())
+    {
+        Ok(changed) => axum::Json(changed).into_response(),
+        Err(refusal) => rule_refused(refusal),
+    }
+}
+
+/// "Delete rule" (SOURCES.md): 204.
+async fn delete_rule(State(shared): State<Shared>, Path(rule): Path<String>) -> Response {
+    match lock(&shared).rules.delete(&rule) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refusal) => rule_refused(refusal),
+    }
 }
 
 async fn automatic_replies(State(shared): State<Shared>) -> Response {

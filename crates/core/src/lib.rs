@@ -17,6 +17,7 @@ mod mail_commands;
 mod mailboxes;
 mod remote_images;
 mod reply_commands;
+mod rule_commands;
 mod saving;
 mod shared_commands;
 
@@ -119,6 +120,7 @@ impl Core {
         calendar_commands::register(&mut registry, mailboxes.clone())?;
         contact_commands::register(&mut registry, mailboxes.clone())?;
         shared_commands::register(&mut registry, mailboxes.clone())?;
+        rule_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;
         mail_commands::register(
             &mut registry,

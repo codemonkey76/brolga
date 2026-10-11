@@ -66,6 +66,15 @@ async fn every_command_is_described_and_its_examples_run() {
     );
     // A mailbox someone shared, for `accounts.shared.add`.
     graph.add_shared_mailbox("support@example.test", true);
+    // A rule, for `mail.rules.update`.
+    assert_eq!(
+        graph.add_rule(serde_json::json!({
+            "displayName": "Newsletters",
+            "conditions": { "senderContains": ["newsletter"] },
+            "actions": { "markAsRead": true }
+        })),
+        "rule-0001"
+    );
     // A contact, for `contacts.get` and `contacts.update`.
     assert_eq!(
         graph.add_contact(None, serde_json::json!({ "givenName": "Sam", "surname": "Taylor", "emailAddresses": [{ "address": "sam@example.test" }] })),
