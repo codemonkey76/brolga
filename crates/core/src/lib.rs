@@ -118,7 +118,11 @@ impl Core {
         action_commands::register(&mut registry, mailboxes.clone())?;
         draft_commands::register(&mut registry, mailboxes.clone())?;
         calendar_commands::register(&mut registry, mailboxes.clone())?;
-        contact_commands::register(&mut registry, mailboxes.clone())?;
+        contact_commands::register(
+            &mut registry,
+            mailboxes.clone(),
+            options.downloads_dir.clone(),
+        )?;
         shared_commands::register(&mut registry, mailboxes.clone())?;
         rule_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;

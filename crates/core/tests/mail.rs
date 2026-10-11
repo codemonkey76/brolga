@@ -3884,3 +3884,87 @@ async fn a_calendar_someone_shared_without_their_mail_is_added_as_a_calendar_alo
         .await;
     assert_eq!(events["events"][0]["subject"], "Board meeting");
 }
+
+#[tokio::test]
+async fn contacts_are_read_from_a_vcard_file_and_written_to_one() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_contact(
+        None,
+        json!({ "givenName": "Sam", "surname": "Taylor", "emailAddresses": [{ "address": "sam@example.test" }] }),
+    );
+    f.sync().await;
+    let file = "BEGIN:VCARD\nVERSION:3.0\nFN:Sam Taylor\nN:Taylor;Sam;;;\nEMAIL:SAM@example.test\nEND:VCARD\n\
+                BEGIN:VCARD\nVERSION:2.1\nN:Chen;Alex\nFN:Alex Chen\nORG:Northwind;Accounts\nTEL;CELL:0411 111 111\n\
+                EMAIL;INTERNET:alex@example.test\nBDAY:1984-03-09\nCATEGORIES:Clients\nEND:VCARD\n\
+                BEGIN:VCARD\nVERSION:3.0\nTEL:123\nEND:VCARD\n\
+                BEGIN:VCARD\nVERSION:4.0\nFN:Jo Nguyen\nEMAIL:jo@example.test\nEND:VCARD\n";
+
+    let read = f.run("contacts.import", json!({ "text": file })).await;
+
+    assert_eq!(read["imported"], 2);
+    // One already here by its address, whatever its case, and one that names nobody.
+    assert_eq!(read["already_here"], 1);
+    assert_eq!(read["skipped"], 1);
+    assert_eq!(read["stopped"], Value::Null);
+    let server = f.graph.contacts("");
+    assert_eq!(server.len(), 3);
+    let alex = server
+        .iter()
+        .find(|each| each["displayName"] == "Alex Chen")
+        .unwrap();
+    assert_eq!(alex["companyName"], "Northwind");
+    assert_eq!(alex["department"], "Accounts");
+    assert_eq!(alex["mobilePhone"], "0411 111 111");
+    assert_eq!(alex["birthday"], "1984-03-09T11:59:00Z");
+    assert_eq!(alex["categories"], json!(["Clients"]));
+    // They are here at once, without a sync.
+    let listed = f.run("contacts.list", json!({ "query": "alex" })).await;
+    assert_eq!(listed["contacts"][0]["birthday"], "1984-03-09");
+
+    // Read again, nobody is added twice.
+    let again = f.run("contacts.import", json!({ "text": file })).await;
+    assert_eq!(again["imported"], 0);
+    assert_eq!(again["already_here"], 3);
+    assert_eq!(f.graph.contacts("").len(), 3);
+
+    // Written out, and read back by its path, they are all already here.
+    let written = f.run("contacts.export", json!({})).await;
+    assert_eq!(written["count"], 3);
+    let path = written["path"].as_str().unwrap();
+    assert!(path.ends_with("contacts.vcf"), "{path}");
+    let text = std::fs::read_to_string(path).unwrap();
+    assert_eq!(text.matches("BEGIN:VCARD").count(), 3);
+    assert!(text.contains("ORG:Northwind;Accounts"), "{text}");
+    let back = f.run("contacts.import", json!({ "path": path })).await;
+    assert_eq!(back["already_here"], 3);
+    // A second file does not write over the first.
+    let second = f.run("contacts.export", json!({})).await;
+    assert_ne!(second["path"], written["path"]);
+
+    // What is not a file of cards says so, and adds nobody.
+    for wrong in [
+        json!({ "text": "Dear Sam, here are my details." }),
+        json!({ "path": "relative.vcf" }),
+        json!({ "path": "/no/such/file.vcf" }),
+        json!({}),
+    ] {
+        assert!(f.registry.execute("contacts.import", wrong).await.is_err());
+    }
+
+    // Out of reach part of the way, those made are kept and it says where it stopped.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    let stopped = f
+        .run(
+            "contacts.import",
+            json!({ "text": "BEGIN:VCARD\nVERSION:3.0\nFN:Later\nEMAIL:later@example.test\nEND:VCARD\n" }),
+        )
+        .await;
+    assert_eq!(stopped["imported"], 0);
+    assert!(
+        stopped["stopped"]
+            .as_str()
+            .unwrap()
+            .contains("stopped answering")
+    );
+}

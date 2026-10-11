@@ -109,3 +109,30 @@ test("with the organisation out of reach, contacts are still found and it says s
     await expect(page.getByRole("list", { name: "Contacts" }).getByRole("button")).toHaveText([/Sam Taylor/]);
     await expect(page.getByText("Your organisation could not be searched just now")).toBeVisible();
 });
+
+test("contacts are read from a vCard file and written to one", async ({ page }) => {
+    await withCore(page, { accounts: [robin], contacts: [contacts[0], contacts[2]], pickFiles: ["/home/robin/phone.vcf"], savePath: "/home/robin/contacts.vcf" });
+    await page.getByRole("button", { name: "People" }).click();
+    const list = page.getByRole("list", { name: "Contacts" });
+    await expect(list.getByRole("button")).toHaveCount(2);
+
+    await page.getByRole("button", { name: "Import…" }).click();
+    await expect(page.getByRole("status")).toHaveText("1 contact added, 2 already here, 1 card could not be used.");
+    await expect(list.getByRole("button")).toHaveCount(3);
+    expect((await ran(page)).find((r) => r.command === "contacts.import")?.args).toMatchObject({ path: "/home/robin/phone.vcf" });
+
+    await page.getByRole("button", { name: "Export…" }).click();
+    await expect(page.getByRole("status")).toHaveText("3 contacts written to /home/robin/contacts.vcf.");
+    expect((await ran(page)).find((r) => r.command === "contacts.export")?.args).toMatchObject({ path: "/home/robin/contacts.vcf" });
+});
+
+test("a file that holds no contacts says so, and a dismissed dialog does nothing", async ({ page }) => {
+    await withCore(page, { accounts: [robin], contacts, pickFiles: ["/home/robin/notes.txt"] });
+    await page.getByRole("button", { name: "People" }).click();
+
+    await page.getByRole("button", { name: "Import…" }).click();
+    await expect(page.getByRole("alert")).toContainText("no contacts in that file");
+    // No place was chosen to save to, so nothing is written.
+    await page.getByRole("button", { name: "Export…" }).click();
+    expect((await ran(page)).some((r) => r.command === "contacts.export")).toBe(false);
+});

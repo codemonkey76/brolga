@@ -241,6 +241,213 @@ async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, Comman
     keep(&mailbox, &made, folder)
 }
 
+/// The largest file of cards read, in bytes.
+const LARGEST_FILE: u64 = 20 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct Import {
+    account_id: Option<String>,
+    folder_id: Option<String>,
+    path: Option<String>,
+    text: Option<String>,
+}
+
+/// Add the contacts in a file of vCards. Each is made on the server in
+/// turn; one that is already here, by its first address, is left alone, so
+/// a file read twice does not make everyone twice.
+async fn import(mailboxes: Arc<Mailboxes>, args: Import) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let folder = args.folder_id.as_deref().unwrap_or_default().to_owned();
+    if !folder.is_empty()
+        && !mailbox
+            .db
+            .contact_folders()
+            .map_err(failed)?
+            .iter()
+            .any(|each| each.0 == folder)
+    {
+        return Err(failed(
+            "There is no such folder of contacts on this computer.",
+        ));
+    }
+    let file = match (args.path, args.text) {
+        (Some(path), None) => {
+            let path = std::path::PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err(failed("The file to read must be given by its full path."));
+            }
+            tokio::task::spawn_blocking(move || {
+                let size = std::fs::metadata(&path)?.len();
+                if size > LARGEST_FILE {
+                    return Err(std::io::Error::other(
+                        "the file is larger than 20 MB, which is more than a file of contacts should be",
+                    ));
+                }
+                // Older cards are not always UTF-8: what cannot be read as it is shown as a mark, not refused.
+                std::fs::read(&path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .await
+            .map_err(failed)?
+            .map_err(|e| failed(format!("The file could not be read: {e}.")))?
+        }
+        (None, Some(text)) => text,
+        _ => return Err(failed("Give the file's path, or its text, and not both.")),
+    };
+
+    let read = brolga_contacts::read(&file);
+    if read.contacts.is_empty() {
+        return Err(failed(
+            "There are no contacts in that file. It should be a vCard file (.vcf), as other mail and phone programs export.",
+        ));
+    }
+    let known: std::collections::HashSet<String> =
+        parsed(mailbox.db.contacts("", None, 100_000).map_err(failed)?)
+            .iter()
+            .flat_map(|each| {
+                each["emails"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|email| email["address"].as_str().map(str::to_lowercase))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+    let (mut imported, mut already, mut stopped) = (0, 0, None);
+    for contact in &read.contacts {
+        let words = |field: &str| contact[field].as_str().map(str::to_owned);
+        let list = |field: &str| -> Vec<String> {
+            contact[field]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|each| each.as_str().map(str::to_owned))
+                .collect()
+        };
+        // "contact resource type": a contact holds three addresses at most.
+        let emails: Vec<String> = contact["emails"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|each| each["address"].as_str().map(str::to_owned))
+            .take(3)
+            .collect();
+        if emails
+            .first()
+            .is_some_and(|first| known.contains(&first.to_lowercase()))
+        {
+            already += 1;
+            continue;
+        }
+        let mut body = body(&Fields {
+            name: words("name"),
+            given_name: words("given_name"),
+            surname: words("surname"),
+            nickname: words("nickname"),
+            company: words("company"),
+            job_title: words("job_title"),
+            department: words("department"),
+            office: None,
+            emails: Some(emails),
+            business_phones: Some(list("business_phones")),
+            home_phones: Some(list("home_phones")),
+            mobile: words("mobile"),
+            notes: words("notes"),
+        })?;
+        // The middle of the day, so that no time zone turns it into the day before or after.
+        if let Some(day) = contact["birthday"].as_str() {
+            body["birthday"] = json!(format!("{day}T11:59:00Z"));
+        }
+        body["categories"] = json!(list("categories"));
+
+        match mailbox
+            .graph
+            .create_contact(
+                Some(folder.as_str()).filter(|folder| !folder.is_empty()),
+                &body,
+            )
+            .await
+        {
+            Ok(made) => {
+                if let Some(row) = brolga_sync::contact_row(&made, &folder) {
+                    mailbox.db.put_contact(&row).map_err(failed)?;
+                }
+                imported += 1;
+            }
+            // What stops one stops the rest: those made so far are kept and counted.
+            Err(error) => {
+                stopped = Some(if error.is_transient() {
+                    "Microsoft 365 stopped answering part of the way through. Sync, then read the file again: those already added are passed over.".to_owned()
+                } else {
+                    error.to_string()
+                });
+                break;
+            }
+        }
+    }
+
+    Ok(json!({
+        "imported": imported,
+        "already_here": already,
+        "skipped": read.skipped,
+        "cut_short": read.cut_short,
+        "stopped": stopped,
+    }))
+}
+
+#[derive(Deserialize)]
+struct Export {
+    account_id: Option<String>,
+    folder_id: Option<String>,
+    contact_ids: Option<Vec<String>>,
+    path: Option<String>,
+}
+
+/// Write contacts to a file of vCards: those named, those of one folder,
+/// or all of them.
+async fn export(
+    mailboxes: Arc<Mailboxes>,
+    downloads: Option<std::path::PathBuf>,
+    args: Export,
+) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let contacts = match &args.contact_ids {
+        Some(ids) => ids
+            .iter()
+            .map(|id| kept(&mailbox, id))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => parsed(
+            mailbox
+                .db
+                .contacts("", args.folder_id.as_deref(), 100_000)
+                .map_err(failed)?,
+        ),
+    };
+    if contacts.is_empty() {
+        return Err(failed("There are no contacts to write."));
+    }
+    let file = brolga_contacts::write(&contacts);
+    let count = contacts.len();
+    let chosen = args.path.map(std::path::PathBuf::from);
+    let folder = match &chosen {
+        Some(_) => None,
+        None => Some(
+            downloads
+                .ok_or_else(|| failed("This computer has no downloads folder to save into."))?,
+        ),
+    };
+    let path = tokio::task::spawn_blocking(move || match (chosen, folder) {
+        (Some(path), _) => crate::saving::save_as(&path, file.as_bytes()),
+        (None, Some(folder)) => crate::saving::save(&folder, "contacts.vcf", file.as_bytes()),
+        (None, None) => Err(std::io::Error::other("nowhere to save to")),
+    })
+    .await
+    .map_err(failed)?
+    .map_err(|e| failed(format!("The file could not be written: {e}.")))?;
+
+    Ok(json!({ "path": path.to_string_lossy(), "count": count }))
+}
+
 #[derive(Deserialize)]
 struct Update {
     account_id: Option<String>,
@@ -427,6 +634,7 @@ where
 pub(crate) fn register(
     registry: &mut Registry,
     mailboxes: Arc<Mailboxes>,
+    downloads: Option<std::path::PathBuf>,
 ) -> Result<(), RegistryError> {
     let account_id = json!({ "type": "string", "description": "Which account, from accounts.list. May be left out when there is only one." });
     let contact = json!({
@@ -505,6 +713,80 @@ pub(crate) fn register(
             examples: vec![json!({ "contact_id": "contact-0002" })],
         },
         handler(&mailboxes, delete),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "contacts.export".to_owned(),
+            title: "Export contacts".to_owned(),
+            description: "Write personal contacts to a vCard file (.vcf, version 3.0) that other mail and phone programs can read: those named, \
+                          those of one folder, or with neither all of them. It is saved in this computer's downloads folder, never over a file already there, \
+                          unless a full path is given. Gives back where it was saved."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "folder_id": { "type": "string", "description": "Only this folder's; empty for the main one." },
+                    "contact_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 5000 },
+                    "path": { "type": "string", "description": "A full path to save to instead, as chosen by a person in a save dialog. Whatever is there is replaced." }
+                },
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" }, "count": { "type": "integer" } },
+                "required": ["path", "count"]
+            }),
+            examples: vec![json!({ "contact_ids": ["contact-0001"] })],
+        },
+        {
+            let downloads = downloads.clone();
+            handler(&mailboxes, move |mailboxes, args: Export| {
+                export(mailboxes, downloads.clone(), args)
+            })
+        },
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "contacts.import".to_owned(),
+            title: "Import contacts".to_owned(),
+            description: "Add the contacts in a vCard file (.vcf, any version), given by its full path or as its text. Each is added to Microsoft 365 in turn, \
+                          so it must be in reach. One whose first email address a contact already has is passed over, so reading a file twice adds nobody twice. \
+                          Only names, company, title, addresses, phone numbers, notes, birthday and categories are taken; photos and postal addresses are not. \
+                          Gives how many were added, how many were already here, and how many cards could not be used."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "folder_id": { "type": "string", "description": "The folder to add them to; the main one if left out." },
+                    "path": { "type": "string", "description": "The full path of the file." },
+                    "text": { "type": "string", "maxLength": 5_000_000, "description": "The file's contents, in place of a path." }
+                },
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "imported": { "type": "integer" },
+                    "already_here": { "type": "integer" },
+                    "skipped": { "type": "integer", "description": "Cards that named nobody, and stretches of the file that were not cards." },
+                    "cut_short": { "type": "boolean", "description": "The file held more than 2000 cards, and the rest were left." },
+                    "stopped": { "type": ["string", "null"], "description": "Why it stopped before the end, if it did. Those added before then are kept." }
+                },
+                "required": ["imported", "already_here", "skipped", "cut_short"]
+            }),
+            examples: vec![json!({ "text": "BEGIN:VCARD\nVERSION:3.0\nFN:Jo Nguyen\nN:Nguyen;Jo;;;\nEMAIL:jo@example.test\nEND:VCARD\n" })],
+        },
+        handler(&mailboxes, import),
     )?;
 
     registry.register(

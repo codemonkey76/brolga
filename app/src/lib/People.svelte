@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Pencil, Plus, Trash, UserPlus } from "@lucide/svelte";
     import type { Account } from "./accounts";
-    import { say } from "./commands";
+    import { chooseFiles, chooseSavePath, execute, say } from "./commands";
     import { type Contact, type ContactFields, type ContactFolder, type Found, createContact, deleteContact, initials, listContactFolders, listContacts, searchPeople, updateContact } from "./people";
 
     interface Props {
@@ -26,6 +26,59 @@
     let sure = $state(false);
     let problem = $state<string | null>(null);
     let loading = 0;
+
+    /** What the last reading or writing of a file came to. */
+    let filed = $state<string | null>(null);
+
+    const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+    /** Add the contacts in vCard files a person chooses, to the folder shown. */
+    async function importFile() {
+        if (!accountId) return;
+        const paths = await chooseFiles();
+        problem = null;
+        filed = null;
+        const said: string[] = [];
+        for (const path of paths) {
+            try {
+                const read = await execute<{ imported: number; already_here: number; skipped: number; cut_short: boolean; stopped: string | null }>("contacts.import", {
+                    account_id: accountId,
+                    path,
+                    ...(folderId ? { folder_id: folderId } : {}),
+                });
+                said.push(
+                    [
+                        `${count(read.imported, "contact")} added`,
+                        read.already_here > 0 ? `${read.already_here} already here` : "",
+                        read.skipped > 0 ? `${count(read.skipped, "card")} could not be used` : "",
+                        read.cut_short ? "the file held more than 2000 and the rest were left" : "",
+                    ]
+                        .filter(Boolean)
+                        .join(", ") + ".",
+                );
+                if (read.stopped) problem = read.stopped;
+            } catch (failure) {
+                problem = say(failure);
+            }
+        }
+        if (said.length > 0) filed = said.join(" ");
+        await load();
+    }
+
+    /** Write the contacts of the folder shown, or all of them, to a vCard file. */
+    async function exportFile() {
+        if (!accountId) return;
+        const path = await chooseSavePath("contacts.vcf");
+        if (!path) return;
+        problem = null;
+        filed = null;
+        try {
+            const written = await execute<{ path: string; count: number }>("contacts.export", { account_id: accountId, path, ...(folderId !== null ? { folder_id: folderId } : {}) });
+            filed = `${count(written.count, "contact")} written to ${written.path}.`;
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
 
     async function load() {
         if (!accountId) return;
@@ -158,11 +211,16 @@
                 <li><button type="button" class:current={folderId === each.id} aria-current={folderId === each.id} onclick={() => (folderId = each.id)}>{each.name}</button></li>
             {/each}
         </ul>
+        <div class="files">
+            <button type="button" title="Add the contacts in a vCard file (.vcf)" onclick={importFile}>Import…</button>
+            <button type="button" title="Write these contacts to a vCard file (.vcf)" onclick={exportFile}>Export…</button>
+        </div>
     </aside>
 
     <section class="list" aria-label="People">
         <input type="search" aria-label="Search people" placeholder="Search contacts and your organisation" bind:value={query} />
         {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
+        {#if filed}<p class="muted none" role="status">{filed}</p>{/if}
         <ul aria-label="Contacts">
             {#each contacts as each (each.id)}
                 <li>
@@ -264,6 +322,17 @@
 </div>
 
 <style>
+    .files {
+        display: flex;
+        gap: 0.4rem;
+        margin-top: 0.75rem;
+    }
+
+    .files button {
+        flex: 1;
+        font-size: 0.85rem;
+    }
+
     .people {
         height: 100%;
         min-height: 0;

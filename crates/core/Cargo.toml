@@ -11,6 +11,7 @@ license.workspace = true
 base64.workspace = true
 brolga-auth.workspace = true
 brolga-calendar = { path = "../calendar" }
+brolga-contacts = { path = "../contacts" }
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 brolga-commands.workspace = true
 brolga-graph.workspace = true

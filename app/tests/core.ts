@@ -615,6 +615,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 (core.contacts ?? [])[at] = changed;
                 return { contact: changed, note: "" };
             },
+            "contacts.import": (args) => {
+                if (!String(args.path).endsWith(".vcf")) throw { code: "failed", message: "There are no contacts in that file." };
+                core.contacts = [...(core.contacts ?? []), { id: "imported-1", folder_id: args.folder_id ?? "", name: "Jo Nguyen", given_name: "Jo", surname: "Nguyen", emails: [{ address: "jo@example.test", name: "" }], business_phones: [], home_phones: [], categories: [] }];
+                return { imported: 1, already_here: 2, skipped: 1, cut_short: false, stopped: null };
+            },
+            "contacts.export": (args) => ({ path: args.path, count: (core.contacts ?? []).length }),
             "contacts.delete": (args) => {
                 core.contacts = (core.contacts ?? []).filter((each) => each.id !== args.contact_id);
                 return { deleted: true };

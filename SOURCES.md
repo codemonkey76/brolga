@@ -94,6 +94,7 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | RFC 7636, Proof Key for Code Exchange | https://www.rfc-editor.org/rfc/rfc7636 | The code verifier and its S256 challenge, with the appendix B example as a test |
 | RFC 8252, OAuth 2.0 for Native Apps | https://www.rfc-editor.org/rfc/rfc8252 | Signing in through the system browser with a loopback redirect |
 | RFC 8628, OAuth 2.0 Device Authorization Grant | https://www.rfc-editor.org/rfc/rfc8628 | Waiting five seconds longer after `slow_down` (section 3.5) |
+| RFC 6350, vCard Format Specification | https://www.rfc-editor.org/rfc/rfc6350 | Which properties of a card become which fields of a contact (`FN`, `N`, `ORG`, `TITLE`, `EMAIL`, `TEL` and its `TYPE`, `BDAY`, `NOTE`, `CATEGORIES`), read in any version and written as 3.0 |
 | OpenID Connect Core 1.0 | https://openid.net/specs/openid-connect-core-1_0.html | Section 3.1.3.7: an ID token received straight from the token endpoint over TLS need not have its signature checked |
 
 ## Data

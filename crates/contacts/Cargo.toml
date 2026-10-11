@@ -9,3 +9,9 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# vCard reading and writing (RFC 6350, and the older 2.1 and 3.0 most
+# programs still write). Its JMAP conversions are left out.
+calcard = { version = "0.3", default-features = false }
+serde_json.workspace = true
