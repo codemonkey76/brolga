@@ -279,30 +279,52 @@ test("a file that can run is asked about before it is saved, and its ending is a
     await expect.poll(saves).toBe(1);
 });
 
-test("a message is shown as it was laid out, on a white page, and a plain one in the window's colours", async ({ page }) => {
-    await page.emulateMedia({ colorScheme: "dark" });
+test("a message is shown as it was laid out: on a white page, or darkened to suit a dark desktop", async ({ page }) => {
     const report = {
         ...inbox[0],
         id: "report",
         subject: "Customer Balances",
-        styles: ".wrapper{max-width:900px;margin:32px auto;background:#fff}\n.header{background:#1e1b4b;padding:24px 40px}\n.header h1{color:#fff}\nthead th.r{text-align:right}\ntbody td.r{text-align:right}\n",
-        body: '<div class="wrapper"><div class="header"><h1>Customer Balances</h1></div><table><thead><tr><th>Customer</th><th class="r">Total</th></tr></thead><tbody><tr><td>CarCoop Pty Ltd</td><td class="r" style="font-weight:700">$6,225.08</td></tr></tbody></table></div>',
+        // A pale banner with white words on it, as one real report has.
+        styles: "body{background:#f3f4f6;color:#374151}\n.wrapper{max-width:900px;margin:32px auto;background:#fff}\n.header{background:#e9d5ff;padding:24px 40px}\n.header h1{color:#fff}\nthead th.r{text-align:right}\ntbody td{color:#374151;border-bottom:1px solid #f3f4f6}\ntbody td.r{text-align:right}\n",
+        body: '<div class="wrapper"><div class="header"><h1>Customer Balances</h1></div><table><thead><tr><th>Customer</th><th class="r">Total</th></tr></thead><tbody><tr><td>CarCoop Pty Ltd</td><td class="r" style="font-weight:700;color:#111827">$6,225.08</td></tr></tbody></table></div>',
     };
     await withCore(page, { accounts: [robin], mail: [report, inbox[2]] });
+    const pane = page.getByRole("region", { name: "Message" });
+    const look = (selector: string, what: string) => body(page).locator(selector).first().evaluate((node, what) => getComputedStyle(node).getPropertyValue(what), what);
+    /** How light a colour is, from 0 to 255. */
+    const light = async (selector: string, what: string) => {
+        const [r, g, b] = (await look(selector, what)).match(/[\d.]+/g)!.map(Number);
+        return (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
+    };
 
     await messages(page).getByRole("option").first().click();
-    const look = (selector: string, what: string) => body(page).locator(selector).first().evaluate((node, what) => getComputedStyle(node).getPropertyValue(what), what);
     await expect(body(page).getByRole("heading", { name: "Customer Balances" })).toBeVisible();
-    expect(await look(".header", "background-color")).toBe("rgb(30, 27, 75)");
-    expect(await look("h1", "color")).toBe("rgb(255, 255, 255)");
+    expect(await look(".header", "background-color")).toBe("rgb(233, 213, 255)");
     expect(await look("td.r", "text-align")).toBe("right");
     expect(await look("td.r", "font-weight")).toBe("700");
-    expect(await look("body", "background-color")).toBe("rgb(255, 255, 255)");
+    expect(await look("body", "background-color")).toBe("rgb(243, 244, 246)");
+    await expect(pane.getByRole("button", { name: "Show it as written" })).toHaveCount(0);
+
+    // Dark: grounds go dark and dark words go light; white words stay white, and the layout is the same.
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expect.poll(() => light("body", "background-color")).toBeLessThan(70);
+    expect(await light(".wrapper", "background-color")).toBeLessThan(70);
+    expect(await light(".header", "background-color")).toBeLessThan(90);
+    expect(await look(".header h1", "color")).toBe("rgb(255, 255, 255)");
+    expect(await light("td", "color")).toBeGreaterThan(170);
+    expect(await light("td.r", "color")).toBeGreaterThan(170);
+    expect(await look("td.r", "text-align")).toBe("right");
     await picture(page, "styled-message");
 
-    // One that says nothing of how it looks is dark where the desktop is.
+    await pane.getByRole("button", { name: "Show it as written" }).click();
+    await expect.poll(() => look(".header", "background-color")).toBe("rgb(233, 213, 255)");
+    await pane.getByRole("button", { name: "Show it dark" }).click();
+    await expect.poll(() => light(".header", "background-color")).toBeLessThan(90);
+
+    // One that says nothing of how it looks is simply dark, with nothing to switch.
     await messages(page).getByRole("option").nth(1).click();
     await expect(body(page).locator("body")).not.toHaveCSS("background-color", "rgb(255, 255, 255)");
+    await expect(pane.getByRole("button", { name: /Show it/ })).toHaveCount(0);
 });
 
 test("a sync that fails says why and leaves the mail on screen", async ({ page }) => {

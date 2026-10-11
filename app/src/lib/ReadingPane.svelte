@@ -3,6 +3,7 @@
     import { CalendarDays } from "@lucide/svelte";
     import type { Answer, Proposed } from "./calendar";
     import Rsvp from "./Rsvp.svelte";
+    import { recolour, sheet } from "./darken";
     import { type Attachment, type Category, type Message, type Opened, categoryColour, size, when, who } from "./mail";
 
     interface Props {
@@ -119,11 +120,19 @@
         // A message that says how it looks was written to be read on a
         // white page, and is given one. One that says nothing is shown in
         // the window's own colours, light or dark.
-        const styles = (opened.body.styles ?? "").replace(/</g, "");
+        let styles = (opened.body.styles ?? "").replace(/</g, "");
         const styled = styles !== "" || body.querySelector("[style], [bgcolor], font[color]") !== null;
+        // On a dark desktop its colours are moved to suit one, unless it is
+        // asked for as it was written.
+        const darkened = styled && dark && !asWritten;
+        if (darkened) {
+            recolour(body);
+            styles = sheet(styles);
+        }
+
         return `<!doctype html><html><head><meta charset="utf-8"><style>
-            :root { color-scheme: ${styled ? "light" : "light dark"}; }
-            body { margin: 16px; font: 14px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; ${styled ? "background: #fff; color: #000;" : ""} }
+            :root { color-scheme: ${darkened ? "dark" : styled ? "light" : "light dark"}; }
+            body { margin: 16px; font: 14px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; ${darkened ? "background: #1f1f1f; color: #e6e6e6;" : styled ? "background: #fff; color: #000;" : ""} }
             img { max-width: 100%; height: auto; }
             table { max-width: 100%; }
             pre { white-space: pre-wrap; font: inherit; }
@@ -136,7 +145,21 @@
         void opened?.message.id;
         held = null;
         risky = null;
+        asWritten = false;
     });
+
+    /** Whether the desktop is dark, kept up with it. */
+    let dark = $state(window.matchMedia("(prefers-color-scheme: dark)").matches);
+    $effect(() => {
+        const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+        const changed = () => (dark = scheme.matches);
+        scheme.addEventListener("change", changed);
+        return () => scheme.removeEventListener("change", changed);
+    });
+    /** Show this message in the colours it was written in, on a dark desktop too. */
+    let asWritten = $state(false);
+    /** Whether the message on screen is one whose colours are, or could be, moved to suit the dark. */
+    const restyled = $derived(dark && !!opened && opened.body.format === "html" && ((opened.body.styles ?? "") !== "" || /\s(style|bgcolor)=|<font[^>]+color=/i.test(opened.body.content)));
 
     /** The site an address is on, without a leading `www.`. Nothing if it is not an address. */
     function siteOf(address: string): string | null {
@@ -381,6 +404,12 @@
                         <button type="button" title="Always download pictures in messages from {address}" onclick={() => onTrust(address, true)}>Trust sender</button>
                     {/if}
                 {/if}
+            </p>
+        {/if}
+        {#if restyled}
+            <p class="trusted muted">
+                {asWritten ? "Shown in the colours it was written in." : "Its colours have been darkened to suit your desktop."}
+                <button type="button" onclick={() => (asWritten = !asWritten)}>{asWritten ? "Show it dark" : "Show it as written"}</button>
             </p>
         {/if}
         {#if opened.sender_trusted && opened.message.from.address}

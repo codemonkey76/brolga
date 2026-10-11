@@ -59,7 +59,8 @@ On macOS, Cmd takes the place of Ctrl.
   them for that message once; **Trust sender** downloads them for every
   message from that address.
 - **A message looks as it was laid out**, with its own colours, type and
-  tables, on a white page. What is taken out is anything that could fetch
+  tables. On a dark desktop its colours are darkened to suit, keeping their
+  hue; **Show it as written** puts back the sender's own. What is taken out is anything that could fetch
   from the internet or place one thing over another.
 - **Nothing in a message runs.** Scripts, forms and frames are taken out, and
   a message's own styling cannot draw over the window.
