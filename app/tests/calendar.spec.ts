@@ -659,3 +659,63 @@ test("a calendar is added and deleted from the list, and the main one cannot be"
     await expect(list.getByRole("checkbox", { name: "Family" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /School pickup/ })).toHaveCount(0);
 });
+
+test("an event is dragged to another time and day, and stretched by its foot", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    const mine = [
+        { id: "m1", subject: "Focus", start: "2026-10-14T03:00:00Z", end: "2026-10-14T04:00:00Z", mine: true },
+        { id: "m2", subject: "Kick-off", start: "2026-10-13T03:00:00Z", end: "2026-10-13T04:00:00Z", mine: true, attendees: [{ name: "Sam", address: "sam@example.test", kind: "required", response: "none" }] },
+        { id: "t1", subject: "Theirs", start: "2026-10-15T03:00:00Z", end: "2026-10-15T04:00:00Z" },
+    ];
+    await withCore(page, { accounts: [robin], events: mine });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    const calendar = page.getByRole("region", { name: "Calendar" });
+    const updates = async () => (await ran(page)).filter((r) => r.command === "calendar.events.update").map((r) => r.args as Record<string, unknown>);
+    const centre = async (name: RegExp) => {
+        const box = (await calendar.getByRole("button", { name }).boundingBox())!;
+        return { x: box.x + box.width / 2, y: box.y + box.height / 2, box };
+    };
+    const dragBy = async (from: { x: number; y: number }, dx: number, dy: number) => {
+        await page.mouse.move(from.x, from.y);
+        await page.mouse.down();
+        await page.mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 3 });
+        await page.mouse.move(from.x + dx, from.y + dy, { steps: 3 });
+        await page.mouse.up();
+    };
+
+    // An hour is 48 pixels: down ninety minutes, and across one day to Thursday.
+    const focus = await centre(/Focus/);
+    const thursday = (await calendar.getByRole("list", { name: "Thursday, October 15" }).boundingBox())!;
+    await dragBy(focus, thursday.x + thursday.width / 2 - focus.x, 72);
+    expect((await updates()).at(-1)).toMatchObject({ event_id: "m1", start: "2026-10-15T14:30", end: "2026-10-15T15:30", is_all_day: false, time_zone: "Australia/Brisbane" });
+    await expect(calendar.getByRole("list", { name: "Thursday, October 15" }).getByRole("button", { name: /Focus/ })).toBeVisible();
+    // It was dragged, not clicked: it is not opened.
+    await expect(page.getByRole("complementary", { name: "Event" })).toHaveCount(0);
+
+    // Stretched by its foot to end half an hour later.
+    const moved = await centre(/Focus/);
+    await dragBy({ x: moved.x, y: moved.box.y + moved.box.height - 2 }, 0, 24);
+    expect((await updates()).at(-1)).toMatchObject({ event_id: "m1", start: "2026-10-15T14:30", end: "2026-10-15T16:00" });
+
+    // A meeting with people invited is asked about before anyone is told.
+    const meeting = await centre(/Kick-off/);
+    await dragBy(meeting, 0, 48);
+    const ask = page.getByRole("alertdialog", { name: "Move the meeting" });
+    await expect(ask).toContainText("tell everyone invited");
+    expect(await updates()).toHaveLength(2);
+    await ask.getByRole("button", { name: "Move it" }).click();
+    expect((await updates()).at(-1)).toMatchObject({ event_id: "m2", start: "2026-10-13T14:00" });
+
+    // Someone else's meeting is not one's own to move.
+    const theirs = await centre(/Theirs/);
+    await dragBy(theirs, 0, 48);
+    expect(await updates()).toHaveLength(3);
+
+    // A double click on an empty time starts a new event there.
+    const monday = (await calendar.getByRole("list", { name: "Monday, October 12" }).boundingBox())!;
+    const top = (await calendar.getByRole("list", { name: "Monday, October 12" }).evaluate((el) => el.getBoundingClientRect().top));
+    await page.mouse.dblclick(monday.x + monday.width / 2, top + 16 * 48 + 30);
+    const form = page.getByRole("form", { name: "New event" });
+    await expect(form.getByLabel("Start day")).toHaveValue("2026-10-12");
+    await expect(form.getByLabel("Start time")).toHaveValue("16:30");
+});

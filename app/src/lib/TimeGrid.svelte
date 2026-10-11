@@ -8,9 +8,77 @@
         now: Date;
         selectedId: string | null;
         onSelect: (event: CalendarEvent) => void;
+        /** Whether an event may be dragged to another time. */
+        movable?: (event: CalendarEvent) => boolean;
+        /** An event was dragged to a new start and end. */
+        onMove?: (event: CalendarEvent, start: Date, end: Date) => void;
+        /** An empty time was double-clicked: a new event is wanted there. */
+        onNew?: (start: Date) => void;
     }
 
-    let { days, events, calendars, now, selectedId, onSelect }: Props = $props();
+    let { days, events, calendars, now, selectedId, onSelect, movable = () => false, onMove, onNew }: Props = $props();
+
+    /** Dragging goes by the quarter hour. */
+    const SNAP = 15;
+    /** An event being dragged: where it would land if let go now. */
+    let drag = $state<{ event: CalendarEvent; resize: boolean; day: number; from: number; to: number; moved: boolean } | null>(null);
+    let held: { x: number; y: number; from: number; to: number; day: number } | null = null;
+    /** True for the click that ends a drag, which is not a click on the event. */
+    let dragged = false;
+    let columns: HTMLDivElement[] = $state([]);
+
+    function hold(pointer: PointerEvent, event: CalendarEvent, day: number, from: number, to: number, resize: boolean) {
+        // Only an event that lies within one day, and that may be changed.
+        const { start, end } = span(event);
+        if (pointer.button !== 0 || !onMove || !movable(event) || !sameDay(start, new Date(+end - 1))) return;
+        held = { x: pointer.clientX, y: pointer.clientY, from, to, day };
+        drag = { event, resize, day, from, to, moved: false };
+        (pointer.currentTarget as HTMLElement).setPointerCapture(pointer.pointerId);
+    }
+
+    function pull(pointer: PointerEvent) {
+        if (!drag || !held) return;
+        const by = Math.round(((pointer.clientY - held.y) * (60 / HOUR)) / SNAP) * SNAP;
+        if (!drag.moved && Math.abs(pointer.clientY - held.y) < 4 && Math.abs(pointer.clientX - held.x) < 4) return;
+        if (drag.resize) {
+            drag = { ...drag, moved: true, to: Math.min(24 * 60, Math.max(held.from + SNAP, held.to + by)) };
+            return;
+        }
+        // Across to whichever day the pointer is over.
+        const over = columns.findIndex((column) => {
+            const box = column?.getBoundingClientRect();
+            return box && pointer.clientX >= box.left && pointer.clientX < box.right;
+        });
+        const length = held.to - held.from;
+        const from = Math.min(24 * 60 - length, Math.max(0, held.from + by));
+        drag = { ...drag, moved: true, day: over >= 0 ? over : drag.day, from, to: from + length };
+    }
+
+    function drop() {
+        const done = drag;
+        drag = null;
+        held = null;
+        if (!done?.moved) return;
+        dragged = true;
+        const day = days[done.day];
+        const at = (minutes: number) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, minutes);
+        const was = span(done.event);
+        if (+at(done.from) !== +was.start || +at(done.to) !== +was.end) onMove?.(done.event, at(done.from), at(done.to));
+    }
+
+    function clicked(event: CalendarEvent) {
+        if (dragged) {
+            dragged = false;
+            return;
+        }
+        onSelect(event);
+    }
+
+    function wanted(pointer: MouseEvent, day: Date) {
+        if (!onNew || pointer.target !== pointer.currentTarget) return;
+        const minutes = Math.floor((pointer.offsetY * (60 / HOUR)) / 30) * 30;
+        onNew(new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, minutes));
+    }
 
     /** How tall an hour is, in pixels. */
     const HOUR = 48;
@@ -61,17 +129,33 @@
                     <span style:top="{hour * HOUR}px">{hour === 0 ? "" : hourSaid(hour)}</span>
                 {/each}
             </div>
-            {#each days as day (+day)}
-                <div class="day" class:today={sameDay(day, now)} role="list" aria-label={day.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}>
+            {#each days as day, index (+day)}
+                <div
+                    class="day"
+                    class:today={sameDay(day, now)}
+                    role="list"
+                    aria-label={day.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}
+                    bind:this={columns[index]}
+                    ondblclick={(pointer) => wanted(pointer, day)}
+                >
                     {#each hours as hour (hour)}
                         <span class="line" style:top="{hour * HOUR}px"></span>
                     {/each}
                     {#if sameDay(day, now)}
                         <span class="now" style:top="{nowAt}px" aria-hidden="true"></span>
                     {/if}
+                    {#if drag?.moved && drag.day === index}
+                        <div class="slot landing" aria-hidden="true" style:top="{drag.from * (HOUR / 60)}px" style:height="{(drag.to - drag.from) * (HOUR / 60)}px" style:left="1px" style:width="calc(100% - 3px)">
+                            <span class="event" style:--colour={calendarColour(calendars, drag.event.calendar_id)}>
+                                <span class="subject">{drag.event.subject || "(No subject)"}</span>
+                                <span class="time">{timeSaid(new Date(2000, 0, 1, 0, drag.from))} to {timeSaid(new Date(2000, 0, 1, 0, drag.to))}</span>
+                            </span>
+                        </div>
+                    {/if}
                     {#each layOut(events, day) as placed (placed.event.id)}
                         <div
                             class="slot"
+                            class:lifted={drag?.moved && drag.event.id === placed.event.id}
                             role="listitem"
                             style:top="{placed.from * (HOUR / 60)}px"
                             style:height="{(placed.to - placed.from) * (HOUR / 60)}px"
@@ -86,11 +170,27 @@
                                 class:tentative={placed.event.show_as === "tentative"}
                                 class:free={placed.event.show_as === "free"}
                                 style:--colour={calendarColour(calendars, placed.event.calendar_id)}
-                                onclick={() => onSelect(placed.event)}
+                                onclick={() => clicked(placed.event)}
+                                onpointerdown={(pointer) => hold(pointer, placed.event, index, placed.from, placed.to, false)}
+                                onpointermove={pull}
+                                onpointerup={drop}
+                                onpointercancel={() => ((drag = null), (held = null))}
                             >
                                 <span class="subject">{placed.event.subject || "(No subject)"}</span>
                                 <span class="time">{timeSaid(span(placed.event).start)}{placed.event.location ? ` · ${placed.event.location}` : ""}</span>
                             </button>
+                            {#if onMove && movable(placed.event) && placed.to - placed.from >= 30}
+                                <!-- The foot of the event, to drag its end by; not on one too short to have a foot apart
+                                     from its middle. The form does the same for the keyboard. -->
+                                <span
+                                    class="grip"
+                                    aria-hidden="true"
+                                    onpointerdown={(pointer) => hold(pointer, placed.event, index, placed.from, placed.to, true)}
+                                    onpointermove={pull}
+                                    onpointerup={drop}
+                                    onpointercancel={() => ((drag = null), (held = null))}
+                                ></span>
+                            {/if}
                         </div>
                     {/each}
                 </div>
@@ -100,6 +200,32 @@
 </div>
 
 <style>
+    .slot.lifted {
+        opacity: 0.35;
+    }
+
+    .slot.landing {
+        z-index: 3;
+        pointer-events: none;
+    }
+
+    .slot.landing .event {
+        display: block;
+        height: 100%;
+        box-sizing: border-box;
+        outline: 2px dashed var(--colour);
+    }
+
+    .grip {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 5px;
+        cursor: ns-resize;
+        touch-action: none;
+    }
+
     .timegrid {
         height: 100%;
         min-height: 0;

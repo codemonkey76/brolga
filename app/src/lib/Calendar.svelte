@@ -94,6 +94,31 @@
         return start;
     }
 
+    /** Where a new event is to start, when a time in the grid was double-clicked for it. */
+    let startAt = $state<Date | null>(null);
+    /** A meeting dragged to a new time, waiting on whether to tell everyone invited. */
+    let moving = $state<{ event: CalendarEvent; start: Date; end: Date } | null>(null);
+
+    /** An event was dragged to a new time. A meeting with people invited is asked about first: moving it is mail to them. */
+    async function moved(event: CalendarEvent, start: Date, end: Date, sure = false) {
+        if (!accountId) return;
+        if (!sure && event.is_organizer && event.attendees.length > 0) {
+            moving = { event, start, end };
+            return;
+        }
+        moving = null;
+        const pad = (n: number) => String(n).padStart(2, "0");
+        const said = (at: Date) => `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+        try {
+            const saved = await updateEvent(accountId, event.id, { start: said(start), end: said(end), is_all_day: false, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+            if (selected?.id === event.id) selected = saved;
+            problem = null;
+        } catch (failure) {
+            problem = say(failure);
+        }
+        await load();
+    }
+
     async function save(fields: EventFields, calendarId: string | null) {
         if (!accountId) return;
         const saved = editing === "change" && selected ? await updateEvent(accountId, selected.id, fields, scope) : await createEvent(accountId, calendarId, fields);
@@ -310,6 +335,7 @@
         } else if (event.key.toLowerCase() === "n" && !event.ctrlKey && !event.metaKey && !editing) {
             event.preventDefault();
             selected = null;
+            startAt = null;
             editing = "new";
         } else if (event.key === "Escape" && selected) {
             selected = null;
@@ -397,7 +423,7 @@
 
     <section class="main" aria-label="Calendar">
         <div class="bar">
-            <button type="button" class="primary new" title="New event (N)" onclick={() => ((selected = null), (editing = "new"))}><Plus size={16} aria-hidden="true" />New event</button>
+            <button type="button" class="primary new" title="New event (N)" onclick={() => ((selected = null), (startAt = null), (editing = "new"))}><Plus size={16} aria-hidden="true" />New event</button>
             <button type="button" title="Today (T)" onclick={() => (anchor = startOfDay(new Date()))}>Today</button>
             <button type="button" aria-label="Earlier" onclick={() => (anchor = step(view, anchor, -1))}>‹</button>
             <button type="button" aria-label="Later" onclick={() => (anchor = step(view, anchor, 1))}>›</button>
@@ -412,6 +438,14 @@
 
         {#if problem}
             <p class="problem" role="alert">{problem}</p>
+        {/if}
+        {#if moving}
+            {@const move = moving}
+            <div class="asking" role="alertdialog" aria-label="Move the meeting">
+                Move “{move.event.subject || "(No subject)"}” to {whenSaid({ ...move.event, start: move.start.toISOString(), end: move.end.toISOString() })} and tell everyone invited?
+                <button type="button" class="primary" onclick={() => moved(move.event, move.start, move.end, true)}>Move it</button>
+                <button type="button" onclick={() => (moving = null)}>Leave it</button>
+            </div>
         {/if}
 
         <div class="body">
@@ -432,7 +466,21 @@
             {:else if view === "agenda"}
                 <Agenda {days} {events} {calendars} {now} selectedId={selected?.id ?? null} onSelect={select} />
             {:else}
-                <TimeGrid {days} {events} {calendars} {now} selectedId={selected?.id ?? null} onSelect={select} />
+                <TimeGrid
+                    {days}
+                    {events}
+                    {calendars}
+                    {now}
+                    selectedId={selected?.id ?? null}
+                    onSelect={select}
+                    movable={(event) => !event.is_cancelled && (event.is_organizer || event.response === "none") && (calendars.find((c) => c.id === event.calendar_id)?.can_edit ?? false)}
+                    onMove={moved}
+                    onNew={(start) => {
+                        selected = null;
+                        startAt = start;
+                        editing = "new";
+                    }}
+                />
             {/if}
         </div>
     </section>
@@ -445,7 +493,7 @@
                     me={accounts.find((each) => each.id === accountId)?.username ?? ""}
                     event={editing === "change" ? selected : null}
                     description={editing === "change" ? (description?.complete ? description.text : null) : ""}
-                    startAt={newStart()}
+                    startAt={startAt ?? newStart()}
                     {calendars}
                     scope={editing === "change" ? scope : "occurrence"}
                     repeat={editing === "change" ? repeat : null}
@@ -613,6 +661,18 @@
 
     .drop .danger {
         color: var(--danger);
+    }
+
+    .asking {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0;
+        padding: 0.4rem 0.75rem;
+        border-bottom: 1px solid var(--line);
+        background: var(--raised);
+        font-size: 0.9rem;
     }
 
     .bar .new {
