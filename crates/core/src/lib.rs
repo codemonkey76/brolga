@@ -7,6 +7,8 @@
 //! runs in the app, headless in the CLI, and in tests.
 
 mod account_commands;
+mod mail_commands;
+mod mailboxes;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,6 +31,8 @@ pub struct CoreOptions {
     pub secrets: Arc<dyn SecretStore>,
     pub open_browser: OpenBrowser,
     pub authority: Authority,
+    /// Where Microsoft Graph is. `None` is the real one; tests name a stand-in.
+    pub graph_base: Option<String>,
     pub default_client_id: Option<String>,
 }
 
@@ -59,7 +63,14 @@ impl Core {
             TokenClient::new(options.authority)?,
         ));
 
+        let mailboxes = Arc::new(mailboxes::Mailboxes::new(
+            accounts.clone(),
+            options.data_dir.clone(),
+            options.graph_base.clone(),
+        ));
+
         let mut registry = builtin_registry()?;
+        mail_commands::register(&mut registry, mailboxes)?;
         account_commands::register(
             &mut registry,
             account_commands::Context {

@@ -10,7 +10,12 @@ license.workspace = true
 [dependencies]
 brolga-auth.workspace = true
 brolga-commands.workspace = true
+brolga-graph.workspace = true
+brolga-mail = { path = "../mail" }
+brolga-search = { path = "../search" }
 brolga-store.workspace = true
+brolga-sync.workspace = true
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

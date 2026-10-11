@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use brolga_auth::{Authority, MemorySecrets};
 use brolga_core::{Core, CoreOptions};
-use brolga_fake_graph::FakeIdentity;
+use brolga_fake_graph::{FakeGraph, FakeIdentity, FakeMessage};
 use serde_json::json;
 
 const CLIENT_ID: &str = "11111111-2222-4333-8444-555555555555";
@@ -12,6 +12,14 @@ const CLIENT_ID: &str = "11111111-2222-4333-8444-555555555555";
 /// A core signed in to nothing, pointed at the fake identity platform, whose
 /// "browser" opens the page and follows it back as a person's would.
 fn core(identity: &FakeIdentity, default_client_id: Option<&str>) -> Core {
+    core_with_mail(identity, None, default_client_id)
+}
+
+fn core_with_mail(
+    identity: &FakeIdentity,
+    graph: Option<&FakeGraph>,
+    default_client_id: Option<&str>,
+) -> Core {
     Core::open(CoreOptions {
         data_dir: None,
         secrets: Arc::new(MemorySecrets::default()),
@@ -23,6 +31,7 @@ fn core(identity: &FakeIdentity, default_client_id: Option<&str>) -> Core {
             Ok(())
         }),
         authority: Authority::new(identity.base_url()),
+        graph_base: graph.map(FakeGraph::base_url),
         default_client_id: default_client_id.map(str::to_owned),
     })
     .unwrap()
@@ -33,7 +42,24 @@ fn core(identity: &FakeIdentity, default_client_id: Option<&str>) -> Core {
 #[tokio::test]
 async fn every_command_is_described_and_its_examples_run() {
     let identity = FakeIdentity::start().await.unwrap();
-    let registry = core(&identity, Some(CLIENT_ID)).registry();
+    let graph = FakeGraph::start().await.unwrap();
+    graph.add_message(
+        &graph.folder_id("inbox"),
+        FakeMessage::new(
+            "Hello",
+            "Sam Taylor",
+            "sam@example.test",
+            "2026-10-01T09:00:00Z",
+        ),
+    );
+    let registry = core_with_mail(&identity, Some(&graph), Some(CLIENT_ID)).registry();
+    // The mail examples need an account with mail in it, which no example
+    // can arrange for itself.
+    registry
+        .execute("accounts.sign_in", json!({}))
+        .await
+        .unwrap();
+    registry.execute("mail.sync", json!({})).await.unwrap();
     let mut seen = 0;
 
     for spec in registry.specs() {
@@ -65,7 +91,7 @@ async fn every_command_is_described_and_its_examples_run() {
         }
     }
 
-    assert!(seen >= 7, "commands have gone missing: {seen}");
+    assert!(seen >= 13, "commands have gone missing: {seen}");
 }
 
 #[tokio::test]

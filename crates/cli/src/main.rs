@@ -171,6 +171,7 @@ fn core() -> Result<Core, Failure> {
         secrets: Arc::new(SystemSecrets),
         open_browser: Arc::new(open_in_browser),
         authority: Authority::default(),
+        graph_base: None,
         default_client_id: DEFAULT_CLIENT_ID.map(str::to_owned),
     })
     .map_err(failed)

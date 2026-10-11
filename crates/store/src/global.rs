@@ -239,6 +239,8 @@ mod tests {
         let reopened = GlobalDb::open(&path).unwrap();
 
         assert_eq!(reopened.accounts().unwrap().len(), 1);
-        std::fs::remove_dir_all(folder).unwrap();
+        // Windows will not delete a file that is still open.
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(folder);
     }
 }

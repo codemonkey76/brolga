@@ -453,27 +453,56 @@ impl AccountDb {
         Ok(())
     }
 
-    /// Messages matching a full-text query, best match first. `query` is in
-    /// FTS5's own syntax and must already be safe to pass to it.
+    /// Messages matching a search, best match first, or newest first where
+    /// the search is filters only. `fts` is in FTS5's own syntax and must
+    /// already be safe to pass to it.
+    #[allow(clippy::too_many_arguments)]
     pub fn search(
         &self,
-        query: &str,
+        fts: &str,
         folder_id: Option<&str>,
+        has_attachment: Option<bool>,
+        is_read: Option<bool>,
+        after: Option<&str>,
+        before: Option<&str>,
         limit: u32,
     ) -> Result<Vec<MessageRow>, StoreError> {
         let connection = self.connection();
         let columns = COLUMNS
             .split(", ")
-            .map(|c| format!("m.{c}"))
+            .map(|c| format!("m.{}", c.trim()))
             .collect::<Vec<_>>()
             .join(", ");
-        let mut statement = connection.prepare(&format!(
-            "SELECT {columns} FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
-             WHERE messages_fts MATCH ?1 AND (?2 IS NULL OR m.folder_id = ?2)
-             ORDER BY f.rank, m.received_at DESC LIMIT ?3"
-        ))?;
+        let filters = "(?2 IS NULL OR m.folder_id = ?2)
+             AND (?3 IS NULL OR m.has_attachments = ?3)
+             AND (?4 IS NULL OR m.is_read = ?4)
+             AND (?5 IS NULL OR m.received_at >= ?5)
+             AND (?6 IS NULL OR m.received_at < ?6)";
+        let sql = if fts.is_empty() {
+            format!(
+                "SELECT {columns} FROM messages m WHERE ?1 = '' AND {filters} ORDER BY m.received_at DESC, m.id LIMIT ?7"
+            )
+        } else {
+            format!(
+                "SELECT {columns} FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
+                 WHERE messages_fts MATCH ?1 AND {filters}
+                 ORDER BY f.rank, m.received_at DESC LIMIT ?7"
+            )
+        };
+        let mut statement = connection.prepare(&sql)?;
         let rows = statement
-            .query_map(params![query, folder_id, limit], read_message)?
+            .query_map(
+                params![
+                    fts,
+                    folder_id,
+                    has_attachment,
+                    is_read,
+                    after,
+                    before,
+                    limit
+                ],
+                read_message,
+            )?
             .collect::<Result<_, _>>()?;
 
         Ok(rows)

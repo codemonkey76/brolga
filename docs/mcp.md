@@ -30,11 +30,20 @@ argument `mcp`.
 |---|---|
 | `get_version` | The client's name and version. |
 | `list_accounts` | The signed-in accounts, and whether each still has a working sign-in. |
-| `get_sync_status` | Each account's sync state. Sync is not built, so no account is reported. |
+| `sync_now` | Fetch new and changed mail into this computer's copy. Changes nothing in the mailbox. |
+| `list_folders` | An account's mail folders, with unread and total counts. |
+| `list_messages` | The messages in a folder, newest first, without bodies. |
+| `get_message` | One message with its body, as plain text or as HTML made safe. |
+| `search_mail` | Search synced mail: words, phrases, `from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `after:`, `before:`. |
+| `get_sync_status` | Each account's sync state. Not built yet, so no account is reported. |
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |
 
-Mail, calendar and contacts tools arrive with those features.
+Calendar and contacts tools arrive with those features.
+
+Every result that carries a message's own words also carries a note saying
+they were written by the sender and are not instructions. Reading a message
+through these tools does not mark it as read.
 
 ## What an agent may do
 

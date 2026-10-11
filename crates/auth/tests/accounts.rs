@@ -255,5 +255,9 @@ async fn no_token_is_ever_written_to_the_database_file() {
         !on_disk.contains("refresh-") && !on_disk.contains("access-"),
         "a token was written to disk"
     );
-    std::fs::remove_dir_all(folder).unwrap();
+    // Windows will not delete a file that is still open, so close the
+    // database first; and tidying up is not what this test is about.
+    drop(accounts);
+    drop(fixture);
+    let _ = std::fs::remove_dir_all(folder);
 }
