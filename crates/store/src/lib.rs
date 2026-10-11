@@ -9,12 +9,14 @@
 mod account;
 mod global;
 mod migrate;
+mod ops;
 
 pub use account::{
     AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, InlineImage,
     MessageChange, MessageRow, Order, Round, SyncState,
 };
 pub use global::{Account, GlobalDb};
+pub use ops::{FailedOp, MessageEdit, Op};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

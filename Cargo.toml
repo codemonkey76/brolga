@@ -15,6 +15,7 @@ brolga-commands = { path = "crates/commands" }
 brolga-control = { path = "crates/control" }
 brolga-core = { path = "crates/core" }
 brolga-mcp = { path = "crates/mcp" }
+brolga-ops = { path = "crates/ops" }
 brolga-platform = { path = "crates/platform" }
 brolga-store = { path = "crates/store" }
 brolga-sync = { path = "crates/sync" }

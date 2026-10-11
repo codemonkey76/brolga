@@ -29,6 +29,8 @@ pub struct FakeMessage {
     pub body_html: String,
     /// The conversation it belongs to. Left out, it is one of its own.
     pub conversation: Option<String>,
+    /// `notFlagged`, `flagged` or `complete`.
+    pub flag: String,
     pub attachments: Vec<FakeAttachment>,
 }
 
@@ -55,6 +57,7 @@ impl FakeMessage {
             has_attachments: false,
             body_html: format!("<html><body><p>{subject}</p></body></html>"),
             conversation: None,
+            flag: "notFlagged".to_owned(),
             attachments: Vec::new(),
         }
     }
@@ -292,6 +295,21 @@ impl Mailbox {
         id
     }
 
+    pub fn set_flag(&mut self, id: &str, flag: &str) {
+        if let Some(stored) = self.messages.get_mut(id) {
+            stored.message.flag = flag.to_owned();
+            let folder = stored.folder.clone();
+            self.log_message(&folder, id, false);
+        }
+    }
+
+    /// A message's flag, as the server has it.
+    pub fn flag(&self, id: &str) -> Option<String> {
+        self.messages
+            .get(id)
+            .map(|stored| stored.message.flag.clone())
+    }
+
     pub fn set_read(&mut self, id: &str, is_read: bool) {
         if let Some(stored) = self.messages.get_mut(id) {
             stored.message.is_read = is_read;
@@ -393,7 +411,7 @@ impl Mailbox {
             "isDraft": false,
             "hasAttachments": m.has_attachments,
             "importance": "normal",
-            "flag": { "flagStatus": "notFlagged" },
+            "flag": { "flagStatus": m.flag },
             "categories": [],
             "inferenceClassification": "focused",
         });

@@ -646,6 +646,14 @@ dependencies = [
 [[package]]
 name = "brolga-ops"
 version = "0.0.1"
+dependencies = [
+ "brolga-fake-graph",
+ "brolga-graph",
+ "brolga-store",
+ "futures",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "brolga-platform"

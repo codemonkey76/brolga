@@ -173,9 +173,36 @@ impl GraphClient {
         self.get(&url, None).await
     }
 
-    /// GET a URL, waiting and trying again while Graph says to. A GET
-    /// changes nothing, so it is always safe to send again.
+    /// Change properties of a message: `isRead`, `flag` and the others
+    /// "Update message" (SOURCES.md) lists. Setting a property to a value
+    /// twice leaves it as setting it once does, so this is safe to send
+    /// again after an answer that never arrived.
+    pub async fn update_message(
+        &self,
+        message_id: &str,
+        changes: &serde_json::Value,
+    ) -> Result<(), GraphError> {
+        let url = format!("{}/me/messages/{message_id}", self.base);
+        self.send(reqwest::Method::PATCH, &url, None, Some(changes))
+            .await?;
+
+        Ok(())
+    }
+
+    /// GET a URL. A GET changes nothing, so it is always safe to send again.
     async fn get(&self, url: &str, page_size: Option<u32>) -> Result<Vec<u8>, GraphError> {
+        self.send(reqwest::Method::GET, url, page_size, None).await
+    }
+
+    /// Send a request, waiting and trying again while Graph says to. Only
+    /// for requests that are safe to repeat.
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        page_size: Option<u32>,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, GraphError> {
         let url = Url::parse(url).map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
         // Closing the semaphore is not something this client ever does.
         let _permit = self
@@ -194,13 +221,15 @@ impl GraphClient {
                 prefer.push_str(&format!(", odata.maxpagesize={size}"));
             }
 
-            let sent = self
+            let mut request = self
                 .http
-                .get(url.clone())
+                .request(method.clone(), url.clone())
                 .header(AUTHORIZATION, format!("Bearer {token}"))
-                .header("Prefer", prefer)
-                .send()
-                .await;
+                .header("Prefer", prefer);
+            if let Some(body) = body {
+                request = request.json(body);
+            }
+            let sent = request.send().await;
 
             let last_try = attempt + 1 >= self.retry.attempts;
             let response = match sent {

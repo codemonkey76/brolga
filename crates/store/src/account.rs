@@ -137,6 +137,30 @@ const STEPS: &[&str] = &[
         PRIMARY KEY (message_id, content_id)
     ) STRICT;
 ",
+    "
+    -- The outbox: each change a person makes, waiting to reach the server.
+    CREATE TABLE ops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        -- Made up here, to recognise a repeat of the same change.
+        key TEXT NOT NULL UNIQUE,
+        -- The action it was part of, which is undone as one.
+        group_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        value TEXT NOT NULL,
+        -- What it was before, to go back to.
+        before TEXT NOT NULL,
+        -- queued, done or failed.
+        state TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    ) STRICT;
+
+    CREATE INDEX ops_by_state ON ops (state, id);
+    CREATE INDEX ops_by_message ON ops (message_id, kind, state, id);
+    CREATE INDEX ops_by_group ON ops (group_id);
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,7 +355,7 @@ impl AccountDb {
         })
     }
 
-    fn connection(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn connection(&self) -> MutexGuard<'_, Connection> {
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -460,6 +484,8 @@ impl AccountDb {
         for message in changed {
             upsert_message(&transaction, folder_id, message, state.generation)?;
         }
+        let ids: Vec<&str> = changed.iter().map(|m| m.id.as_str()).collect();
+        crate::ops::keep_queued_edits(&transaction, &ids)?;
         for id in removed {
             // Only if it is still this folder's. A message moved elsewhere is
             // "removed" here and "changed" there, in either order, and the

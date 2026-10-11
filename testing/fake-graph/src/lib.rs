@@ -46,6 +46,8 @@ struct Inner {
     /// state of the generator that decides which.
     chaos: Option<(u32, u64)>,
     mailbox: mailbox::Mailbox,
+    /// Messages every change to which is refused.
+    refused_updates: std::collections::HashSet<String>,
     /// Where this server is, to write links to itself.
     base: String,
 }
@@ -70,7 +72,10 @@ impl FakeGraph {
                 "/v1.0/me/mailFolders/{folder}/messages/delta",
                 get(messages_delta),
             )
-            .route("/v1.0/me/messages/{message}", get(message))
+            .route(
+                "/v1.0/me/messages/{message}",
+                get(message).patch(update_message),
+            )
             .route("/v1.0/me/messages/{message}/attachments", get(attachments))
             .route(
                 "/v1.0/me/messages/{message}/attachments/{attachment}",
@@ -142,6 +147,18 @@ impl FakeGraph {
 
     pub fn remove_folder(&self, id: &str) {
         lock(&self.shared).mailbox.remove_folder(id);
+    }
+
+    /// From now on refuse, for good, every change to this message.
+    pub fn refuse_updates_to(&self, message: &str) {
+        lock(&self.shared)
+            .refused_updates
+            .insert(message.to_owned());
+    }
+
+    /// A message's flag, as the server has it.
+    pub fn flag(&self, message: &str) -> Option<String> {
+        lock(&self.shared).mailbox.flag(message)
     }
 
     pub fn add_message(&self, folder: &str, message: FakeMessage) -> String {
@@ -424,6 +441,60 @@ async fn message(State(shared): State<Shared>, Path(message): Path<String>) -> R
             "itemNotFound",
             "There is no such message.",
         ),
+    }
+}
+
+/// "Update message" (SOURCES.md): the properties given are changed, the
+/// rest left alone, and the message comes back. Only what Brolga changes
+/// is built; anything else is refused loudly.
+async fn update_message(
+    State(shared): State<Shared>,
+    Path(message): Path<String>,
+    axum::Json(changes): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    if inner.mailbox.message(&message).is_none() {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        );
+    }
+    if inner.refused_updates.contains(&message) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "fakeGraphRefused",
+            "This message cannot be changed.",
+        );
+    }
+    let Some(changes) = changes.as_object() else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "badRequest",
+            "An object is required.",
+        );
+    };
+
+    for (property, value) in changes {
+        match (property.as_str(), value) {
+            ("isRead", Value::Bool(read)) => inner.mailbox.set_read(&message, *read),
+            ("flag", flag) if flag["flagStatus"].is_string() => {
+                let status = flag["flagStatus"].as_str().unwrap_or_default().to_owned();
+                inner.mailbox.set_flag(&message, &status);
+            }
+            _ => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "fakeGraphNotBuilt",
+                    &format!("The fake Graph server does not change `{property}` yet."),
+                );
+            }
+        }
+    }
+
+    match inner.mailbox.message(&message) {
+        Some(updated) => axum::Json(updated).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
