@@ -10,7 +10,7 @@ use std::sync::Arc;
 use brolga_auth::Authority;
 use brolga_commands::CommandSpec;
 use brolga_control::{Client, default_endpoint};
-use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID};
+use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID, keep_synced};
 use brolga_mcp::{Backend, McpServer, serve_stdio};
 use brolga_platform::{SystemSecrets, data_dir, downloads_dir, open_in_browser};
 use clap::{Parser, Subcommand};
@@ -134,13 +134,22 @@ async fn run(command: Command) -> Result<(), Failure> {
         }
         Command::Mcp { connect } => {
             let server = McpServer::new(match backend(connect).await? {
-                Where::Here(registry) => Backend::Headless(registry),
+                Where::Here(registry) => {
+                    // With no app running there is no window keeping the
+                    // mail current, so it is done here for as long as the
+                    // server runs.
+                    tokio::spawn(keep_synced(registry.clone(), SYNC_EVERY));
+                    Backend::Headless(registry)
+                }
                 Where::App(client) => Backend::attached(client),
             });
             serve_stdio(server).await.map_err(failed)
         }
     }
 }
+
+/// How often mail is brought up to date when there is no window to do it.
+const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Where commands run: in the running app if there is one, otherwise here.
 enum Where {

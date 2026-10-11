@@ -359,3 +359,24 @@ test("the reading pane can go under the list", async ({ page }) => {
     await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
     await picture(page, "reading-pane-bottom");
 });
+
+test("the window is dark when the desktop is, the message included", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").nth(1).click();
+    await expect(body(page).getByText("five ways to plan")).toBeVisible();
+
+    // How light a colour is, from 0 to 255, whatever form the browser gives it in.
+    const lightness = (colour: string) => {
+        const [r, g, b] = (colour.match(/[\d.]+/g) ?? []).map(Number);
+        return colour.startsWith("color(") ? ((r + g + b) / 3) * 255 : (r + g + b) / 3;
+    };
+    const ground = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    const words = await page.evaluate(() => getComputedStyle(document.body).color);
+    const inMessage = await body(page).locator("body").evaluate((el) => getComputedStyle(el).color);
+
+    expect(lightness(ground)).toBeLessThan(80);
+    expect(lightness(words)).toBeGreaterThan(170);
+    expect(lightness(inMessage)).toBeGreaterThan(170);
+    await picture(page, "dark");
+});

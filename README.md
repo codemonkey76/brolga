@@ -15,6 +15,8 @@ A message's remote pictures stay out until you ask for them, so a sender
 cannot tell you opened it. A link that says one address and goes to another
 is called out before you click it.
 
+![The same window when the desktop is set to dark](docs/screenshots/dark.png)
+
 ![Folders as a tree, with a pinned folder under Favourites](docs/screenshots/folders.png)
 
 ![A folder shown as conversations, with a thread's messages listed above the one being read](docs/screenshots/conversation.png)

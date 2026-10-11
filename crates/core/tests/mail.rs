@@ -305,6 +305,44 @@ async fn an_attachment_is_saved_under_a_safe_name_and_never_over_another() {
 }
 
 #[tokio::test]
+async fn with_no_window_the_core_keeps_mail_up_to_date_itself() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_message(
+        &f.inbox,
+        message("First", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    let count = || async {
+        f.run("mail.messages.list", json!({ "folder_id": f.inbox }))
+            .await["total"]
+            .as_u64()
+            .unwrap()
+    };
+    let until = |wanted: u64| async move {
+        for _ in 0..200 {
+            if count().await == wanted {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    };
+
+    let syncing = tokio::spawn(brolga_core::keep_synced(
+        f.registry.clone(),
+        std::time::Duration::from_millis(50),
+    ));
+
+    assert!(until(1).await, "nothing was synced at the start");
+    f.graph.add_message(
+        &f.inbox,
+        message("Second", "Sam Taylor", "2026-10-02T09:00:00Z"),
+    );
+    assert!(until(2).await, "new mail was not picked up later");
+
+    syncing.abort();
+}
+
+#[tokio::test]
 async fn a_long_folder_is_paged() {
     let f = Fixture::signed_in().await;
     f.graph.add_messages(&f.inbox, 130);

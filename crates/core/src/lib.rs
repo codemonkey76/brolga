@@ -44,6 +44,23 @@ pub struct CoreOptions {
     pub fetch_images_from_private_hosts: bool,
 }
 
+/// Keep every account's mail up to date for as long as this is polled: a
+/// sync now, and another each time `every` has passed. A sync that fails is
+/// tried again at the next turn, and says why in `app.sync.status`.
+///
+/// The window does this for itself while it is open. This is for the client
+/// running with no window, where nothing else would.
+pub async fn keep_synced(registry: Arc<Registry>, every: std::time::Duration) {
+    let mut turn = tokio::time::interval(every);
+    // After a long sync, or the computer waking, one sync and not a queue of them.
+    turn.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        turn.tick().await;
+        let _ = registry.execute("mail.sync", serde_json::json!({})).await;
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
     #[error(transparent)]
