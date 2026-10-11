@@ -14,8 +14,12 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     "Mail.Send",
     // Automatic replies.
     "MailboxSettings.ReadWrite",
-    // The calendar, to read. Changing it is asked for when that is built.
+    // The calendar, to read and to change.
     "Calendars.ReadWrite",
+    // Meeting times suggested by the server ("user: findMeetingTimes").
+    "Calendars.Read.Shared",
+    // The organisation's meeting rooms ("List place objects").
+    "Place.Read.All",
 ];
 
 /// The app registration a sign-in is made under.

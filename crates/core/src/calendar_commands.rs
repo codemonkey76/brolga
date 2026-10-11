@@ -1306,6 +1306,210 @@ async fn free_busy(mailboxes: Arc<Mailboxes>, args: FreeBusy) -> Result<Value, C
     }))
 }
 
+/// Why something asked of the server about other people's time could not
+/// be had: out of reach, or a sign-in from before it was asked leave for.
+fn not_known(error: brolga_graph::GraphError, what: &str) -> CommandError {
+    match error {
+        brolga_graph::GraphError::Refused { status: 403, .. } => failed(format!(
+            "This sign-in was not given permission to {what}. Sign in to the account again, from the accounts screen, to grant it."
+        )),
+        error if error.is_transient() => failed(format!(
+            "Microsoft 365 could not be reached, so there is no way to {what} just now."
+        )),
+        error => failed(error),
+    }
+}
+
+#[derive(Deserialize)]
+struct Rooms {
+    account_id: Option<String>,
+    query: Option<String>,
+    min_capacity: Option<u64>,
+    start: Option<String>,
+    end: Option<String>,
+}
+
+/// The most rooms whose free and busy times are asked for at once.
+const ROOMS_ASKED: usize = 20;
+
+/// The organisation's meeting rooms, and, for a time, which of them are free.
+async fn rooms(mailboxes: Arc<Mailboxes>, args: Rooms) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let when = match (&args.start, &args.end) {
+        (Some(start), Some(end)) => Some((moment(start)?, moment(end)?)),
+        (None, None) => None,
+        _ => return Err(failed("Give both start and end, or neither.")),
+    };
+    let wanted = args
+        .query
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+
+    let all = mailbox
+        .graph
+        .rooms()
+        .await
+        .map_err(|e| not_known(e, "list meeting rooms"))?;
+    let words = |room: &Value, name: &str| room[name].as_str().unwrap_or_default().to_owned();
+    let mut found: Vec<Value> = all
+        .iter()
+        .filter(|room| {
+            room["emailAddress"]
+                .as_str()
+                .is_some_and(|address| address.contains('@'))
+        })
+        .filter(|room| room["capacity"].as_u64().unwrap_or(0) >= args.min_capacity.unwrap_or(0))
+        .filter(|room| {
+            wanted.is_empty()
+                || ["displayName", "building", "nickname", "emailAddress"]
+                    .iter()
+                    .any(|name| words(room, name).to_lowercase().contains(&wanted))
+        })
+        .map(|room| {
+            json!({
+                "name": words(room, "displayName"),
+                "address": words(room, "emailAddress"),
+                "capacity": room["capacity"].as_u64(),
+                "building": words(room, "building"),
+                "floor": room["floorNumber"].as_i64(),
+                "wheelchair_accessible": room["isWheelChairAccessible"].as_bool(),
+                "free": Value::Null,
+            })
+        })
+        .collect();
+    found.sort_by_key(|room| room["name"].as_str().unwrap_or_default().to_lowercase());
+
+    // Whether each is free then, for the first so many: it is asked of
+    // each room's own calendar.
+    if let Some((start, end)) = &when {
+        let (from, to): (jiff::Timestamp, jiff::Timestamp) =
+            (start.parse().map_err(failed)?, end.parse().map_err(failed)?);
+        let minutes = to.duration_since(from).as_mins();
+        if minutes <= 0 || minutes > 24 * 60 {
+            return Err(failed(
+                "The time asked about must be more than nothing and no more than a day.",
+            ));
+        }
+        let asked: Vec<String> = found
+            .iter()
+            .take(ROOMS_ASKED)
+            .filter_map(|room| room["address"].as_str().map(str::to_lowercase))
+            .collect();
+        if !asked.is_empty() {
+            let interval = u32::try_from(minutes).unwrap_or(1440).clamp(5, 1440);
+            let schedules = mailbox
+                .graph
+                .schedules(&asked, start, end, interval)
+                .await
+                .map_err(|e| not_known(e, "see when rooms are free"))?;
+            for room in &mut found {
+                let own = schedules.iter().find(|each| {
+                    each["scheduleId"].as_str().is_some_and(|id| {
+                        room["address"]
+                            .as_str()
+                            .is_some_and(|address| id.eq_ignore_ascii_case(address))
+                    })
+                });
+                if let Some(own) = own.filter(|own| own["error"].is_null()) {
+                    let view = own["availabilityView"].as_str().unwrap_or_default();
+                    room["free"] = json!(view.bytes().all(|digit| digit == b'0'));
+                }
+            }
+            // The free ones first.
+            found.sort_by_key(|room| match room["free"].as_bool() {
+                Some(true) => 0,
+                None => 1,
+                Some(false) => 2,
+            });
+        }
+    }
+
+    Ok(json!({ "rooms": found }))
+}
+
+#[derive(Deserialize)]
+struct MeetingTimes {
+    account_id: Option<String>,
+    people: Vec<String>,
+    start: String,
+    end: String,
+    duration_minutes: Option<u32>,
+    any_hours: Option<bool>,
+    max: Option<u32>,
+}
+
+/// Times the server suggests for a meeting with these people: it weighs
+/// everyone's free and busy times and working hours.
+async fn meeting_times(
+    mailboxes: Arc<Mailboxes>,
+    args: MeetingTimes,
+) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let (start, end) = (moment(&args.start)?, moment(&args.end)?);
+    if end <= start {
+        return Err(failed("The time asked about would end before it starts."));
+    }
+    if let Some(wrong) = args
+        .people
+        .iter()
+        .find(|each| !each.contains('@') || each.trim().contains(char::is_whitespace))
+    {
+        return Err(failed(format!("`{wrong}` is not an email address.")));
+    }
+    let minutes = args.duration_minutes.unwrap_or(30).clamp(5, 1440);
+    let at = |moment: &str| json!({ "dateTime": moment.trim_end_matches('Z'), "timeZone": "UTC" });
+    let asked = json!({
+        "attendees": args.people.iter().map(|address| json!({ "type": "required", "emailAddress": { "address": address.trim() } })).collect::<Vec<_>>(),
+        "timeConstraint": {
+            "activityDomain": if args.any_hours.unwrap_or(false) { "unrestricted" } else { "work" },
+            "timeSlots": [{ "start": at(&start), "end": at(&end) }]
+        },
+        "meetingDuration": format!("PT{}H{}M", minutes / 60, minutes % 60),
+        "maxCandidates": args.max.unwrap_or(10).clamp(1, 50),
+    });
+
+    let found = mailbox
+        .graph
+        .find_meeting_times(&asked)
+        .await
+        .map_err(|e| not_known(e, "have meeting times suggested"))?;
+    let utc = |at: &Value| {
+        brolga_calendar::utc(
+            at["dateTime"].as_str()?,
+            at["timeZone"].as_str().unwrap_or("UTC"),
+        )
+    };
+    let suggestions: Vec<Value> = found["meetingTimeSuggestions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|each| {
+            Some(json!({
+                "start": utc(&each["meetingTimeSlot"]["start"])?,
+                "end": utc(&each["meetingTimeSlot"]["end"])?,
+                "confidence": each["confidence"].as_f64(),
+                "people": each["attendeeAvailability"].as_array().into_iter().flatten().map(|one| json!({
+                    "address": one["attendee"]["emailAddress"]["address"],
+                    "availability": one["availability"]
+                })).collect::<Vec<_>>(),
+            }))
+        })
+        .collect();
+
+    Ok(json!({
+        "suggestions": suggestions,
+        "why_none": found["emptySuggestionsReason"].as_str().filter(|reason| !reason.is_empty()),
+    }))
+}
+
 #[derive(Deserialize)]
 struct Cancel {
     account_id: Option<String>,
@@ -1987,6 +2191,80 @@ pub(crate) fn register(
             examples: vec![json!({ "event_id": "event-0002", "response": "tentative", "send_response": false })],
         },
         handler(&mailboxes, respond),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.find_meeting_times".to_owned(),
+            title: "Suggest meeting times".to_owned(),
+            description: "Times Microsoft 365 suggests for a meeting between you and these people, within a stretch of time: it weighs \
+                          everyone's free and busy times and, unless any_hours is true, working hours. Best first."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: Some("find_meeting_times".to_owned()),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "people": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "Email addresses of those to meet. You are counted without being named." },
+                    "start": { "type": "string", "description": "A moment with its offset." },
+                    "end": { "type": "string" },
+                    "duration_minutes": { "type": "integer", "minimum": 5, "maximum": 1440, "description": "Default 30." },
+                    "any_hours": { "type": "boolean", "description": "True looks outside working hours too." },
+                    "max": { "type": "integer", "minimum": 1, "maximum": 50 }
+                },
+                "required": ["people", "start", "end"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "suggestions": { "type": "array", "items": { "type": "object" }, "description": "Each a start and end in UTC, how sure the server is that all can come, and each person's availability then." },
+                    "why_none": { "type": ["string", "null"] }
+                },
+                "required": ["suggestions"]
+            }),
+            examples: vec![json!({ "people": [], "start": "2026-10-20T00:00:00Z", "end": "2026-10-20T06:00:00Z" })],
+        },
+        handler(&mailboxes, meeting_times),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.rooms.list".to_owned(),
+            title: "Meeting rooms".to_owned(),
+            description: "The organisation's meeting rooms, with how many each holds. With start and end, whether each is free then, the free ones first; \
+                          to book one, invite its address to the event as a resource and name it as the location."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: Some("find_rooms".to_owned()),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "query": { "type": "string", "description": "Part of a room's name or building." },
+                    "min_capacity": { "type": "integer", "minimum": 0 },
+                    "start": { "type": "string", "description": "A moment with its offset. With end, each room's `free` is filled in." },
+                    "end": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "rooms": { "type": "array", "items": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "address": { "type": "string" },
+                    "capacity": { "type": ["integer", "null"] },
+                    "building": { "type": "string" },
+                    "free": { "type": ["boolean", "null"], "description": "Null where no time was given or the room's time is not known." }
+                } } } },
+                "required": ["rooms"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, rooms),
     )?;
 
     registry.register(

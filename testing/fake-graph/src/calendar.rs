@@ -142,6 +142,8 @@ struct Stored {
 pub struct Calendars {
     calendars: Vec<FakeCalendar>,
     events: BTreeMap<String, Stored>,
+    /// The organisation's meeting rooms: (name, address, capacity, building).
+    pub rooms: Vec<(String, String, u32, String)>,
     /// Reminders dealt with from a device: (event, `dismissed` or the
     /// moment it was put off until).
     pub reminders: Vec<(String, String)>,
@@ -445,6 +447,100 @@ impl Calendars {
             stored.deleted = true;
             self.touched(id);
         }
+    }
+
+    /// "List place objects" (SOURCES.md), for rooms.
+    pub fn room_list(&self) -> Value {
+        let all: Vec<Value> = self
+            .rooms
+            .iter()
+            .enumerate()
+            .map(|(at, (name, address, capacity, building))| {
+                json!({
+                    "@odata.type": "#microsoft.graph.room",
+                    "id": format!("room-{}", at + 1),
+                    "displayName": name,
+                    "emailAddress": address,
+                    "capacity": capacity,
+                    "building": building,
+                    "floorNumber": 1,
+                    "bookingType": "standard",
+                    "isWheelChairAccessible": true
+                })
+            })
+            .collect();
+
+        json!({ "value": all })
+    }
+
+    /// "user: findMeetingTimes" (SOURCES.md): the times within what is
+    /// asked when the owner and everyone named are free for long enough,
+    /// by the half hour, earliest first.
+    pub fn meeting_times(&self, body: &Value) -> Option<Value> {
+        let minutes = {
+            // `PT1H30M`, as the request writes a length of time.
+            let length = body["meetingDuration"]
+                .as_str()
+                .unwrap_or("PT30M")
+                .trim_start_matches("PT");
+            let (hours, rest) = length
+                .split_once('H')
+                .map_or((0, length), |(h, rest)| (h.parse().unwrap_or(0), rest));
+            hours * 60 + rest.trim_end_matches('M').parse::<i64>().unwrap_or(0)
+        };
+        let mut people = vec!["robin@example.test".to_owned()];
+        for each in body["attendees"].as_array().into_iter().flatten() {
+            people.push(each["emailAddress"]["address"].as_str()?.to_owned());
+        }
+        let most = usize::try_from(body["maxCandidates"].as_u64().unwrap_or(20)).unwrap_or(20);
+        let at = |moment: Timestamp| json!({ "dateTime": utc(moment), "timeZone": "UTC" });
+
+        let mut found = Vec::new();
+        for slot in body["timeConstraint"]["timeSlots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let asked = json!({ "schedules": people, "startTime": slot["start"], "endTime": slot["end"], "availabilityViewInterval": 30 });
+            let views: Vec<String> = self.schedules(&asked)?["value"]
+                .as_array()?
+                .iter()
+                .filter(|each| each["error"].is_null())
+                .filter_map(|each| each["availabilityView"].as_str().map(str::to_owned))
+                .collect();
+            let start = stamp(&brolga_calendar::utc(
+                slot["start"]["dateTime"].as_str()?,
+                slot["start"]["timeZone"].as_str()?,
+            )?)?;
+            let slots = views.iter().map(String::len).min().unwrap_or(0);
+            let needed = usize::try_from((minutes + 29) / 30).unwrap_or(1).max(1);
+            for first in 0..slots.saturating_sub(needed - 1) {
+                if views.iter().all(|view| {
+                    view.as_bytes()[first..first + needed]
+                        .iter()
+                        .all(|digit| *digit == b'0')
+                }) {
+                    let from = wider_minutes(start, i64::try_from(first).unwrap_or(0) * 30);
+                    found.push(json!({
+                        "confidence": 100.0,
+                        "organizerAvailability": "free",
+                        "meetingTimeSlot": { "start": at(from), "end": at(wider_minutes(from, minutes)) },
+                        "attendeeAvailability": people.iter().skip(1).map(|address| json!({
+                            "availability": "free",
+                            "attendee": { "type": "required", "emailAddress": { "address": address } }
+                        })).collect::<Vec<_>>(),
+                        "locations": []
+                    }));
+                }
+            }
+        }
+        found.truncate(most);
+        let none = found.is_empty();
+
+        Some(json!({
+            "meetingTimeSuggestions": found,
+            "emptySuggestionsReason": if none { "attendeesUnavailable" } else { "" }
+        }))
     }
 
     /// "calendar: getSchedule" (SOURCES.md): for each address, what it has

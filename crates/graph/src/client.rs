@@ -214,6 +214,37 @@ impl GraphClient {
         Ok(())
     }
 
+    /// Every meeting room the organisation has ("List place objects",
+    /// SOURCES.md), each as Graph gives it.
+    pub async fn rooms(&self) -> Result<Vec<serde_json::Value>, GraphError> {
+        let mut url = format!("{}/places/microsoft.graph.room", self.base);
+        let mut all = Vec::new();
+        loop {
+            let page: serde_json::Value = decode(&self.get(&url, Some(100)).await?)?;
+            all.extend(page["value"].as_array().cloned().unwrap_or_default());
+            match page["@odata.nextLink"].as_str() {
+                // No organisation has rooms without end; a server that says so is not believed.
+                Some(next) if all.len() < 5_000 => url = next.to_owned(),
+                _ => return Ok(all),
+            }
+        }
+    }
+
+    /// Times the server suggests for a meeting ("user: findMeetingTimes",
+    /// SOURCES.md), as it gives them. It changes nothing, so it is safe to repeat.
+    pub async fn find_meeting_times(
+        &self,
+        asked: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/findMeetingTimes", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(asked), true)
+                .await?,
+        )
+    }
+
     /// When people are free and busy between two moments in UTC, in slots
     /// of so many minutes ("calendar: getSchedule", SOURCES.md): one entry
     /// for each address asked about, as Graph gives it. It changes nothing,

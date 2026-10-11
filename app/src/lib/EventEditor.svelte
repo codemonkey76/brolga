@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Calendar, type CalendarEvent, type EventFields, type Repeat, type Scope, addDays, invitedFrom, invitedLine, placeInMonth, span } from "./calendar";
+    import { type Calendar, type CalendarEvent, type EventFields, type Repeat, type Scope, type Room, addDays, invitedFrom, invitedLine, listRooms, placeInMonth, span } from "./calendar";
     import Availability from "./Availability.svelte";
     import Recipients from "./Recipients.svelte";
 
@@ -47,7 +47,8 @@
             isPrivate: event?.sensitivity === "private",
             reminder: event ? (event.reminder_minutes === null ? "" : String(event.reminder_minutes)) : "15",
             description: description ?? "",
-            required: invitedLine((event?.attendees ?? []).filter((each) => each.kind !== "optional")),
+            required: invitedLine((event?.attendees ?? []).filter((each) => each.kind !== "optional" && each.kind !== "resource")),
+            rooms: (event?.attendees ?? []).filter((each) => each.kind === "resource").map((each) => ({ address: each.address ?? "", name: each.name ?? each.address ?? "" })),
             optional: invitedLine((event?.attendees ?? []).filter((each) => each.kind === "optional")),
             unit: (repeat?.unit ?? "") as Repeat["unit"] | "",
             every: repeat?.every ?? 1,
@@ -75,6 +76,32 @@
     let optional = $state(was.optional);
     let showOptional = $state(was.optional !== "");
     let online = $state(false);
+    /** The rooms booked: each is invited as a resource, and answers for itself. */
+    let booked = $state(was.rooms);
+    /** The rooms there are, while one is being chosen. Null when none is. */
+    let rooms = $state<Room[] | null>(null);
+    let roomProblem = $state<string | null>(null);
+
+    async function findRooms() {
+        if (rooms) {
+            rooms = null;
+            return;
+        }
+        roomProblem = null;
+        try {
+            const [start, end] = allDay ? [new Date(`${startDay}T00:00`), new Date(`${endDay}T23:59`)] : [new Date(`${startDay}T${startTime}`), new Date(`${endDay}T${endTime}`)];
+            rooms = await listRooms(accountId, start, end);
+        } catch (failure) {
+            roomProblem = failure && typeof failure === "object" && "message" in failure ? String(failure.message) : String(failure);
+        }
+    }
+
+    function book(room: Room) {
+        if (!booked.some((each) => each.address === room.address)) booked = [...booked, { address: room.address, name: room.name }];
+        // The room is where it is, unless somewhere was already written.
+        if (!location.trim()) location = room.name;
+        rooms = null;
+    }
     /** Whether everyone's free and busy times are shown. */
     let finding = $state(false);
     /** Those whose time is looked at: the owner, and everyone invited whose address reads as one. */
@@ -184,8 +211,12 @@
         // keeps in them, such as how to join online, is not to be lost.
         if (words !== was.description) fields.description = words;
         // Who is invited is given whole, and only if it was changed: then only those it changes are told.
-        if (required !== was.required || optional !== was.optional) {
-            fields.attendees = [...invitedFrom(required, "required"), ...invitedFrom(optional, "optional")];
+        if (required !== was.required || optional !== was.optional || JSON.stringify(booked) !== JSON.stringify(was.rooms)) {
+            fields.attendees = [
+                ...invitedFrom(required, "required"),
+                ...invitedFrom(optional, "optional"),
+                ...booked.map((each) => ({ address: each.address, name: each.name, kind: "resource" as const })),
+            ];
             const wrong = fields.attendees.find((each) => !/^[^\s@]+@[^\s@]+$/.test(each.address));
             if (wrong) {
                 problem = `“${wrong.address}” is not an email address.`;
@@ -306,7 +337,35 @@
         <label class="check"><input type="checkbox" bind:checked={online} /> Teams meeting</label>
     {/if}
 
-    <input type="text" aria-label="Location" placeholder="Location" maxlength="500" bind:value={location} />
+    <div class="place">
+        <input type="text" aria-label="Location" placeholder="Location" maxlength="500" bind:value={location} />
+        <button type="button" aria-expanded={rooms !== null} onclick={findRooms}>{rooms ? "Close" : "Find a room"}</button>
+    </div>
+    {#if booked.length > 0}
+        <ul class="booked" aria-label="Rooms booked">
+            {#each booked as each (each.address)}
+                <li>
+                    {each.name}
+                    <button type="button" class="link" aria-label={`Remove ${each.name}`} onclick={() => (booked = booked.filter((room) => room.address !== each.address))}>Remove</button>
+                </li>
+            {/each}
+        </ul>
+    {/if}
+    {#if roomProblem}<p class="problem" role="alert">{roomProblem}</p>{/if}
+    {#if rooms}
+        <ul class="rooms" aria-label="Rooms">
+            {#each rooms as room (room.address)}
+                <li>
+                    <button type="button" class="plain" onclick={() => book(room)}>
+                        <span>{room.name}{room.building && room.building !== room.name ? ` · ${room.building}` : ""}</span>
+                        <span class="muted">{room.capacity ? `${room.capacity} seats · ` : ""}{room.free === true ? "free" : room.free === false ? "busy" : "not known"}</span>
+                    </button>
+                </li>
+            {:else}
+                <li class="muted">Your organisation has no meeting rooms set up.</li>
+            {/each}
+        </ul>
+    {/if}
 
     <div class="row">
         <label>Show as
@@ -410,6 +469,52 @@
     .people span {
         display: flex;
         justify-content: space-between;
+    }
+
+    .place {
+        display: flex;
+        gap: 0.35rem;
+    }
+
+    .place button {
+        flex: none;
+        font-size: 0.85rem;
+    }
+
+    .booked,
+    .rooms {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 0.85rem;
+    }
+
+    .booked li {
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .rooms {
+        max-height: 11rem;
+        overflow-y: auto;
+        border: 1px solid var(--line);
+        border-radius: 0.3rem;
+    }
+
+    .rooms .plain {
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.3rem 0.5rem;
+        border: 0;
+        background: none;
+        text-align: left;
+        font-size: 0.85rem;
+    }
+
+    .rooms .plain:hover {
+        background: var(--raised);
     }
 
     .find {

@@ -45,6 +45,8 @@ argument `mcp`.
 | `update_event` | Change an event: only what is given. Consequential. |
 | `delete_event` | Delete an event; a meeting you organised is cancelled for everyone. Consequential. |
 | `get_free_busy` | When people are free and busy, and when all of them are free at once. |
+| `find_meeting_times` | Times Microsoft 365 suggests for a meeting with some people. |
+| `find_rooms` | The organisation's meeting rooms, and which are free at a time. |
 | `cancel_event` | Cancel a meeting you organised, with words to everyone invited. Consequential. |
 | `respond_to_event` | Accept, tentatively accept or decline an invitation. Consequential: the organiser is sent the answer. |
 | `get_sync_status` | For each account: syncing or not, needing sign-in or not, how much is on this computer and when it was last brought up to date. |

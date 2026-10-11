@@ -70,7 +70,7 @@ async fn the_browser_is_sent_what_the_documentation_asks_for() {
     assert_eq!(asked["response_mode"], "query");
     assert_eq!(
         asked["scope"],
-        "openid profile offline_access User.Read Mail.ReadWrite Mail.Send MailboxSettings.ReadWrite Calendars.ReadWrite"
+        "openid profile offline_access User.Read Mail.ReadWrite Mail.Send MailboxSettings.ReadWrite Calendars.ReadWrite Calendars.Read.Shared Place.Read.All"
     );
     assert_eq!(asked["code_challenge_method"], "S256");
     assert_eq!(asked["login_hint"], "robin@example.test");

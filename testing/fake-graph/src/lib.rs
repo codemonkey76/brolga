@@ -130,6 +130,11 @@ impl FakeGraph {
                 "/v1.0/me/calendar/getSchedule",
                 axum::routing::post(get_schedule),
             )
+            .route(
+                "/v1.0/me/findMeetingTimes",
+                axum::routing::post(find_meeting_times),
+            )
+            .route("/v1.0/places/microsoft.graph.room", get(rooms))
             .route("/v1.0/me/events", axum::routing::post(create_event))
             .route(
                 "/v1.0/me/calendars/{calendar}/events",
@@ -290,6 +295,19 @@ impl FakeGraph {
     /// Reminders dealt with from a device: (event, `dismissed` or until when).
     pub fn reminders_done(&self) -> Vec<(String, String)> {
         lock(&self.shared).calendars().reminders.clone()
+    }
+
+    /// Give the organisation a meeting room. It is free until said to be busy.
+    pub fn add_room(&self, name: &str, address: &str, capacity: u32, building: &str) {
+        let mut inner = lock(&self.shared);
+        let calendars = inner.calendars();
+        calendars.rooms.push((
+            name.to_owned(),
+            address.to_owned(),
+            capacity,
+            building.to_owned(),
+        ));
+        calendars.busy.entry(address.to_owned()).or_default();
     }
 
     /// Say when someone else is busy: each a (start, end, status) in UTC.
@@ -637,7 +655,14 @@ async fn require_token(request: Request, next: Next) -> Response {
     // Sending is its own permission ("message: send"), and so are the
     // mailbox's settings ("Update user mailbox settings").
     // Calendars are read with Calendars.Read ("event: delta").
-    let allowed = if path.contains("/me/calendar") || path.contains("/me/events") {
+    let allowed = if path.contains("/places/") {
+        // "List place objects".
+        granted.contains(&"Place.Read.All")
+    } else if path.ends_with("/me/findMeetingTimes") {
+        // "user: findMeetingTimes": other people's calendars are looked at.
+        granted.contains(&"Calendars.Read.Shared")
+            || granted.contains(&"Calendars.ReadWrite.Shared")
+    } else if path.contains("/me/calendar") || path.contains("/me/events") {
         granted.contains(&"Calendars.ReadWrite") || (reading && granted.contains(&"Calendars.Read"))
     } else if path.contains("/me/mailboxSettings") || path.contains("/me/outlook/") {
         granted.contains(&"MailboxSettings.ReadWrite")
@@ -656,6 +681,22 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// "List place objects" (SOURCES.md).
+async fn rooms(State(shared): State<Shared>) -> Response {
+    axum::Json(lock(&shared).calendars().room_list()).into_response()
+}
+
+/// "user: findMeetingTimes" (SOURCES.md).
+async fn find_meeting_times(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    match lock(&shared).calendars().meeting_times(&body) {
+        Some(found) => axum::Json(found).into_response(),
+        None => event_refused("ErrorInvalidRequest"),
+    }
 }
 
 /// "calendar: getSchedule" (SOURCES.md).

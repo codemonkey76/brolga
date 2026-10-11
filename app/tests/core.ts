@@ -554,6 +554,16 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 });
                 return { deleted: true };
             },
+            "calendar.rooms.list": () => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so there is no way to list meeting rooms just now." };
+                return {
+                    rooms: [
+                        { name: "Annex", address: "annex@example.test", capacity: 4, building: "Annex", free: true },
+                        { name: "Harbour Room", address: "harbour@example.test", capacity: 12, building: "Head office", free: true },
+                        { name: "Boardroom", address: "board@example.test", capacity: 20, building: "Head office", free: false },
+                    ],
+                };
+            },
             "calendar.free_busy": (args) => {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached. Free and busy times are only known while it can be." };
                 // A day in half hours. Whoever has nothing said of them is free all day.

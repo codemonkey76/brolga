@@ -126,6 +126,19 @@ export interface FreeBusy {
 export const freeBusy = (account_id: string, people: string[], start: Date, end: Date, interval_minutes: number, duration_minutes: number) =>
     execute<FreeBusy>("calendar.free_busy", { account_id, people, start: start.toISOString(), end: end.toISOString(), interval_minutes, duration_minutes });
 
+export interface Room {
+    name: string;
+    address: string;
+    capacity: number | null;
+    building: string;
+    /** Whether it is free at the time asked about. Null where that is not known. */
+    free: boolean | null;
+}
+
+/** The organisation's meeting rooms, with whether each is free between two moments. */
+export const listRooms = async (account_id: string, start: Date, end: Date) =>
+    (await execute<{ rooms: Room[] }>("calendar.rooms.list", { account_id, start: start.toISOString(), end: end.toISOString() })).rooms;
+
 /** Cancel a meeting one organised, with words to everyone invited. */
 export const cancelEvent = (account_id: string, event_id: string, comment: string, scope: Scope = "occurrence") =>
     execute("calendar.events.cancel", { account_id, event_id, ...(comment ? { comment } : {}), ...(scope === "series" ? { scope } : {}) });

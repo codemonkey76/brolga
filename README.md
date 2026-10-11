@@ -5,7 +5,7 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 5 built but for rooms, awaiting its check.** Mail is
+**Status: milestone 5 built, awaiting its check.** Mail is
 built: sync, read, search, mark, flag, categorise, move, archive and delete
 with undo, and write, reply, forward and send with formatting, attachments and
 a signature. So is the calendar: day, work week, week, month and agenda across
@@ -13,9 +13,9 @@ your calendars, with reminders; events made, changed, dragged and deleted,
 repeating ones too, alone, from one on, or as a whole series; meetings called
 with people invited and a Teams link, their answers and proposed times seen,
 and cancelled with a message; invitations answered, with another time proposed;
-and everyone's free and busy times while a meeting is written. Mail has been
-run against a real Microsoft 365 mailbox; changing the calendar has so far only
-been run against the stand-in server. The room finder is not built yet.
+and everyone's free and busy times, and a room that is free, found while a
+meeting is written. Mail has been run against a real Microsoft 365 mailbox;
+changing the calendar has so far only been run against the stand-in server.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 

@@ -3046,3 +3046,87 @@ async fn another_time_is_proposed_with_an_answer_and_seen_by_the_organiser() {
     assert_eq!(jo["proposed_start"], "2027-08-03T03:00:00Z");
     assert_eq!(jo["proposed_end"], "2027-08-03T04:00:00Z");
 }
+
+#[tokio::test]
+async fn rooms_are_found_with_which_are_free_and_the_server_suggests_times() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    f.graph
+        .add_room("Harbour Room", "harbour@example.test", 12, "Head office");
+    f.graph.add_room("Annex", "annex@example.test", 4, "Annex");
+    f.graph
+        .add_room("Boardroom", "board@example.test", 20, "Head office");
+    f.graph.set_busy(
+        "board@example.test",
+        &[("2027-09-01T01:00:00Z", "2027-09-01T02:00:00Z", "busy")],
+    );
+    f.graph.set_busy(
+        "sam@example.test",
+        &[("2027-09-01T00:00:00Z", "2027-09-01T01:00:00Z", "busy")],
+    );
+    f.graph.add_event(
+        &f.graph.default_calendar(),
+        FakeEvent::new("Dentist", "2027-09-01T01:00:00Z", "2027-09-01T01:30:00Z"),
+    );
+    f.sync().await;
+    let names = |found: &Value| -> Vec<(String, Value)> {
+        found["rooms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["name"].as_str().unwrap().to_owned(), r["free"].clone()))
+            .collect()
+    };
+
+    // All of them, by name; then those of a building big enough.
+    let all = f.run("calendar.rooms.list", json!({})).await;
+    assert_eq!(
+        names(&all),
+        [
+            ("Annex".into(), Value::Null),
+            ("Boardroom".into(), Value::Null),
+            ("Harbour Room".into(), Value::Null)
+        ]
+    );
+    assert_eq!(all["rooms"][2]["capacity"], 12);
+    let big = f
+        .run(
+            "calendar.rooms.list",
+            json!({ "query": "head", "min_capacity": 10 }),
+        )
+        .await;
+    assert_eq!(names(&big).len(), 2);
+
+    // For a time: the free ones first.
+    let then = f
+        .run(
+            "calendar.rooms.list",
+            json!({ "start": "2027-09-01T01:00:00Z", "end": "2027-09-01T02:00:00Z" }),
+        )
+        .await;
+    assert_eq!(
+        names(&then),
+        [
+            ("Annex".into(), json!(true)),
+            ("Harbour Room".into(), json!(true)),
+            ("Boardroom".into(), json!(false))
+        ]
+    );
+
+    // Sam is busy the first hour and the owner for half an hour after it: an hour for both starts at half past one.
+    let times = f
+        .run(
+            "calendar.find_meeting_times",
+            json!({ "people": ["sam@example.test"], "start": "2027-09-01T00:00:00Z", "end": "2027-09-01T04:00:00Z", "duration_minutes": 60, "max": 2 }),
+        )
+        .await;
+    assert_eq!(times["suggestions"].as_array().unwrap().len(), 2);
+    assert_eq!(times["suggestions"][0]["start"], "2027-09-01T01:30:00Z");
+    assert_eq!(times["suggestions"][0]["end"], "2027-09-01T02:30:00Z");
+    assert_eq!(times["why_none"], Value::Null);
+    let none = f
+        .run("calendar.find_meeting_times", json!({ "people": ["sam@example.test"], "start": "2027-09-01T00:00:00Z", "end": "2027-09-01T01:00:00Z" }))
+        .await;
+    assert_eq!(none["suggestions"], json!([]));
+    assert_eq!(none["why_none"], "attendeesUnavailable");
+}

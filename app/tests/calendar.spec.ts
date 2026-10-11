@@ -760,3 +760,39 @@ test("another time is proposed with an answer, and the organiser can take one th
     await page.getByRole("alertdialog", { name: "Move the meeting" }).getByRole("button", { name: "Move it" }).click();
     expect((await ran(page)).filter((r) => r.command === "calendar.events.update").at(-1)?.args).toMatchObject({ event_id: "m1", start: "2026-10-16T11:00", end: "2026-10-16T12:00" });
 });
+
+test("a room is found for a meeting and booked with it", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: [] });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    await page.getByRole("button", { name: "New event" }).click();
+    const form = page.getByRole("form", { name: "New event" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Planning");
+    await form.getByLabel("Start day").fill("2026-10-15");
+    await form.getByLabel("Start time").fill("10:00");
+
+    await form.getByRole("button", { name: "Find a room" }).click();
+    const rooms = form.getByRole("list", { name: "Rooms", exact: true });
+    await expect(rooms.getByRole("button")).toHaveText([/Annex.*4 seats · free/, /Harbour Room · Head office.*12 seats · free/, /Boardroom.*20 seats · busy/]);
+    // Asked about for when the meeting is.
+    expect((await ran(page)).filter((r) => r.command === "calendar.rooms.list").at(-1)?.args).toMatchObject({ start: "2026-10-15T00:00:00.000Z", end: "2026-10-15T00:30:00.000Z" });
+    if (process.env.SCREENSHOTS) await page.screenshot({ path: "../docs/screenshots/calendar-rooms.png" });
+
+    await rooms.getByRole("button", { name: /Harbour Room/ }).click();
+    await expect(form.getByRole("textbox", { name: "Location" })).toHaveValue("Harbour Room");
+    await expect(form.getByRole("list", { name: "Rooms booked" })).toContainText("Harbour Room");
+    await form.getByRole("button", { name: "Save" }).click();
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.create").at(-1)?.args).toMatchObject({
+        location: "Harbour Room",
+        attendees: [{ address: "harbour@example.test", name: "Harbour Room", kind: "resource" }],
+    });
+
+    // Changed: the room is still booked, apart from the people, and can be let go.
+    const panel = page.getByRole("complementary", { name: "Event" });
+    await panel.getByRole("button", { name: "Change" }).click();
+    const change = panel.getByRole("form", { name: "Change event" });
+    await expect(change.getByRole("combobox", { name: "Invite" })).toHaveValue("");
+    await change.getByRole("button", { name: "Remove Harbour Room" }).click();
+    await change.getByRole("button", { name: "Save" }).click();
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.update").at(-1)?.args).toMatchObject({ attendees: [] });
+});
