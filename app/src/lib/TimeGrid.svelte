@@ -259,7 +259,7 @@
     }
 
     .head.today .name {
-        color: var(--accent);
+        color: var(--accent-text);
     }
 
     .allday {
@@ -355,7 +355,7 @@
 
     .event.cancelled {
         text-decoration: line-through;
-        opacity: 0.6;
+        color: color-mix(in srgb, CanvasText 78%, Canvas);
     }
 
     .event.tentative {
@@ -374,8 +374,9 @@
         max-width: 100%;
     }
 
+    /* Read against the event's own colour, so a little darker than muted. */
     .time {
-        color: var(--muted);
+        color: color-mix(in srgb, CanvasText 78%, Canvas);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;

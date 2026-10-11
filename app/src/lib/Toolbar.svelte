@@ -203,8 +203,8 @@
     }
 
     .toolbar > button.primary {
-        background: var(--accent);
-        color: Canvas;
+        background: var(--accent-fill);
+        color: var(--on-accent);
     }
 
     .toolbar > button.words {

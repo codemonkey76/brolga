@@ -969,8 +969,8 @@
     }
 
     .mini-grid button.today {
-        background: var(--accent);
-        color: Canvas;
+        background: var(--accent-fill);
+        color: var(--on-accent);
         font-weight: 700;
     }
 </style>

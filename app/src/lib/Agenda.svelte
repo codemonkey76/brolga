@@ -61,7 +61,7 @@
     }
 
     h3.today {
-        color: var(--accent);
+        color: var(--accent-text);
     }
 
     ul {

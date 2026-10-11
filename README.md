@@ -73,6 +73,8 @@ cargo run -p brolga-cli -- commands
 
 cd app && bun run tauri dev                       # the window
 cd app && bun run test                            # the window's own tests, in a headless browser
+
+cargo +nightly fuzz run html fuzz/corpus/html fuzz/seeds/html   # fuzz a parser: html, vcard, pst, search, recurrence
 ```
 
 The window needs Tauri's system libraries; on Linux that is WebKitGTK 4.1.

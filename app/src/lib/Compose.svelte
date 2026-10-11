@@ -624,7 +624,7 @@
     }
 
     .words :global(a) {
-        color: var(--accent);
+        color: var(--accent-text);
     }
 
     textarea {

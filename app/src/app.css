@@ -10,6 +10,11 @@
     --line: color-mix(in srgb, CanvasText 18%, Canvas);
     --muted: color-mix(in srgb, CanvasText 62%, Canvas);
     --accent: AccentColor;
+    /* The accent with words on it, and as words: each deepened towards what
+       it has to be read against, so it can be whatever accent the desktop has. */
+    --accent-fill: color-mix(in srgb, AccentColor 80%, black);
+    --on-accent: white;
+    --accent-text: color-mix(in srgb, AccentColor 65%, CanvasText);
     --danger: #d1352b;
     --warn: #f6c343;
 }
@@ -55,13 +60,13 @@ button:disabled {
 
 button.primary {
     border-color: transparent;
-    background: var(--accent);
-    color: AccentColorText;
+    background: var(--accent-fill);
+    color: var(--on-accent);
     font-weight: 600;
 }
 
 button.primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 85%, CanvasText);
+    background: color-mix(in srgb, var(--accent-fill) 85%, black);
 }
 
 button.danger {

@@ -6,3 +6,7 @@ dist/
 app/src-tauri/gen/schemas/
 app/test-results/
 app/playwright-report/
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/

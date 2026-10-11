@@ -1,0 +1,17 @@
+BEGIN:VCARD
+VERSION:3.0
+N:Example;Robin;;;
+FN:Robin Example
+ORG:Harbour Works;Surveys
+TITLE:Engineer
+EMAIL;TYPE=INTERNET,PREF:robin@example.test
+TEL;TYPE=CELL:+61 400 000 000
+ADR;TYPE=WORK:;;1 Quay St;Brisbane;QLD;4000;Australia
+BDAY:1990-04-01
+NOTE:Met at the\n conference\, twice.
+END:VCARD
+BEGIN:VCARD
+VERSION:2.1
+N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:Nguy=E1=BB=85n;Jo
+EMAIL:jo@example.test
+END:VCARD

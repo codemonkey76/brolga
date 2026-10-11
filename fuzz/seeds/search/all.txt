@@ -1,0 +1,1 @@
+from:sam "budget review" has:attachment is:unread after:2026-01-01 before:2026-02-01 subject:(harbour OR quay) -draft to:robin@example.test

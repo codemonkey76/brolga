@@ -88,3 +88,43 @@ jobs:
         run: cargo deny check
       - name: cargo audit
         run: cargo audit
+
+  # Everything that reads what a stranger wrote is given a minute of
+  # nonsense: a message's HTML, a vCard file, a PST file, a search, and how
+  # an event repeats. A crash, a hang or a broken promise fails the build.
+  fuzz:
+    name: Fuzz the parsers
+    runs-on: ubuntu-latest
+    env:
+      # The fuzzer's own instrumentation trips lints meant for the client.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # A PST file is checked from end to end before it is read, so the
+      # fuzzer starts from a real one.
+      - name: A PST file to begin from
+        run: |
+          mkdir -p fuzz/corpus/pst
+          cargo run --release -p brolga-pst --example make_big -- fuzz/corpus/pst/seed.pst 0 0 0
+      - name: Fuzz
+        run: |
+          for target in html vcard search recurrence; do
+            mkdir -p "fuzz/corpus/$target"
+            cargo fuzz run "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+          done
+          cargo fuzz run pst -- -max_total_time=60 -max_len=1048576 -timeout=20 -rss_limit_mb=4096
+      - name: Keep what broke it
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts

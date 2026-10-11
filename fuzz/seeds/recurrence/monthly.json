@@ -1,0 +1,1 @@
+{"start":"2024-01-31T23:00:00","end":"2024-02-01T01:00:00","zone":"Europe/London","recurrence":{"pattern":{"type":"absoluteMonthly","interval":1,"dayOfMonth":31},"range":{"type":"numbered","startDate":"2024-01-31","numberOfOccurrences":40}}}

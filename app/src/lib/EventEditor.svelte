@@ -525,7 +525,7 @@
         border: 0;
         background: none;
         padding: 0;
-        color: var(--accent);
+        color: var(--accent-text);
         font-size: 0.85rem;
     }
 

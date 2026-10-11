@@ -106,9 +106,9 @@
     }
 
     button.given {
-        background: var(--accent);
+        background: var(--accent-fill);
         border-color: var(--accent);
-        color: Canvas;
+        color: var(--on-accent);
     }
 
     details {

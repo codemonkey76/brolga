@@ -119,8 +119,8 @@
     }
 
     .cell.today .date {
-        background: var(--accent);
-        color: Canvas;
+        background: var(--accent-fill);
+        color: var(--on-accent);
         border-radius: 999px;
         font-weight: 700;
     }
@@ -166,10 +166,11 @@
 
     .event.cancelled {
         text-decoration: line-through;
-        opacity: 0.6;
+        color: color-mix(in srgb, CanvasText 78%, Canvas);
     }
 
+    /* Read against the event's own colour, so a little darker than muted. */
     .time {
-        color: var(--muted);
+        color: color-mix(in srgb, CanvasText 78%, Canvas);
     }
 </style>
