@@ -7,7 +7,7 @@
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
     import Toolbar from "./Toolbar.svelte";
-    import { type Answer, respond } from "./calendar";
+    import { type Answer, type Proposed, respond } from "./calendar";
 
     interface Props {
         accounts: Account[];
@@ -328,11 +328,11 @@
     }
 
     /** Answer the invitation that is open. A failure is for the card to say. */
-    async function answer(given: Answer, comment: string, organiserTold: boolean) {
+    async function answer(given: Answer, comment: string, organiserTold: boolean, proposed?: Proposed) {
         const meeting = opened?.meeting;
         if (!accountId || !opened || !meeting?.event_id) return;
         const id = opened.message.id;
-        const result = await respond(accountId, meeting.event_id, given, comment, organiserTold);
+        const result = await respond(accountId, meeting.event_id, given, comment, organiserTold, proposed);
         // A declined meeting has left the calendar: there is nothing more to answer.
         if (opened?.message.id === id) {
             opened = { ...opened, meeting: { ...meeting, response: result.response, event_id: given === "decline" ? null : meeting.event_id } };

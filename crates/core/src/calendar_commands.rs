@@ -1393,6 +1393,8 @@ struct Respond {
     response: String,
     comment: Option<String>,
     send_response: Option<bool>,
+    proposed_start: Option<String>,
+    proposed_end: Option<String>,
 }
 
 /// Answer an invitation. It is done at once and not queued: an answer is
@@ -1439,9 +1441,44 @@ async fn respond(mailboxes: Arc<Mailboxes>, args: Respond) -> Result<Value, Comm
         ));
     }
 
+    // Another time, proposed with the answer.
+    let proposed = match (&args.proposed_start, &args.proposed_end) {
+        (None, None) => None,
+        (Some(start), Some(end)) => {
+            let (start, end) = (moment(start)?, moment(end)?);
+            if end <= start {
+                return Err(failed("The time proposed would end before it starts."));
+            }
+            if action == "accept" {
+                return Err(failed(
+                    "Another time is proposed with a tentative answer or a decline, not with an acceptance.",
+                ));
+            }
+            if !told {
+                return Err(failed(
+                    "Another time is proposed to the organiser: it cannot be given with send_response false.",
+                ));
+            }
+            Some((start, end))
+        }
+        _ => {
+            return Err(failed(
+                "Give both proposed_start and proposed_end, or neither.",
+            ));
+        }
+    };
+
     let asked = mailbox
         .graph
-        .respond_to_event(&args.event_id, action, comment.trim(), told)
+        .respond_to_event(
+            &args.event_id,
+            action,
+            comment.trim(),
+            told,
+            proposed
+                .as_ref()
+                .map(|(start, end)| (start.as_str(), end.as_str())),
+        )
         .await;
     if let Err(error) = asked {
         if !error.is_transient() {
@@ -1932,7 +1969,9 @@ pub(crate) fn register(
                     "event_id": { "type": "string", "description": "From calendar.events.list, or the event_id of a meeting invitation read with mail.messages.get." },
                     "response": { "enum": ["accept", "tentative", "decline"] },
                     "comment": { "type": "string", "maxLength": 2000, "description": "Words to the organiser, sent with the answer." },
-                    "send_response": { "type": "boolean", "description": "False answers without telling the organiser. Default true." }
+                    "send_response": { "type": "boolean", "description": "False answers without telling the organiser. Default true." },
+                    "proposed_start": { "type": "string", "description": "With tentative or decline: another time you would rather have, as a moment with its offset. The organiser must allow proposals." },
+                    "proposed_end": { "type": "string" }
                 },
                 "required": ["event_id", "response"],
                 "additionalProperties": false

@@ -33,7 +33,7 @@ export interface CalendarEvent {
     series_id?: string | null;
     reminder_minutes: number | null;
     join_url: string | null;
-    attendees: { name: string | null; address: string | null; kind: string; response: string }[];
+    attendees: { name: string | null; address: string | null; kind: string; response: string; proposed_start?: string | null; proposed_end?: string | null }[];
 }
 
 export type View = "day" | "work_week" | "week" | "month" | "agenda";
@@ -155,14 +155,21 @@ export function placeInMonth(day: Date): { weekday: string; nth: string; isLast:
 
 export type Answer = "accept" | "tentative" | "decline";
 
+/** Another time, proposed with an answer. */
+export interface Proposed {
+    start: Date;
+    end: Date;
+}
+
 /** Answer an invitation. The organiser is sent the answer unless `send_response` is false. */
-export const respond = (account_id: string, event_id: string, response: Answer, comment: string, send_response: boolean) =>
+export const respond = (account_id: string, event_id: string, response: Answer, comment: string, send_response: boolean, proposed?: Proposed) =>
     execute<{ response: string; organizer_told: boolean }>("calendar.events.respond", {
         account_id,
         event_id,
         response,
         send_response,
         ...(comment ? { comment } : {}),
+        ...(proposed ? { proposed_start: proposed.start.toISOString(), proposed_end: proposed.end.toISOString() } : {}),
     });
 
 export const createCalendar = (account_id: string, name: string) => execute("calendar.calendars.create", { account_id, name });

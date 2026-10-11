@@ -5,19 +5,17 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 5 under way.** Mail is built: sync, read, search, mark,
-flag, categorise, move, archive and delete with undo, and write, reply,
-forward and send with formatting, attachments and a signature. The calendar
-can be read: day, work week, week, month and agenda, across your calendars,
-with reminders. Invitations read as invitations and can be accepted,
-tentatively accepted or declined, from the message or the calendar, and
-events can be made, changed and deleted, repeating ones too: one occurrence,
-that one and the rest, or the whole series. Meetings can be called, with
-people invited and a Teams link, their answers seen, and cancelled with a
-message. Mail has been run against a real Microsoft 365 mailbox; changing the
-calendar has so far only been run against the stand-in server. When writing
-a meeting, everyone's free and busy times can be seen and a time that suits
-all taken. The room finder is not built yet.
+**Status: milestone 5 built but for rooms, awaiting its check.** Mail is
+built: sync, read, search, mark, flag, categorise, move, archive and delete
+with undo, and write, reply, forward and send with formatting, attachments and
+a signature. So is the calendar: day, work week, week, month and agenda across
+your calendars, with reminders; events made, changed, dragged and deleted,
+repeating ones too, alone, from one on, or as a whole series; meetings called
+with people invited and a Teams link, their answers and proposed times seen,
+and cancelled with a message; invitations answered, with another time proposed;
+and everyone's free and busy times while a meeting is written. Mail has been
+run against a real Microsoft 365 mailbox; changing the calendar has so far only
+been run against the stand-in server. The room finder is not built yet.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 

@@ -719,3 +719,44 @@ test("an event is dragged to another time and day, and stretched by its foot", a
     await expect(form.getByLabel("Start day")).toHaveValue("2026-10-12");
     await expect(form.getByLabel("Start time")).toHaveValue("16:30");
 });
+
+test("another time is proposed with an answer, and the organiser can take one that was proposed", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    const mine = {
+        id: "m1",
+        subject: "Kick-off",
+        start: "2026-10-15T03:00:00Z",
+        end: "2026-10-15T04:00:00Z",
+        mine: true,
+        attendees: [{ name: "Jo Nguyen", address: "jo@example.test", kind: "required", response: "tentativelyAccepted", proposed_start: "2026-10-16T01:00:00Z", proposed_end: "2026-10-16T02:00:00Z" }],
+    };
+    await withCore(page, { accounts: [robin], events: [...unanswered, mine] });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    const calendar = page.getByRole("region", { name: "Calendar" });
+    const panel = page.getByRole("complementary", { name: "Event" });
+
+    // Invited: tentative, and half past three would suit better.
+    await calendar.getByRole("button", { name: /Budget review/ }).click();
+    const answers = panel.getByRole("group", { name: "Answer the invitation" });
+    await answers.getByText("Options").click();
+    await answers.getByLabel("Propose another time").check();
+    await expect(answers.getByLabel("Proposed day")).toHaveValue("2026-10-14");
+    await answers.getByLabel("Proposed start").fill("15:30");
+    await answers.getByLabel("Proposed end").fill("16:30");
+    // Another time does not go with an acceptance.
+    await expect(answers.getByRole("button", { name: "Accept" })).toBeDisabled();
+    await answers.getByRole("button", { name: "Tentative" }).click();
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.respond").at(-1)?.args).toMatchObject({
+        response: "tentative",
+        send_response: true,
+        proposed_start: "2026-10-14T05:30:00.000Z",
+        proposed_end: "2026-10-14T06:30:00.000Z",
+    });
+
+    // Organising: Jo's proposal is beside her answer, and can be taken, once it has been asked.
+    await calendar.getByRole("button", { name: /Kick-off/ }).click();
+    await expect(panel).toContainText("proposes Fri, Oct 16, 11:00 AM to 12:00 PM");
+    await panel.getByRole("button", { name: "Use this time" }).click();
+    await page.getByRole("alertdialog", { name: "Move the meeting" }).getByRole("button", { name: "Move it" }).click();
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.update").at(-1)?.args).toMatchObject({ event_id: "m1", start: "2026-10-16T11:00", end: "2026-10-16T12:00" });
+});

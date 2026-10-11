@@ -49,6 +49,10 @@ pub struct FakeEvent {
     pub attendees: Vec<(String, String, String, String)>,
     /// It can be joined online.
     pub online: bool,
+    /// Those invited may propose another time.
+    pub allow_proposals: bool,
+    /// Other times those invited have proposed: `(address, start, end)` in UTC.
+    pub proposals: Vec<(String, String, String)>,
     pub sensitivity: String,
     pub categories: Vec<String>,
     /// What it says, as HTML or plain words.
@@ -81,6 +85,8 @@ impl FakeEvent {
             overrides: Vec::new(),
             attendees: Vec::new(),
             online: false,
+            allow_proposals: true,
+            proposals: Vec::new(),
             sensitivity: "normal".to_owned(),
             categories: Vec::new(),
             body: None,
@@ -726,13 +732,18 @@ impl Calendars {
 
     /// Answer an invitation ("event: accept" and its fellows): `Err` says
     /// why not. A declined event leaves the calendar.
-    pub fn respond(&mut self, id: &str, answer: &str) -> Result<(), &'static str> {
+    pub fn respond(&mut self, id: &str, answer: &str, proposing: bool) -> Result<(), &'static str> {
         let own = id.split('.').next().unwrap_or(id).to_owned();
         let Some(stored) = self.events.get_mut(&own).filter(|stored| !stored.deleted) else {
             return Err("ErrorItemNotFound");
         };
         if stored.event.organizer.is_none() {
             return Err("organizer");
+        }
+        // "event: decline": another time may be proposed only where the
+        // organiser allows it, and never with an acceptance.
+        if proposing && (!stored.event.allow_proposals || answer == "accept") {
+            return Err("proposals");
         }
         match answer {
             "accept" => {
@@ -800,11 +811,19 @@ impl Calendars {
                     Some((name, address)) => json!({ "name": name, "address": address }),
                     None => json!({ "name": "Robin Example", "address": "robin@example.test" }),
                 } },
-                "attendees": event.attendees.iter().map(|(name, address, kind, response)| json!({
-                    "type": kind,
-                    "status": { "response": response, "time": "0001-01-01T00:00:00Z" },
-                    "emailAddress": { "name": name, "address": address }
-                })).collect::<Vec<_>>(),
+                "allowNewTimeProposals": event.allow_proposals,
+                "attendees": event.attendees.iter().map(|(name, address, kind, response)| {
+                    let mut one = json!({
+                        "type": kind,
+                        "status": { "response": response, "time": "0001-01-01T00:00:00Z" },
+                        "emailAddress": { "name": name, "address": address }
+                    });
+                    if let Some((_, start, end)) = event.proposals.iter().find(|each| each.0 == *address) {
+                        let at = |moment: &str| json!({ "dateTime": format!("{}.0000000", moment.trim_end_matches('Z')), "timeZone": "UTC" });
+                        one["proposedNewTime"] = json!({ "start": at(start), "end": at(end) });
+                    }
+                    one
+                }).collect::<Vec<_>>(),
                 "responseStatus": { "response": if event.organizer.is_some() { event.response.as_str() } else { "organizer" } },
                 "type": kind,
                 "seriesMasterId": if kind == "singleInstance" { Value::Null } else { json!(id) },

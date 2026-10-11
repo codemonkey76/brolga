@@ -296,7 +296,10 @@ pub fn event_row(event: Event) -> Option<EventRow> {
         .into_iter()
         .map(|attendee| {
             let who = attendee.email_address.unwrap_or_default();
+            let proposed = attendee.proposed_new_time.as_ref().and_then(|slot| Some((moment(&slot.start)?, moment(&slot.end)?)));
             serde_json::json!({
+                "proposed_start": proposed.as_ref().map(|slot| &slot.0),
+                "proposed_end": proposed.as_ref().map(|slot| &slot.1),
                 "name": who.name,
                 "address": who.address,
                 "kind": attendee.kind.unwrap_or_else(|| "required".to_owned()),

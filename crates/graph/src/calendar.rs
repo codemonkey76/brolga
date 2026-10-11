@@ -73,6 +73,15 @@ pub struct Attendee {
     pub kind: Option<String>,
     pub email_address: Option<EmailAddress>,
     pub status: Option<ResponseStatus>,
+    /// Another time they would rather have, if they proposed one.
+    pub proposed_new_time: Option<TimeSlot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeSlot {
+    pub start: DateTimeTimeZone,
+    pub end: DateTimeTimeZone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

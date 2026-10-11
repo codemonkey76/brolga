@@ -3,6 +3,7 @@
     import Agenda from "./Agenda.svelte";
     import {
         type Answer,
+        type Proposed,
         type Calendar,
         type EventFields,
         type Repeat,
@@ -28,6 +29,7 @@
         startOfDay,
         startOfWeek,
         step,
+        timeSaid,
         whenSaid,
     } from "./calendar";
     import { execute, say } from "./commands";
@@ -274,10 +276,10 @@
     }
 
     /** Answer the invitation that is open. A failure is for the buttons to say. */
-    async function answer(given: Answer, comment: string, tell: boolean) {
+    async function answer(given: Answer, comment: string, tell: boolean, proposed?: Proposed) {
         const event = selected;
         if (!accountId || !event) return;
-        const result = await respond(accountId, event.id, given, comment, tell);
+        const result = await respond(accountId, event.id, given, comment, tell, proposed);
         // A declined meeting leaves the calendar.
         if (selected?.id === event.id) selected = given === "decline" ? null : { ...event, response: result.response };
         await load();
@@ -572,7 +574,7 @@
                 <p class="small">Organised by {selected.organizer.name || selected.organizer.address}{SAID[selected.response] && !selected.is_organizer ? ` · ${SAID[selected.response]}` : ""}</p>
             {/if}
             {#if !selected.is_organizer && !selected.is_cancelled && ["notResponded", "accepted", "tentativelyAccepted", "declined"].includes(selected.response)}
-                <Rsvp response={selected.response} onAnswer={answer} />
+                <Rsvp response={selected.response} onAnswer={answer} start={selected.is_all_day ? null : selected.start} end={selected.is_all_day ? null : selected.end} />
             {/if}
             {#if selected.attendees.length > 0}
                 {@const answers = selected.attendees}
@@ -586,7 +588,16 @@
                 {/if}
                 <ul class="people">
                     {#each selected.attendees as each (each.address)}
-                        <li>{each.name || each.address} <span class="muted">{ANSWERED[each.response] ?? each.response}{each.kind === "optional" ? " · optional" : ""}</span></li>
+                        <li>{each.name || each.address} <span class="muted">{ANSWERED[each.response] ?? each.response}{each.kind === "optional" ? " · optional" : ""}</span>
+                            {#if selected.is_organizer && each.proposed_start && each.proposed_end}
+                                {@const start = new Date(each.proposed_start)}
+                                {@const end = new Date(each.proposed_end)}
+                                <span class="proposal">
+                                    proposes {start.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}, {timeSaid(start)} to {timeSaid(end)}
+                                    <button type="button" onclick={() => selected && moved(selected, start, end)}>Use this time</button>
+                                </span>
+                            {/if}
+                        </li>
                     {/each}
                 </ul>
             {/if}
@@ -661,6 +672,16 @@
 
     .drop .danger {
         color: var(--danger);
+    }
+
+    .proposal {
+        display: block;
+        font-size: 0.85rem;
+    }
+
+    .proposal button {
+        font-size: 0.8rem;
+        padding: 0.1rem 0.4rem;
     }
 
     .asking {

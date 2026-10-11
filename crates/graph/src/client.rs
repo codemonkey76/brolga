@@ -334,9 +334,16 @@ impl GraphClient {
         answer: &str,
         comment: &str,
         send_response: bool,
+        proposed: Option<(&str, &str)>,
     ) -> Result<(), GraphError> {
         let url = format!("{}/me/events/{event_id}/{answer}", self.base);
-        let body = serde_json::json!({ "comment": comment, "sendResponse": send_response });
+        let mut body = serde_json::json!({ "comment": comment, "sendResponse": send_response });
+        // Another time, proposed with the answer: its start and end in UTC
+        // ("Propose new meeting times", SOURCES.md).
+        if let Some((start, end)) = proposed {
+            let at = |moment: &str| serde_json::json!({ "dateTime": moment.trim_end_matches('Z'), "timeZone": "UTC" });
+            body["proposedNewTime"] = serde_json::json!({ "start": at(start), "end": at(end) });
+        }
         self.send(reqwest::Method::POST, &url, None, Some(&body), false)
             .await?;
 

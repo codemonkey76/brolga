@@ -840,7 +840,7 @@ export interface FakeEvent {
     show_as?: string;
     is_cancelled?: boolean;
     join_url?: string;
-    attendees?: { name: string; address: string; kind: string; response: string }[];
+    attendees?: { name: string; address: string; kind: string; response: string; proposed_start?: string; proposed_end?: string }[];
     description?: string;
     /** The owner's own answer. Left out, the meeting has been accepted. */
     response?: string;

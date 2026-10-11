@@ -2687,7 +2687,7 @@ async fn a_meeting_invites_tells_only_who_it_must_and_is_cancelled_with_a_word()
     assert!(made["join_url"].as_str().unwrap().starts_with("https://"));
     assert_eq!(
         made["attendees"][0],
-        json!({ "name": "Sam Taylor", "address": "sam@example.test", "kind": "required", "response": "none" })
+        json!({ "name": "Sam Taylor", "address": "sam@example.test", "kind": "required", "response": "none", "proposed_start": null, "proposed_end": null })
     );
     assert_eq!(made["attendees"][1]["kind"], "optional");
     assert_eq!(
@@ -2964,4 +2964,85 @@ async fn a_calendar_is_made_and_deleted_and_a_reminder_dealt_with_is_dealt_with_
         .await
         .unwrap_err();
     assert!(refused.to_string().contains("main calendar"), "{refused}");
+}
+
+#[tokio::test]
+async fn another_time_is_proposed_with_an_answer_and_seen_by_the_organiser() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    let main = f.graph.default_calendar();
+    let theirs = |subject: &str| {
+        FakeEvent::new(subject, "2027-08-02T01:00:00Z", "2027-08-02T02:00:00Z")
+            .invited_by("Sam Taylor", "sam@example.test")
+    };
+    let open = f.graph.add_event(&main, theirs("Review"));
+    let closed = f.graph.add_event(&main, {
+        let mut event = theirs("Fixed");
+        event.allow_proposals = false;
+        event
+    });
+    f.sync().await;
+    let propose = |id: &str, response: &str| json!({ "event_id": id, "response": response, "proposed_start": "2027-08-02T15:00:00+10:00", "proposed_end": "2027-08-02T16:00:00+10:00" });
+
+    f.run("calendar.events.respond", propose(&open, "tentative"))
+        .await;
+    assert_eq!(
+        f.graph.proposed_times(),
+        [(
+            open.clone(),
+            "2027-08-02T05:00:00Z".to_owned(),
+            "2027-08-02T06:00:00Z".to_owned()
+        )]
+    );
+
+    // Not with an acceptance, not behind the organiser's back, not half a time, and not where the organiser will not have it.
+    let mut quiet = propose(&open, "decline");
+    quiet["send_response"] = json!(false);
+    let mut half = propose(&open, "decline");
+    half.as_object_mut().unwrap().remove("proposed_end");
+    for bad in [propose(&open, "accept"), quiet, half] {
+        assert!(
+            f.registry
+                .execute("calendar.events.respond", bad.clone())
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+    let refused = f
+        .registry
+        .execute("calendar.events.respond", propose(&closed, "decline"))
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("does not allow"), "{refused}");
+    assert_eq!(f.graph.proposed_times().len(), 1);
+    assert_eq!(f.graph.responses().len(), 1);
+
+    // For a meeting of one's own, what someone invited proposes is read with their answer.
+    let made = f
+        .run(
+            "calendar.events.create",
+            json!({ "subject": "Mine", "start": "2027-08-03T01:00:00Z", "end": "2027-08-03T02:00:00Z", "time_zone": "UTC",
+                    "attendees": [{ "address": "jo@example.test" }] }),
+        )
+        .await["event"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.graph.change_event(&made, |event| {
+        event.attendees[0].3 = "tentativelyAccepted".to_owned();
+        event.proposals.push((
+            "jo@example.test".to_owned(),
+            "2027-08-03T03:00:00Z".to_owned(),
+            "2027-08-03T04:00:00Z".to_owned(),
+        ));
+    });
+    f.sync().await;
+    let jo = f
+        .run("calendar.events.get", json!({ "event_id": made }))
+        .await["event"]["attendees"][0]
+        .clone();
+    assert_eq!(jo["response"], "tentativelyAccepted");
+    assert_eq!(jo["proposed_start"], "2027-08-03T03:00:00Z");
+    assert_eq!(jo["proposed_end"], "2027-08-03T04:00:00Z");
 }

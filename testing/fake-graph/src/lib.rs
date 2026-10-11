@@ -67,6 +67,8 @@ struct Inner {
     lose_next_response_answer: bool,
     /// Every answer to an invitation: (event, answer, comment, organiser told).
     responses: Vec<(String, String, String, bool)>,
+    /// Every other time proposed with an answer: (event, start, end) in UTC.
+    proposed: Vec<(String, String, String)>,
     automatic_replies: Option<Value>,
     calendars: Option<calendar::Calendars>,
     /// Large files on their way up, by session.
@@ -321,6 +323,11 @@ impl FakeGraph {
 
     pub fn lose_next_event_answer(&self) {
         lock(&self.shared).lose_next_event_answer = true;
+    }
+
+    /// Every other time the owner has proposed with an answer: (event, start, end).
+    pub fn proposed_times(&self) -> Vec<(String, String, String)> {
+        lock(&self.shared).proposed.clone()
     }
 
     pub fn lose_next_response_answer(&self) {
@@ -786,8 +793,23 @@ async fn event_action(
         );
     }
     let mut inner = lock(&shared);
-    match inner.calendars().respond(&event, &action) {
+    let proposed = &body["proposedNewTime"];
+    let told = body["sendResponse"].as_bool().unwrap_or(true);
+    if proposed.is_object() && !told {
+        return event_refused("ErrorInvalidRequest");
+    }
+    match inner
+        .calendars()
+        .respond(&event, &action, proposed.is_object())
+    {
         Ok(()) => {}
+        Err("proposals") => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "ErrorInvalidRequest",
+                "The organizer of this meeting does not allow new time proposals.",
+            );
+        }
         Err("organizer") => {
             return error(
                 StatusCode::BAD_REQUEST,
@@ -803,8 +825,15 @@ async fn event_action(
             );
         }
     }
-    let told = body["sendResponse"].as_bool().unwrap_or(true);
     let comment = body["comment"].as_str().unwrap_or_default().to_owned();
+    if let (Some(start), Some(end)) = (
+        proposed["start"]["dateTime"].as_str(),
+        proposed["end"]["dateTime"].as_str(),
+    ) {
+        inner
+            .proposed
+            .push((event.clone(), format!("{start}Z"), format!("{end}Z")));
+    }
     inner.responses.push((event, action, comment, told));
     if std::mem::take(&mut inner.lose_next_response_answer) {
         // Answered, and the caller never hears of it.

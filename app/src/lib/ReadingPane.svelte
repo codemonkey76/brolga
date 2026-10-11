@@ -1,6 +1,6 @@
 <script lang="ts">
     import { CalendarDays } from "@lucide/svelte";
-    import type { Answer } from "./calendar";
+    import type { Answer, Proposed } from "./calendar";
     import Rsvp from "./Rsvp.svelte";
     import { type Attachment, type Category, type Message, type Opened, categoryColour, size, when, who } from "./mail";
 
@@ -21,7 +21,7 @@
         /** Show a day in the calendar. */
         onCalendar: (day: Date) => void;
         /** Answer the invitation the message is. */
-        onAnswer: (answer: Answer, comment: string, tell: boolean) => Promise<void>;
+        onAnswer: (answer: Answer, comment: string, tell: boolean, proposed?: Proposed) => Promise<void>;
         /** The mailbox's categories, for the colour of each. */
         categories: Category[];
         /** Always show this sender's remote pictures, or stop. */
@@ -228,7 +228,7 @@
                         {/if}
                         {#if meeting.response && ANSWERED[meeting.response]}<p class="muted">{ANSWERED[meeting.response]}.</p>{/if}
                         {#if meeting.event_id}
-                            <Rsvp response={meeting.response} {onAnswer} />
+                            <Rsvp response={meeting.response} {onAnswer} start={meeting.start} end={meeting.end} />
                         {/if}
                     {/if}
                 </div>
