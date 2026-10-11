@@ -3968,3 +3968,88 @@ async fn contacts_are_read_from_a_vcard_file_and_written_to_one() {
             .contains("stopped answering")
     );
 }
+
+#[tokio::test]
+async fn a_persons_card_says_who_they_are_their_last_mail_and_the_meetings_to_come() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_person(
+        "Sam Taylor",
+        "sam.taylor@example.test",
+        "Buyer",
+        "Purchasing",
+    );
+    for n in 1..=7 {
+        f.graph.add_message(
+            &f.inbox,
+            message(
+                &format!("Order {n}"),
+                "Sam Taylor",
+                &format!("2026-10-0{n}T09:00:00Z"),
+            ),
+        );
+    }
+    f.graph.add_message(
+        &f.inbox,
+        message("From someone else", "Alex Chen", "2026-10-08T09:00:00Z"),
+    );
+    let main = f.graph.default_calendar();
+    let soon = |days: i64| {
+        jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::from_hours(24 * days))
+            .unwrap()
+            .strftime("%Y-%m-%dT%H:00:00Z")
+            .to_string()
+    };
+    f.graph.add_event(
+        &main,
+        brolga_fake_graph::FakeEvent::new("Supplier review", &soon(3), &soon(4))
+            .invited_by("Sam Taylor", "Sam.Taylor@example.test"),
+    );
+    f.graph.add_event(
+        &main,
+        brolga_fake_graph::FakeEvent::new("Nothing to do with Sam", &soon(5), &soon(6)),
+    );
+    f.sync().await;
+
+    let card = f
+        .run(
+            "people.card",
+            json!({ "address": " Sam.Taylor@Example.test " }),
+        )
+        .await;
+
+    assert_eq!(card["address"], "sam.taylor@example.test");
+    assert_eq!(card["person"]["name"], "Sam Taylor");
+    assert_eq!(card["person"]["job_title"], "Buyer");
+    let mail = card["recent_mail"].as_array().unwrap();
+    assert_eq!(mail.len(), 5);
+    assert_eq!(mail[0]["subject"], "Order 7");
+    let meetings = card["upcoming_meetings"].as_array().unwrap();
+    assert_eq!(meetings.len(), 1);
+    assert_eq!(meetings[0]["subject"], "Supplier review");
+
+    // Someone nobody knows is still a card, with nothing on it; and with the
+    // server out of reach the mail and meetings are still there.
+    let stranger = f
+        .run("people.card", json!({ "address": "nobody@elsewhere.test" }))
+        .await;
+    assert_eq!(stranger["person"], Value::Null);
+    assert!(stranger["recent_mail"].as_array().unwrap().is_empty());
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    let offline = f
+        .run(
+            "people.card",
+            json!({ "address": "sam.taylor@example.test" }),
+        )
+        .await;
+    assert_eq!(offline["recent_mail"].as_array().unwrap().len(), 5);
+    assert_eq!(offline["upcoming_meetings"].as_array().unwrap().len(), 1);
+
+    assert!(
+        f.registry
+            .execute("people.card", json!({ "address": "not an address" }))
+            .await
+            .is_err()
+    );
+}

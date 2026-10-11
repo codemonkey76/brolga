@@ -615,6 +615,17 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 (core.contacts ?? [])[at] = changed;
                 return { contact: changed, note: "" };
             },
+            "people.card": (args) => {
+                const known = (core.directory ?? []).find((each) => each.address === args.address);
+                return {
+                    address: args.address,
+                    person: known ? { ...known, company: "", phones: ["+61 7 5550 0100"], source: "directory" } : null,
+                    recent_mail: mail.filter((m) => m.from.address === args.address).map((m) => ({ id: m.id, folder_id: "inbox", subject: m.subject, received_at: m.received_at, is_read: true })),
+                    upcoming_meetings: (core.events ?? []).filter((e) => !e.mine && args.address === "sam.taylor@example.test").map((e) => ({ id: e.id, subject: e.subject, start: e.start, end: e.end, is_all_day: false, location: "" })),
+                    directory_searched: true,
+                    note: "",
+                };
+            },
             "contacts.import": (args) => {
                 if (!String(args.path).endsWith(".vcf")) throw { code: "failed", message: "There are no contacts in that file." };
                 core.contacts = [...(core.contacts ?? []), { id: "imported-1", folder_id: args.folder_id ?? "", name: "Jo Nguyen", given_name: "Jo", surname: "Nguyen", emails: [{ address: "jo@example.test", name: "" }], business_phones: [], home_phones: [], categories: [] }];

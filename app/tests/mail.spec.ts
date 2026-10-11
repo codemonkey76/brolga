@@ -1128,3 +1128,44 @@ test("a search can be of every folder or only the one shown", async ({ page }) =
     await page.reload();
     await expect(where).toHaveValue("folder");
 });
+
+test("pausing over a sender's name shows who they are, their recent mail and the meetings to come", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: inbox,
+        events: [{ id: "e9", subject: "Supplier review", start: "2026-10-20T01:00:00Z", end: "2026-10-20T02:00:00Z" }],
+        directory: [{ name: "Sam Taylor", address: "sam.taylor@example.test", job_title: "Buyer", department: "Purchasing" }],
+    });
+    await messages(page).getByRole("option", { name: /Budget review moved/ }).click();
+    const sender = page.getByRole("button", { name: "Sam Taylor", exact: true });
+
+    await sender.hover();
+    const card = page.getByRole("dialog", { name: "About Sam Taylor" });
+    await expect(card).toContainText("Buyer · Purchasing");
+    await expect(card).toContainText("sam.taylor@example.test");
+    await expect(card).toContainText("In your organisation");
+    await expect(card.getByRole("list", { name: "Recent mail" }).getByRole("listitem")).toContainText(["Budget review moved to Thursday"]);
+    await expect(card.getByRole("list", { name: "Coming up together" }).getByRole("listitem")).toContainText(["Supplier review"]);
+    expect((await ran(page)).find((r) => r.command === "people.card")?.args).toMatchObject({ account_id: robin.id, address: "sam.taylor@example.test" });
+    await picture(page, "contact-card");
+
+    // Moving away puts it down, and the name itself works by key as well as by mouse.
+    await page.getByRole("searchbox").hover();
+    await expect(card).toHaveCount(0);
+    await sender.focus();
+    await page.keyboard.press("Enter");
+    await expect(card).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(card).toHaveCount(0);
+});
+
+test("a sender nobody knows still has a card, with their mail and nothing claimed about who they are", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option", { name: /Action needed/ }).click();
+    await page.getByRole("button", { name: "IT Support", exact: true }).click();
+
+    const card = page.getByRole("dialog", { name: "About IT Support" });
+    await expect(card.getByRole("list", { name: "Recent mail" }).getByRole("listitem")).toHaveCount(1);
+    await expect(card).not.toContainText("In your");
+    await expect(card.getByRole("list", { name: "Coming up together" })).toHaveCount(0);
+});

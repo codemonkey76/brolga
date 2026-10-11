@@ -921,6 +921,7 @@
         {/key}
     {:else}
         <ReadingPane
+            {accountId}
             {opened}
             loading={opening}
             problem={readingProblem}

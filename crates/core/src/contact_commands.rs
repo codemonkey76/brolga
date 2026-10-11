@@ -611,6 +611,120 @@ async fn search(mailboxes: Arc<Mailboxes>, args: Search) -> Result<Value, Comman
     Ok(json!({ "people": people, "directory_searched": reached, "note": UNTRUSTED }))
 }
 
+#[derive(Deserialize)]
+struct Card {
+    account_id: Option<String>,
+    address: String,
+}
+
+/// What is known of one person, by their address: who they are, the last
+/// mail from them, and the meetings coming up that they are in.
+async fn card(mailboxes: Arc<Mailboxes>, args: Card) -> Result<Value, CommandError> {
+    let address = args.address.trim().to_lowercase();
+    if !address.contains('@') || address.contains(char::is_whitespace) {
+        return Err(failed(format!("`{address}` is not an email address.")));
+    }
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+
+    // Who they are: a contact first, and failing that the organisation.
+    let found = search(
+        mailboxes.clone(),
+        Search {
+            account_id: args.account_id.clone(),
+            query: address.clone(),
+            limit: Some(25),
+        },
+    )
+    .await?;
+    let person = found["people"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|each| {
+            each["address"]
+                .as_str()
+                .is_some_and(|theirs| theirs.eq_ignore_ascii_case(&address))
+        })
+        .cloned();
+    // The directory gives a title and a department only to a search by name
+    // or alias ("List people", SOURCES.md), and an alias is most often what
+    // comes before the @. So where the address alone found a bare name, or
+    // nobody, that is tried too.
+    let bare = person
+        .as_ref()
+        .is_none_or(|person| person["source"] == "directory" && person["job_title"] == "");
+    let person = match address.split_once('@') {
+        Some((alias, _)) if bare => directory(&mailbox, alias)
+            .await
+            .0
+            .into_iter()
+            .find(|each| {
+                each["address"]
+                    .as_str()
+                    .is_some_and(|theirs| theirs.eq_ignore_ascii_case(&address))
+            })
+            .or(person),
+        _ => person,
+    };
+
+    let mail: Vec<Value> = mailbox
+        .db
+        .messages_from(&address, 5)
+        .map_err(failed)?
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row.id, "folder_id": row.folder_id, "subject": row.subject,
+                "received_at": row.received_at, "is_read": row.is_read,
+            })
+        })
+        .collect();
+
+    let now = jiff::Timestamp::now();
+    let until = now
+        .checked_add(jiff::SignedDuration::from_hours(24 * 90))
+        .map_err(failed)?;
+    let whole = |at: jiff::Timestamp| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let meetings: Vec<Value> = mailbox
+        .db
+        .events_between(&whole(now), &whole(until), false)
+        .map_err(failed)?
+        .into_iter()
+        .filter(|event| !event.is_cancelled)
+        .filter(|event| {
+            event.organizer_address.eq_ignore_ascii_case(&address)
+                || serde_json::from_str::<Value>(&event.attendees)
+                    .ok()
+                    .and_then(|all| {
+                        all.as_array().map(|all| {
+                            all.iter().any(|each| {
+                                each["address"]
+                                    .as_str()
+                                    .is_some_and(|theirs| theirs.eq_ignore_ascii_case(&address))
+                            })
+                        })
+                    })
+                    .unwrap_or(false)
+        })
+        .take(5)
+        .map(|event| {
+            json!({
+                "id": event.id, "subject": event.subject, "start": event.start, "end": event.end,
+                "is_all_day": event.is_all_day, "location": event.location,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "address": address,
+        "person": person,
+        "recent_mail": mail,
+        "upcoming_meetings": meetings,
+        "directory_searched": found["directory_searched"],
+        "note": UNTRUSTED,
+    }))
+}
+
 fn handler<A, F, Fut>(mailboxes: &Arc<Mailboxes>, run: F) -> Handler
 where
     A: serde::de::DeserializeOwned + Send + 'static,
@@ -713,6 +827,41 @@ pub(crate) fn register(
             examples: vec![json!({ "contact_id": "contact-0002" })],
         },
         handler(&mailboxes, delete),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "people.card".to_owned(),
+            title: "About a person".to_owned(),
+            description: "What is known of one person, by their email address: their name, title, department and phone numbers from your contacts \
+                          or your organisation's directory, the last five messages from them on this computer, and the meetings in the next ninety days \
+                          that they called or are invited to. The mail and meetings are read from this computer, so they are there with Microsoft 365 out of reach; \
+                          the directory is not."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id, "address": { "type": "string", "description": "Their email address." } },
+                "required": ["address"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "address": { "type": "string" },
+                    "person": { "type": ["object", "null"], "description": "As people.search gives one, or null where nothing is known but the address." },
+                    "recent_mail": { "type": "array", "items": { "type": "object" } },
+                    "upcoming_meetings": { "type": "array", "items": { "type": "object" } },
+                    "directory_searched": { "type": "boolean" },
+                    "note": { "type": "string" }
+                },
+                "required": ["address", "person", "recent_mail", "upcoming_meetings"]
+            }),
+            examples: vec![json!({ "address": "sam@example.test" })],
+        },
+        handler(&mailboxes, card),
     )?;
 
     registry.register(

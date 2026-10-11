@@ -127,8 +127,8 @@ impl People {
         }));
     }
 
-    /// "List people" with `$search`: those with a word of their name
-    /// beginning with what was typed.
+    /// "List people" with `$search`: those with a word of their name, or
+    /// their alias, beginning with what was typed.
     pub fn search(&self, typed: &str) -> Value {
         let typed = typed.trim_matches('"').to_lowercase();
         let all: Vec<&Value> = self
@@ -139,6 +139,10 @@ impl People {
                     name.to_lowercase()
                         .split_whitespace()
                         .any(|word| word.starts_with(&typed))
+                }) || each["mail"].as_str().is_some_and(|mail| {
+                    mail.split('@')
+                        .next()
+                        .is_some_and(|alias| alias.to_lowercase().starts_with(&typed))
                 })
             })
             .collect();

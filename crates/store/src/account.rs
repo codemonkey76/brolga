@@ -1191,6 +1191,20 @@ impl AccountDb {
         Ok(())
     }
 
+    /// The latest messages from one address, newest first, wherever they are kept.
+    pub fn messages_from(&self, address: &str, limit: u32) -> Result<Vec<MessageRow>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(&format!(
+            "SELECT {COLUMNS} FROM messages WHERE from_address = ?1 COLLATE NOCASE AND is_draft = 0
+             ORDER BY received_at DESC, id LIMIT ?2"
+        ))?;
+        let rows = statement
+            .query_map(params![address, limit], read_message)?
+            .collect::<Result<_, _>>()?;
+
+        Ok(rows)
+    }
+
     /// Messages matching a search, best match first, or newest first where
     /// the search is filters only. `fts` is in FTS5's own syntax and must
     /// already be safe to pass to it.

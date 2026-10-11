@@ -1,4 +1,5 @@
 <script lang="ts">
+    import ContactCard from "./ContactCard.svelte";
     import { CalendarDays } from "@lucide/svelte";
     import type { Answer, Proposed } from "./calendar";
     import Rsvp from "./Rsvp.svelte";
@@ -28,10 +29,26 @@
         onTrust: (address: string, trusted: boolean) => void;
         onShowImages: () => void;
         onOpenLink: (url: string) => void;
+        /** The mailbox the message is in, to look its sender up in. */
+        accountId?: string | null;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onCalendar, onAnswer, categories, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onCalendar, onAnswer, categories, onShowImages, onOpenLink, accountId = null }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
+
+    /** Whether the card about the sender is up. It comes after a pause over the name, or at once when the name is pressed. */
+    let carded = $state(false);
+    let cardTimer: ReturnType<typeof setTimeout> | undefined;
+    const card = (show: boolean, after: number) => {
+        clearTimeout(cardTimer);
+        cardTimer = setTimeout(() => (carded = show), after);
+    };
+    // Another message, another sender.
+    $effect(() => {
+        void opened?.message.id;
+        clearTimeout(cardTimer);
+        carded = false;
+    });
 
     const MEETING: Record<string, string> = {
         invitation: "Meeting invitation",
@@ -189,7 +206,17 @@
         <header>
             <h2>{opened.message.subject || "(No subject)"}</h2>
             <p>
-                <strong>{who(opened.message.from)}</strong>
+                {#if accountId && opened.message.from.address}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <span class="sender" onmouseenter={() => card(true, 450)} onmouseleave={() => card(false, 250)} onkeydown={(event) => event.key === "Escape" && card(false, 0)}>
+                        <button type="button" class="name" aria-haspopup="dialog" aria-expanded={carded} title="About this person" onclick={() => card(!carded, 0)}>{who(opened.message.from)}</button>
+                        {#if carded}
+                            <ContactCard {accountId} address={opened.message.from.address} name={opened.message.from.name ?? ""} />
+                        {/if}
+                    </span>
+                {:else}
+                    <strong>{who(opened.message.from)}</strong>
+                {/if}
                 {#if opened.message.from.name && opened.message.from.address}
                     <span class="muted">&lt;{opened.message.from.address}&gt;</span>
                 {/if}
@@ -315,6 +342,26 @@
 </section>
 
 <style>
+    .sender {
+        position: relative;
+        display: inline-block;
+    }
+
+    .sender .name {
+        padding: 0;
+        border: 0;
+        background: none;
+        font: inherit;
+        font-weight: 700;
+        color: inherit;
+        cursor: pointer;
+    }
+
+    .sender .name:hover,
+    .sender .name[aria-expanded="true"] {
+        text-decoration: underline;
+    }
+
     .meeting {
         flex: none;
         display: flex;
