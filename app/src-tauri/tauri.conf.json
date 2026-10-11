@@ -41,11 +41,19 @@
     "linux": {
       "deb": {
         "desktopTemplate": "../../packaging/linux/brolga.desktop",
-        "section": "mail"
+        "section": "mail",
+        "files": {
+          "/usr/share/metainfo/io.github.codemonkey76.Brolga.metainfo.xml": "../../packaging/linux/io.github.codemonkey76.Brolga.metainfo.xml"
+        }
       },
       "rpm": {
-        "desktopTemplate": "../../packaging/linux/brolga.desktop"
+        "desktopTemplate": "../../packaging/linux/brolga.desktop",
+        "files": {
+          "/usr/share/metainfo/io.github.codemonkey76.Brolga.metainfo.xml": "../../packaging/linux/io.github.codemonkey76.Brolga.metainfo.xml"
+        }
       }
-    }
+    },
+    "publisher": "Shane Poppleton",
+    "copyright": "Copyright © 2026 Shane Poppleton"
   }
 }

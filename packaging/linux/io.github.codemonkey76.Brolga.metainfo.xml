@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.codemonkey76.Brolga</id>
+  <name>Brolga</name>
+  <summary>Mail, calendar and contacts for Microsoft 365</summary>
+  <developer id="io.github.codemonkey76">
+    <name>Shane Poppleton</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <url type="homepage">https://github.com/codemonkey76/brolga</url>
+  <url type="bugtracker">https://github.com/codemonkey76/brolga/issues</url>
+  <url type="vcs-browser">https://github.com/codemonkey76/brolga</url>
+  <launchable type="desktop-id">Brolga.desktop</launchable>
+  <description>
+    <p>
+      Brolga is a desktop client for Microsoft 365 mail, calendar and contacts.
+      It keeps a copy of your mailbox on your computer, so you can read, search
+      and write with no connection, and what you do is sent when you are back.
+    </p>
+    <ul>
+      <li>Mail with folders, conversations, search, rules and categories</li>
+      <li>Calendar with meetings, invitations, free and busy times and reminders</li>
+      <li>Contacts, your organisation's directory and shared mailboxes</li>
+      <li>Remote pictures stay out until you ask, and nothing in a message runs</li>
+      <li>Old mail read in from Outlook data files</li>
+      <li>A command line, and a server for AI agents that can only read unless you say otherwise</li>
+    </ul>
+    <p>
+      Brolga is an independent project. It is not made or endorsed by the maker
+      of Microsoft 365.
+    </p>
+  </description>
+  <categories>
+    <category>Network</category>
+    <category>Email</category>
+    <category>Office</category>
+    <category>Calendar</category>
+  </categories>
+  <provides>
+    <binary>brolga</binary>
+    <binary>brolga-cli</binary>
+  </provides>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">800</display_length>
+  </requires>
+  <content_rating type="oars-1.1" />
+  <screenshots>
+    <screenshot type="default">
+      <caption>Folders, the message list and a message open beside them</caption>
+      <image>https://raw.githubusercontent.com/codemonkey76/brolga/main/docs/screenshots/mail.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A working week in the calendar</caption>
+      <image>https://raw.githubusercontent.com/codemonkey76/brolga/main/docs/screenshots/calendar-week.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Writing a message</caption>
+      <image>https://raw.githubusercontent.com/codemonkey76/brolga/main/docs/screenshots/compose.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.0.1" date="2026-10-12">
+      <description>
+        <p>A development build, before the first release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

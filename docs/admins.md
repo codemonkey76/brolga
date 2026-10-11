@@ -12,7 +12,9 @@ server, and nothing it reads is sent anywhere but back to Microsoft 365.
 
 - **App registration:** multi-tenant, a public client (no secret), redirecting
   to `http://localhost`. Client ID `3b0d6477-515b-429a-96b2-f8759528a5cc`.
-- **Publisher:** not verified. If your organisation only lets people consent
+- **Publisher:** Shane Poppleton, an individual, and not verified: Microsoft
+  verifies publishers only through its partner programme, which is for
+  organisations. If your organisation only lets people consent
   to apps from verified publishers, they cannot sign in until you approve the
   app or use your own registration (below).
 - **Sign-in:** the authorisation code flow with PKCE, in the person's own
