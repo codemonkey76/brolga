@@ -419,3 +419,84 @@ test("dismissing the save dialog saves nothing", async ({ page }) => {
     await expect(page.getByText("Saved to")).toHaveCount(0);
     expect((await ran(page)).some((r) => r.command === "mail.attachments.save")).toBe(false);
 });
+
+test("opening a message marks it read, quietly", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await expect(folder(page, "Inbox")).toContainText("2");
+
+    await messages(page).getByRole("option").first().click();
+
+    await expect(folder(page, "Inbox")).toContainText("1");
+    await expect(messages(page).getByRole("option").first()).not.toHaveClass(/unread/);
+    await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+    expect((await ran(page)).find((r) => r.command === "mail.messages.set_read")?.args).toMatchObject({ message_ids: ["m1"], is_read: true });
+});
+
+test("a message can be marked unread and flagged, and each can be undone", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    const actions = page.getByRole("toolbar", { name: "Message actions" });
+    await first.click();
+    await expect(folder(page, "Inbox")).toContainText("1");
+
+    await actions.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(first).toHaveClass(/unread/);
+    await expect(folder(page, "Inbox")).toContainText("2");
+    await expect(page.getByText("Marked as unread")).toBeVisible();
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(first).not.toHaveClass(/unread/);
+    await expect(actions.getByRole("button", { name: "Mark as unread" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+
+    await actions.getByRole("button", { name: "Flag", exact: true }).click();
+    await expect(first.getByLabel("Flagged")).toBeVisible();
+    await expect(actions).toContainText("Flagged");
+    await picture(page, "flagged-with-undo");
+
+    await page.keyboard.press("Control+z");
+    await expect(first.getByLabel("Flagged")).toHaveCount(0);
+    await expect(actions.getByRole("button", { name: "Flag", exact: true })).toBeVisible();
+});
+
+test("the offer to undo goes after ten seconds", async ({ page }) => {
+    await page.clock.install();
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+    await page.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
+
+    await page.clock.fastForward(9_000);
+    await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
+    await page.clock.fastForward(2_000);
+    await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+});
+
+test("read, unread and flag have keys", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    await first.click();
+    await expect(first).not.toHaveClass(/unread/);
+
+    await page.keyboard.press("Control+u");
+    await expect(first).toHaveClass(/unread/);
+    await page.keyboard.press("Control+q");
+    await expect(first).not.toHaveClass(/unread/);
+    await page.keyboard.press("Insert");
+    await expect(first.getByLabel("Flagged")).toBeVisible();
+    await page.keyboard.press("Insert");
+    await expect(first.getByLabel("Flagged")).toHaveCount(0);
+});
+
+test("a change Microsoft 365 refuses is told of, once", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: inbox,
+        refused: [{ message_id: "m3", subject: "Invoice 2041 attached", change: "flag", error: "This message cannot be changed." }],
+    });
+
+    const told = page.getByRole("alert");
+    await expect(told).toContainText("would not change the flag of “Invoice 2041 attached”");
+    await expect(told).toContainText("it has been put back");
+    expect((await ran(page)).some((r) => r.command === "app.outbox.dismiss_refused")).toBe(true);
+});

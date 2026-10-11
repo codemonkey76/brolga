@@ -16,6 +16,8 @@ pub(crate) struct Mailbox {
     pub db: Arc<AccountDb>,
     pub graph: Arc<GraphClient>,
     pub sync: MailSync,
+    /// Sends the changes made here to the server.
+    pub outbox: Arc<brolga_ops::Outbox>,
     /// One sync of an account at a time: two would fetch the same pages.
     pub syncing: Mutex<()>,
     /// The file that says so to other copies of Brolga on this computer.
@@ -144,6 +146,7 @@ impl Mailboxes {
         );
         let mailbox = Arc::new(Mailbox {
             sync: MailSync::new(graph.clone(), db.clone()),
+            outbox: Arc::new(brolga_ops::Outbox::new(graph.clone(), db.clone())),
             db,
             graph,
             syncing: Mutex::new(()),

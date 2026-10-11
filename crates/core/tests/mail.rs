@@ -853,3 +853,91 @@ async fn sync_status_says_how_much_is_here_and_how_fresh_it_is() {
     assert_eq!(after["syncing"], false);
     assert_eq!(after["needs_sign_in"], false);
 }
+
+#[tokio::test]
+async fn marking_and_flagging_show_at_once_reach_the_server_and_can_be_undone() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Hello", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+    let here = || async {
+        f.run("mail.messages.list", json!({ "folder_id": f.inbox }))
+            .await["messages"][0]
+            .clone()
+    };
+
+    // With the server out of reach, the change still shows and is kept.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 12));
+    let marked = f
+        .run(
+            "mail.messages.set_read",
+            json!({ "message_ids": [id], "is_read": true }),
+        )
+        .await;
+    assert_eq!(marked["changed"], 1);
+    assert_eq!(here().await["is_read"], true);
+    assert!(!f.graph.messages()[&id].2);
+
+    // A sync sends what is owed before it pulls, and does not flick it back.
+    f.graph.fail_next([]);
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["queued"] != 0 {
+        f.sync().await;
+    }
+    assert!(f.graph.messages()[&id].2);
+    assert_eq!(here().await["is_read"], true);
+
+    f.run(
+        "mail.messages.set_flag",
+        json!({ "message_ids": [id], "flag": "flagged" }),
+    )
+    .await;
+    assert_eq!(here().await["flag_status"], "flagged");
+
+    let undone = f
+        .run("mail.undo", json!({ "undo_id": marked["undo_id"] }))
+        .await;
+    assert_eq!(undone["undone"], 1);
+    assert_eq!(here().await["is_read"], false);
+    f.sync().await;
+    assert!(!f.graph.messages()[&id].2);
+    assert_eq!(f.graph.flag(&id).as_deref(), Some("flagged"));
+}
+
+#[tokio::test]
+async fn a_change_the_server_refuses_is_taken_back_and_can_be_read_about() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Locked", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+    f.graph.refuse_updates_to(&id);
+
+    f.run(
+        "mail.messages.set_read",
+        json!({ "message_ids": [id], "is_read": true }),
+    )
+    .await;
+    f.sync().await;
+
+    let status = f.run("app.outbox.status", json!({})).await;
+    let refused = &status["accounts"][0]["refused"][0];
+    assert_eq!(refused["subject"], "Locked");
+    assert_eq!(refused["change"], "read or unread");
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": f.inbox }))
+        .await;
+    assert_eq!(listed["messages"][0]["is_read"], false);
+
+    f.run("app.outbox.dismiss_refused", json!({})).await;
+    let after = f.run("app.outbox.status", json!({})).await;
+    assert!(
+        after["accounts"][0]["refused"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

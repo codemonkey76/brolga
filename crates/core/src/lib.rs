@@ -7,6 +7,7 @@
 //! runs in the app, headless in the CLI, and in tests.
 
 mod account_commands;
+mod action_commands;
 mod link_commands;
 mod mail_commands;
 mod mailboxes;
@@ -100,6 +101,7 @@ impl Core {
         let images = Arc::new(remote_images::RemoteImages::new(
             options.fetch_images_from_private_hosts,
         ));
+        action_commands::register(&mut registry, mailboxes.clone())?;
         mail_commands::register(
             &mut registry,
             mail_commands::Context {

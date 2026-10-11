@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** Changes Microsoft 365 refused, to be told of after the next sync. */
+    refused?: { message_id: string; subject: string; change: string; error: string }[];
     /** Where the save dialog says to save. Left out, the dialog is dismissed. */
     savePath?: string;
     /** Folders already pinned as favourites. */
@@ -201,7 +203,21 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             return { account: outcome };
         };
 
-        const mail = [...(core.mail ?? [])];
+        const mail = (core.mail ?? []).map((m) => ({ ...m }));
+        const flags = new Map<string, string>();
+        /** What each action changed, by the id that undoes it. */
+        const actions = new Map<string, () => void>();
+        const refused = [...(core.refused ?? [])];
+        const acted = (ids: unknown, apply: (m: (typeof mail)[number]) => (() => void) | null) => {
+            const undo: (() => void)[] = [];
+            for (const m of mail.filter((each) => (ids as string[]).includes(each.id))) {
+                const back = apply(m);
+                if (back) undo.push(back);
+            }
+            const undo_id = `action-${actions.size + 1}`;
+            actions.set(undo_id, () => undo.forEach((back) => back()));
+            return { changed: undo.length, undo_id };
+        };
         let syncs = 0;
         const shown = (m: (typeof mail)[number]) => ({
             id: m.id,
@@ -217,7 +233,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             is_draft: false,
             has_attachments: m.has_attachments,
             importance: "normal",
-            flag_status: "notFlagged",
+            flag_status: flags.get(m.id) ?? "notFlagged",
             categories: [],
             focused: true,
         });
@@ -317,6 +333,30 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 if (args.trusted) trusted.add(args.address as string);
                 else trusted.delete(args.address as string);
                 return { address: args.address, trusted: args.trusted };
+            },
+            "mail.messages.set_read": (args) =>
+                acted(args.message_ids, (m) => {
+                    if (m.is_read === args.is_read) return null;
+                    const was = m.is_read;
+                    m.is_read = args.is_read as boolean;
+                    return () => (m.is_read = was);
+                }),
+            "mail.messages.set_flag": (args) =>
+                acted(args.message_ids, (m) => {
+                    const was = flags.get(m.id) ?? "notFlagged";
+                    if (was === args.flag) return null;
+                    flags.set(m.id, args.flag as string);
+                    return () => flags.set(m.id, was);
+                }),
+            "mail.undo": (args) => {
+                const back = actions.get(args.undo_id as string);
+                back?.();
+                return { undone: back ? 1 : 0 };
+            },
+            "app.outbox.status": () => ({ accounts: accounts.map((a) => ({ account_id: a.id, queued: 0, refused })) }),
+            "app.outbox.dismiss_refused": () => {
+                refused.length = 0;
+                return { dismissed: true };
             },
             "mail.attachments.list": (args) => ({
                 attachments: mail.find((each) => each.id === args.message_id)?.attachments ?? [],

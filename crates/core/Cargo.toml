@@ -13,6 +13,7 @@ brolga-auth.workspace = true
 brolga-commands.workspace = true
 brolga-graph.workspace = true
 brolga-mail = { path = "../mail" }
+brolga-ops.workspace = true
 brolga-search = { path = "../search" }
 brolga-store.workspace = true
 brolga-sync.workspace = true

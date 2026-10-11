@@ -70,6 +70,13 @@ fn column(kind: &str) -> Option<&'static str> {
 }
 
 impl AccountDb {
+    /// A name for an action about to be queued, by which to undo it.
+    pub fn new_action(&self) -> Result<String, StoreError> {
+        Ok(self
+            .connection()
+            .query_row("SELECT lower(hex(randomblob(8)))", [], |row| row.get(0))?)
+    }
+
     /// Make a change to some messages and queue it for the server, together
     /// or not at all. A message that already is as asked is left out.
     /// `group` names the action, so that it can be undone as one. Gives
@@ -159,10 +166,7 @@ impl AccountDb {
                 |row| row.get(0),
             )?;
             if !later && let Some(column) = column(&kind) {
-                transaction.execute(
-                    &format!("UPDATE messages SET {column} = ?2 WHERE id = ?1"),
-                    params![message_id, before],
-                )?;
+                set(&transaction, column, &message_id, &before)?;
             }
             transaction.execute(
                 "UPDATE ops SET state = 'failed', error = ?2 WHERE id = ?1",
@@ -281,10 +285,7 @@ fn queue(
         return Ok(false);
     }
 
-    transaction.execute(
-        &format!("UPDATE messages SET {column} = ?2 WHERE id = ?1"),
-        params![message_id, value],
-    )?;
+    set(transaction, column, message_id, value)?;
     transaction.execute(
         "INSERT INTO ops (key, group_id, message_id, kind, value, before)
          VALUES (lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5)",
@@ -292,6 +293,30 @@ fn queue(
     )?;
 
     Ok(true)
+}
+
+/// Give a message's property a value. The folder's count of unread
+/// messages is the server's, and follows only at the next sync, so it is
+/// kept in step here for a change of read state.
+fn set(
+    transaction: &Transaction<'_>,
+    column: &str,
+    message_id: &str,
+    value: &str,
+) -> Result<(), StoreError> {
+    if column == "is_read" {
+        transaction.execute(
+            "UPDATE folders SET unread = max(0, unread + CASE WHEN ?2 = '1' THEN -1 ELSE 1 END)
+             WHERE id = (SELECT folder_id FROM messages WHERE id = ?1 AND CAST(is_read AS TEXT) <> ?2)",
+            params![message_id, value],
+        )?;
+    }
+    transaction.execute(
+        &format!("UPDATE messages SET {column} = ?2 WHERE id = ?1"),
+        params![message_id, value],
+    )?;
+
+    Ok(())
 }
 
 /// After a sync has written the server's values for some messages, put back
@@ -384,6 +409,34 @@ mod tests {
             ("is_read", "1")
         );
         assert_ne!(queued[0].key, queued[1].key);
+    }
+
+    #[test]
+    fn the_folders_unread_count_follows_a_change_of_read_state() {
+        let db = db();
+        db.apply_folders(
+            &[crate::FolderChange {
+                id: "inbox".to_owned(),
+                unread: Some(2),
+                ..crate::FolderChange::default()
+            }],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        let unread = || db.folders().unwrap()[0].unread;
+
+        db.queue_edit("a", &ids(&["1", "2"]), &MessageEdit::Read(true))
+            .unwrap();
+        assert_eq!(unread(), 0);
+
+        db.op_refused(db.queued_ops().unwrap()[0].id, "No.")
+            .unwrap();
+        assert_eq!(unread(), 1);
+
+        db.undo("a", "b").unwrap();
+        assert_eq!(unread(), 2);
     }
 
     #[test]

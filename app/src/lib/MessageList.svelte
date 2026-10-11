@@ -106,6 +106,8 @@
                     <span class="date">{when(message.received_at)}</span>
                     <span class="subject">
                         {#if message.has_attachments}<span class="clip" title="Has attachments" aria-label="Has attachments">📎</span>{/if}
+                        {#if message.flag_status === "flagged"}<span class="clip" title="Flagged" aria-label="Flagged">🚩</span>{/if}
+                        {#if message.flag_status === "complete"}<span class="clip" title="Complete" aria-label="Complete">✓</span>{/if}
                         {message.subject || "(No subject)"}
                         {#if message.conversation && message.conversation.count > 1}
                             <span class="many" aria-label="{message.conversation.count} messages">{message.conversation.count}</span>

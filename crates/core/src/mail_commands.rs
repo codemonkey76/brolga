@@ -182,6 +182,9 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             let Some(_turn) = mailbox.sync_turn().map_err(|e| e.to_string())? else {
                 return Ok(None);
             };
+            // What was changed here goes up before the server's side comes
+            // down. A change that cannot go now waits; it does not stop the sync.
+            let _ = mailbox.outbox.drain().await;
             let synced = mailbox.sync.sync_all().await.map_err(|e| e.to_string())?;
             // Then the bodies of recent mail, a batch at a time. Failing to
             // get these is not a failed sync: they are fetched when opened.

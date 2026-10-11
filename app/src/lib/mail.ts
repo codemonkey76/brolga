@@ -124,6 +124,36 @@ export function size(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+export interface Edited {
+    changed: number;
+    /** Give this to `undo` to take the action back. */
+    undo_id: string;
+}
+
+export const setRead = (account_id: string, message_ids: string[], is_read: boolean) =>
+    execute<Edited>("mail.messages.set_read", { account_id, message_ids, is_read });
+
+export type FlagStatus = "flagged" | "complete" | "notFlagged";
+
+export const setFlag = (account_id: string, message_ids: string[], flag: FlagStatus) =>
+    execute<Edited>("mail.messages.set_flag", { account_id, message_ids, flag });
+
+export const undo = (account_id: string, undo_id: string) => execute<{ undone: number }>("mail.undo", { account_id, undo_id });
+
+export interface Refused {
+    message_id: string;
+    subject: string;
+    change: string;
+    error: string;
+}
+
+/** The changes Microsoft 365 refused, which have been taken back here. */
+export const refusedChanges = async (account_id: string) =>
+    (await execute<{ accounts: { account_id: string; refused: Refused[] }[] }>("app.outbox.status")).accounts.find((a) => a.account_id === account_id)
+        ?.refused ?? [];
+
+export const dismissRefused = (account_id: string) => execute("app.outbox.dismiss_refused", { account_id });
+
 export const syncNow = async () => (await execute<{ accounts: SyncResult[] }>("mail.sync")).accounts;
 
 export const openLink = (url: string) => execute<{ opened: boolean }>("app.open_link", { url });

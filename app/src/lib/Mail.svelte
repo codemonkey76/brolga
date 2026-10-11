@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type Folder, type Message, type Opened, type Sort, type View, getConversation, listAttachments, listFolders, listMessages, openLink, openMessage, saveAttachment, searchMail, setFavourite, setTrustedSender, syncNow } from "./mail";
+    import { type Attachment, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, dismissRefused, getConversation, listAttachments, listFolders, listMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
 
@@ -48,6 +48,73 @@
         } catch (failure) {
             saved = say(failure);
         }
+    }
+
+    /** The last action, while it can still be taken back. */
+    let undoable = $state<{ said: string; id: string } | null>(null);
+    let undoTimer: ReturnType<typeof setTimeout> | undefined;
+    const UNDO_FOR = 10_000;
+
+    /** Show a change that has been made: in the list, in the folder counts and on the message being read. */
+    async function redraw(change: { is_read?: boolean; flag_status?: string }, ids: string[]) {
+        if (opened && ids.includes(opened.message.id)) opened = { ...opened, message: { ...opened.message, ...change } };
+        thread = thread.map((each) => (ids.includes(each.id) ? { ...each, ...change } : each));
+        if (accountId) folders = await listFolders(accountId);
+        if (searching) rows = rows.map((row) => (row && ids.includes(row.id) ? { ...row, ...change } : row));
+        else await refresh();
+    }
+
+    /**
+     * Change some messages. The core makes the change at once and sends it
+     * in the background, so there is nothing to wait for but the redraw.
+     * `said` is offered with an Undo for ten seconds; without it the change
+     * is made quietly.
+     */
+    async function change(ids: string[], what: { is_read: boolean } | { flag_status: FlagStatus }, said?: string) {
+        if (!accountId || ids.length === 0) return;
+        try {
+            const done = "is_read" in what ? await setRead(accountId, ids, what.is_read) : await setFlag(accountId, ids, what.flag_status);
+            await redraw(what, ids);
+            if (said && done.changed > 0) {
+                clearTimeout(undoTimer);
+                undoable = { said, id: done.undo_id };
+                undoTimer = setTimeout(() => (undoable = null), UNDO_FOR);
+            }
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    async function takeBack() {
+        if (!accountId || !undoable) return;
+        const { id } = undoable;
+        clearTimeout(undoTimer);
+        undoable = null;
+        try {
+            await undo(accountId, id);
+            await refresh();
+            folders = await listFolders(accountId);
+            // The message being read is drawn again from what the list now says of it.
+            const now = rows.find((row) => row && row.id === opened?.message.id);
+            if (opened && now) opened = { ...opened, message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status } };
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    const markRead = (isRead: boolean) => opened && change([opened.message.id], { is_read: isRead }, isRead ? "Marked as read" : "Marked as unread");
+    const flag = (status: FlagStatus) =>
+        opened && change([opened.message.id], { flag_status: status }, status === "flagged" ? "Flagged" : status === "complete" ? "Marked complete" : "Flag cleared");
+
+    /** Tell of any change Microsoft 365 would not take. Each has already been put back. */
+    async function tellOfRefusals() {
+        if (!accountId) return;
+        const refused = await refusedChanges(accountId);
+        if (refused.length === 0) return;
+        const first = refused[0];
+        const others = refused.length > 1 ? `, and ${refused.length - 1} more` : "";
+        problem = `Microsoft 365 would not change the ${first.change} of “${first.subject || "(No subject)"}”${others}, so it has been put back. ${first.error}`;
+        await dismissRefused(accountId);
     }
 
     /** How the list is laid out. This window's business only. */
@@ -263,6 +330,8 @@
             if (readingId !== message.id) return;
             opened = result;
             imagesShown = result.remote_content_allowed;
+            // Reading it is what marks it read. Quietly: there is nothing to undo about having read something.
+            if (!result.message.is_read) void change([message.id], { is_read: true });
             if (result.message.has_attachments && attachments.length === 0) {
                 try {
                     const all = await listAttachments(accountId, message.id);
@@ -291,6 +360,7 @@
             if (failed) problem = failed.error;
             await loadFolders();
             await refresh();
+            if (!failed) await tellOfRefusals();
         } catch (failure) {
             problem = say(failure);
         } finally {
@@ -322,6 +392,21 @@
             event.preventDefault();
             searchBox?.focus();
             searchBox?.select();
+        } else if (opened && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) {
+            const ctrl = event.ctrlKey || event.metaKey;
+            if (ctrl && event.key.toLowerCase() === "q") {
+                event.preventDefault();
+                markRead(true);
+            } else if (ctrl && event.key.toLowerCase() === "u") {
+                event.preventDefault();
+                markRead(false);
+            } else if (event.key === "Insert") {
+                event.preventDefault();
+                flag(opened.message.flag_status === "flagged" ? "notFlagged" : "flagged");
+            } else if (ctrl && event.key.toLowerCase() === "z" && undoable) {
+                event.preventDefault();
+                takeBack();
+            }
         }
     }
 
@@ -464,6 +549,12 @@
                 <MessageList {total} {rows} {selectedId} onSelect={open} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
             </div>
         {/if}
+        {#if undoable}
+            <p class="undo" role="status">
+                {undoable.said}
+                <button type="button" onclick={takeBack} title="Undo (Ctrl+Z)">Undo</button>
+            </p>
+        {/if}
     </div>
 
     <ReadingPane
@@ -476,6 +567,8 @@
         {saved}
         onSave={save}
         onTrust={trust}
+        onSetRead={markRead}
+        onSetFlag={flag}
         onRead={(message) => read(message)}
         onShowImages={() => opened && read(opened.message, true)}
         onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}
@@ -626,6 +719,18 @@
     .view select {
         font-size: 0.8rem;
         padding: 0.1rem 0.25rem;
+    }
+
+    .undo {
+        flex: none;
+        margin: 0;
+        padding: 0.4rem 0.75rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-top: 1px solid var(--line);
+        background: var(--raised);
+        font-size: 0.85rem;
     }
 
     .list {

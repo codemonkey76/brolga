@@ -5,7 +5,7 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 2, read-only mail.** You can sign in, sync a mailbox and
+**Status: milestone 3 under way.** Read-only mail is built; marking read, flagging and undo are the first changes. You can sign in, sync a mailbox and
 read and search it. You cannot send, reply, move or delete yet, and there is
 no calendar.
 
@@ -22,6 +22,8 @@ is called out before you click it.
 ![A folder shown as conversations, with a thread's messages listed above the one being read](docs/screenshots/conversation.png)
 
 ![A message with an attachment, just saved to the downloads folder](docs/screenshots/attachments.png)
+
+![A message just flagged, with the offer to undo](docs/screenshots/flagged-with-undo.png)
 
 ![A message whose remote pictures were not loaded](docs/screenshots/remote-pictures-blocked.png)
 

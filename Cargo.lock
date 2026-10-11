@@ -587,6 +587,7 @@ dependencies = [
  "brolga-fake-graph",
  "brolga-graph",
  "brolga-mail",
+ "brolga-ops",
  "brolga-search",
  "brolga-store",
  "brolga-sync",

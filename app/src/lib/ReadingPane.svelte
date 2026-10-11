@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Attachment, type Message, type Opened, size, when, who } from "./mail";
+    import { type Attachment, type FlagStatus, type Message, type Opened, size, when, who } from "./mail";
 
     interface Props {
         opened: Opened | null;
@@ -15,13 +15,15 @@
         saved: string | null;
         /** Save to the downloads folder, or with `ask` to a place chosen in a dialog. */
         onSave: (attachment: Attachment, ask?: boolean) => void;
+        onSetRead: (isRead: boolean) => void;
+        onSetFlag: (status: FlagStatus) => void;
         /** Always show this sender's remote pictures, or stop. */
         onTrust: (address: string, trusted: boolean) => void;
         onShowImages: () => void;
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onSetRead, onSetFlag, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
@@ -164,6 +166,23 @@
                 To {people(opened.message.to) || "nobody"}{#if opened.message.cc.length}, cc {people(opened.message.cc)}{/if}
                 · {new Date(opened.message.received_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
             </p>
+            <div class="actions" role="toolbar" aria-label="Message actions">
+                {#if opened.message.is_read}
+                    <button type="button" title="Ctrl+U" onclick={() => onSetRead(false)}>Mark as unread</button>
+                {:else}
+                    <button type="button" title="Ctrl+Q" onclick={() => onSetRead(true)}>Mark as read</button>
+                {/if}
+                {#if opened.message.flag_status === "flagged"}
+                    <button type="button" onclick={() => onSetFlag("complete")}>Mark complete</button>
+                    <button type="button" title="Insert" onclick={() => onSetFlag("notFlagged")}>Clear flag</button>
+                {:else if opened.message.flag_status === "complete"}
+                    <button type="button" onclick={() => onSetFlag("notFlagged")}>Clear flag</button>
+                {:else}
+                    <button type="button" title="Insert" onclick={() => onSetFlag("flagged")}>Flag</button>
+                {/if}
+                {#if opened.message.flag_status === "flagged"}<span class="flagged">🚩 Flagged</span>{/if}
+                {#if opened.message.flag_status === "complete"}<span class="muted">✓ Complete</span>{/if}
+            </div>
         </header>
 
         {#if attachments.length > 0}
@@ -242,6 +261,24 @@
 </section>
 
 <style>
+    .actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        margin-top: 0.5rem;
+        font-size: 0.85rem;
+    }
+
+    .actions button {
+        padding: 0.2rem 0.6rem;
+        font-size: 0.85rem;
+    }
+
+    .flagged {
+        color: var(--danger);
+    }
+
     .plain {
         flex: 1;
         min-height: 0;
