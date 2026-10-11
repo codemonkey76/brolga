@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { Bold, Image, Italic, Link, List, ListOrdered, Paperclip, Send, Underline, X } from "@lucide/svelte";
     import { chooseFiles, say } from "./commands";
     import Recipients from "./Recipients.svelte";
     import { type Draft, type DraftFile, type Person, attachContent, attachFile, base64Of, discardDraft, editDraft, readFile, removeFile, sendDraft, size } from "./mail";
@@ -354,8 +355,8 @@
     ondrop={dropped}
 >
     <div class="bar">
-        <button type="submit" class="primary" disabled={sending} title="Ctrl+Enter">{sending ? "Sending…" : "Send"}</button>
-        <button type="button" disabled={choosing} onclick={attach}>{choosing ? "Choosing…" : "Attach…"}</button>
+        <button type="submit" class="primary" disabled={sending} title="Ctrl+Enter"><Send size={16} aria-hidden="true" />{sending ? "Sending…" : "Send"}</button>
+        <button type="button" disabled={choosing} onclick={attach}><Paperclip size={16} aria-hidden="true" />{choosing ? "Choosing…" : "Attach…"}</button>
         <button type="button" onclick={close} title="Escape">Close</button>
         <button type="button" class:danger={sure} onclick={discard}>{sure ? "Discard for good?" : "Discard"}</button>
         <span class="kept muted" role="status">{kept === "kept" ? "Draft kept on this computer" : kept === "keeping" ? "Keeping…" : ""}</span>
@@ -383,7 +384,7 @@
             {#each files.filter((file) => !file.content_id) as each (each.id)}
                 <li>
                     📎 {each.name} <span class="muted">{size(each.size)}</span>
-                    <button type="button" class="link" aria-label="Remove {each.name}" title="Remove" onclick={() => detach(each)}>✕</button>
+                    <button type="button" class="link" aria-label="Remove {each.name}" title="Remove" onclick={() => detach(each)}><X size={13} aria-hidden="true" /></button>
                 </li>
             {/each}
         </ul>
@@ -391,13 +392,13 @@
 
     <div class="tools" role="toolbar" aria-label="Formatting">
         {#if format === "html"}
-            <button type="button" title="Bold (Ctrl+B)" aria-label="Bold" onclick={() => style("bold")}><b>B</b></button>
-            <button type="button" title="Italic (Ctrl+I)" aria-label="Italic" onclick={() => style("italic")}><i>I</i></button>
-            <button type="button" title="Underline (Ctrl+U)" aria-label="Underline" onclick={() => style("underline")}><u>U</u></button>
-            <button type="button" title="Bulleted list" aria-label="Bulleted list" onclick={() => style("insertUnorderedList")}>• List</button>
-            <button type="button" title="Numbered list" aria-label="Numbered list" onclick={() => style("insertOrderedList")}>1. List</button>
-            <button type="button" title="Link" aria-label="Link" onmousedown={(event) => event.preventDefault()} onclick={startLink}>Link</button>
-            <button type="button" title="Put a picture in the message" aria-label="Picture" onmousedown={(event) => event.preventDefault()} onclick={choosePicture}>Picture</button>
+            <button type="button" title="Bold (Ctrl+B)" aria-label="Bold" onclick={() => style("bold")}><Bold size={15} aria-hidden="true" /></button>
+            <button type="button" title="Italic (Ctrl+I)" aria-label="Italic" onclick={() => style("italic")}><Italic size={15} aria-hidden="true" /></button>
+            <button type="button" title="Underline (Ctrl+U)" aria-label="Underline" onclick={() => style("underline")}><Underline size={15} aria-hidden="true" /></button>
+            <button type="button" title="Bulleted list" aria-label="Bulleted list" onclick={() => style("insertUnorderedList")}><List size={15} aria-hidden="true" /></button>
+            <button type="button" title="Numbered list" aria-label="Numbered list" onclick={() => style("insertOrderedList")}><ListOrdered size={15} aria-hidden="true" /></button>
+            <button type="button" title="Link" aria-label="Link" onmousedown={(event) => event.preventDefault()} onclick={startLink}><Link size={15} aria-hidden="true" /></button>
+            <button type="button" title="Put a picture in the message" aria-label="Picture" onmousedown={(event) => event.preventDefault()} onclick={choosePicture}><Image size={15} aria-hidden="true" /></button>
             <input bind:this={picker} class="unseen" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple aria-label="Choose pictures" tabindex="-1" onchange={(event) => addPictures(event.currentTarget.files)} />
             <button type="button" title="Remove formatting" aria-label="Remove formatting" onclick={() => style("removeFormat")}>Clear</button>
         {/if}
@@ -456,6 +457,13 @@
         min-width: 0;
         display: flex;
         flex-direction: column;
+    }
+
+    .bar button,
+    .tools button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
     }
 
     .bar {

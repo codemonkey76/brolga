@@ -80,6 +80,12 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Unicode CLDR `windowsZones.xml` | https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.xml | Which IANA time zone a Windows zone name means. Shipped unchanged in `crates/calendar/data`, under the Unicode License v3 |
 | IANA Time Zone Database, through the `jiff` crate | https://www.iana.org/time-zones | The rules of every zone, built in so they are the same on every computer |
 
+## Icons
+
+The icons are Lucide's (https://lucide.dev), used under the ISC licence
+through the `@lucide/svelte` package. None is taken from, or drawn after,
+any Microsoft product.
+
 ## Libraries
 
 Open source libraries are dependencies, listed in `Cargo.toml` and

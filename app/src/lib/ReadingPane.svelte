@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { Archive, Flag, Forward, Mail as Unread, MailOpen, OctagonAlert, Paperclip, Reply, ReplyAll, Tag, Trash } from "@lucide/svelte";
     import { type Attachment, type Category, type FlagStatus, type Folder, type Message, type Opened, categoryColour, dueSaid, flagDays, size, when, who } from "./mail";
 
     interface Props {
@@ -195,25 +196,25 @@
                 · {new Date(opened.message.received_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
             </p>
             <div class="actions" role="toolbar" aria-label="Message actions">
-                <button type="button" title="Ctrl+R" onclick={() => onWrite("reply")}>Reply</button>
-                <button type="button" title="Ctrl+Shift+R" onclick={() => onWrite("reply_all")}>Reply all</button>
-                <button type="button" title="Ctrl+F" onclick={() => onWrite("forward")}>Forward</button>
-                <button type="button" title="Forward this message whole, as an attached file" onclick={() => onWrite("forward_as_attachment")}>Forward as attachment</button>
+                <button type="button" title="Ctrl+R" onclick={() => onWrite("reply")}><Reply size={15} aria-hidden="true" />Reply</button>
+                <button type="button" title="Ctrl+Shift+R" onclick={() => onWrite("reply_all")}><ReplyAll size={15} aria-hidden="true" />Reply all</button>
+                <button type="button" title="Ctrl+F" onclick={() => onWrite("forward")}><Forward size={15} aria-hidden="true" />Forward</button>
+                <button type="button" title="Forward this message whole, as an attached file" onclick={() => onWrite("forward_as_attachment")}><Paperclip size={15} aria-hidden="true" />Forward as attachment</button>
                 {#if within !== "deleteditems"}
-                    <button type="button" title="Delete" onclick={onDelete}>Delete</button>
+                    <button type="button" title="Delete" onclick={onDelete}><Trash size={15} aria-hidden="true" />Delete</button>
                 {:else if sureOf === opened.message.id}
                     <button type="button" class="danger" onclick={() => ((sureOf = null), onPurge())}>Delete for good? It cannot be undone</button>
                     <button type="button" onclick={() => (sureOf = null)}>Keep</button>
                 {:else}
-                    <button type="button" onclick={() => (sureOf = opened.message.id)}>Delete permanently</button>
+                    <button type="button" onclick={() => (sureOf = opened.message.id)}><Trash size={15} aria-hidden="true" />Delete permanently</button>
                 {/if}
                 {#if within === "junkemail"}
-                    <button type="button" onclick={onNotJunk}>Not junk</button>
+                    <button type="button" onclick={onNotJunk}><OctagonAlert size={15} aria-hidden="true" />Not junk</button>
                 {:else if within !== "deleteditems" && within !== "sentitems" && within !== "drafts" && folders.some((f) => f.well_known === "junkemail")}
-                    <button type="button" onclick={onJunk}>Junk</button>
+                    <button type="button" onclick={onJunk}><OctagonAlert size={15} aria-hidden="true" />Junk</button>
                 {/if}
                 {#if within !== "archive" && folders.some((f) => f.well_known === "archive")}
-                    <button type="button" title="Backspace" onclick={onArchive}>Archive</button>
+                    <button type="button" title="Backspace" onclick={onArchive}><Archive size={15} aria-hidden="true" />Archive</button>
                 {/if}
                 <select
                     aria-label="Move to folder"
@@ -230,17 +231,17 @@
                     {/each}
                 </select>
                 {#if opened.message.is_read}
-                    <button type="button" title="Ctrl+U" onclick={() => onSetRead(false)}>Mark as unread</button>
+                    <button type="button" title="Ctrl+U" onclick={() => onSetRead(false)}><Unread size={15} aria-hidden="true" />Mark as unread</button>
                 {:else}
-                    <button type="button" title="Ctrl+Q" onclick={() => onSetRead(true)}>Mark as read</button>
+                    <button type="button" title="Ctrl+Q" onclick={() => onSetRead(true)}><MailOpen size={15} aria-hidden="true" />Mark as read</button>
                 {/if}
                 {#if opened.message.flag_status === "flagged"}
                     <button type="button" onclick={() => onSetFlag("complete")}>Mark complete</button>
-                    <button type="button" title="Insert" onclick={() => onSetFlag("notFlagged")}>Clear flag</button>
+                    <button type="button" title="Insert" onclick={() => onSetFlag("notFlagged")}><Flag size={15} aria-hidden="true" />Clear flag</button>
                 {:else if opened.message.flag_status === "complete"}
-                    <button type="button" onclick={() => onSetFlag("notFlagged")}>Clear flag</button>
+                    <button type="button" onclick={() => onSetFlag("notFlagged")}><Flag size={15} aria-hidden="true" />Clear flag</button>
                 {:else}
-                    <button type="button" title="Insert" onclick={() => onSetFlag("flagged")}>Flag</button>
+                    <button type="button" title="Insert" onclick={() => onSetFlag("flagged")}><Flag size={15} aria-hidden="true" />Flag</button>
                 {/if}
                 {#if opened.message.flag_status !== "complete"}
                     <details class="menu" bind:this={dayMenu}>
@@ -260,7 +261,7 @@
                 {/if}
                 {#if categories.length > 0}
                     <details class="menu">
-                        <summary>Categories</summary>
+                        <summary><Tag size={15} aria-hidden="true" />Categories</summary>
                         <ul aria-label="Categories">
                             {#each categories as each (each.name)}
                                 {@const has = (opened.message.categories ?? []).includes(each.name)}
@@ -377,6 +378,13 @@
         gap: 0.4rem;
         margin-top: 0.5rem;
         font-size: 0.85rem;
+    }
+
+    .actions button,
+    .menu summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
     }
 
     .actions button,

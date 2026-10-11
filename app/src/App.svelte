@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { Bot, CalendarDays, CircleUser, Mail as MailIcon } from "@lucide/svelte";
     import { type Account, listAccounts } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
     import Agents from "./lib/Agents.svelte";
@@ -44,16 +45,20 @@
 <div class="shell">
     <nav class="rail" aria-label="Sections">
         <button type="button" class:current={view === "mail"} aria-current={view === "mail"} disabled={accounts.length === 0} onclick={() => (view = "mail")} title="Mail (Ctrl+1)">
-            Mail
+            <MailIcon size={20} aria-hidden="true" />
+            <span>Mail</span>
         </button>
         <button type="button" class:current={view === "calendar"} aria-current={view === "calendar"} disabled={accounts.length === 0} onclick={() => (view = "calendar")} title="Calendar (Ctrl+2)">
-            Calendar
+            <CalendarDays size={20} aria-hidden="true" />
+            <span>Calendar</span>
         </button>
         <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Accounts (Ctrl+,)">
-            Accounts
+            <CircleUser size={20} aria-hidden="true" />
+            <span>Accounts</span>
         </button>
         <button type="button" class:current={view === "agents"} aria-current={view === "agents"} onclick={() => (view = "agents")} title="What AI agents have asked for">
-            Agents
+            <Bot size={20} aria-hidden="true" />
+            <span>Agents</span>
         </button>
     </nav>
 
@@ -89,10 +94,14 @@
     }
 
     .rail button {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.2rem;
         border: 0;
         background: none;
         padding: 0.5rem 0.6rem;
-        font-size: 0.8rem;
+        font-size: 0.7rem;
     }
 
     .rail button.current {

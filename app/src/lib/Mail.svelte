@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, RefreshCw, Send, SquarePen, Star, Trash } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
     import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
@@ -320,6 +321,16 @@
     let syncing = $state(false);
     let problem = $state<string | null>(null);
     let searchBox = $state<HTMLInputElement>();
+
+    /** A shape for each of the folders every mailbox has. */
+    const FOLDER_ICONS: Record<string, typeof FolderIcon> = {
+        inbox: Inbox,
+        drafts: FilePen,
+        sentitems: Send,
+        deleteditems: Trash,
+        archive: Archive,
+        junkemail: OctagonAlert,
+    };
 
     const account = $derived(accounts.find((a) => a.id === accountId) ?? null);
     const folder = $derived(folders.find((f) => f.id === folderId) ?? null);
@@ -655,7 +666,7 @@
             <p class="account" title={account.username}>{account.username}</p>
         {/if}
 
-        <button type="button" class="new" title="Ctrl+N" onclick={() => write("new")}>New message</button>
+        <button type="button" class="new" title="Ctrl+N" onclick={() => write("new")}><SquarePen size={16} aria-hidden="true" />New message</button>
 
         {#if drafts.length > 0}
             <h2 id="drafts-heading">Being written</h2>
@@ -681,6 +692,7 @@
         {/if}
 
         {#snippet row(each: Folder, parent: boolean, open: boolean, indent: number)}
+            {@const Shape = FOLDER_ICONS[each.well_known ?? ""] ?? FolderIcon}
             <li style:padding-left="{indent * 0.9}rem">
                 {#if parent}
                     <button type="button" class="twist" aria-expanded={open} aria-label="{open ? 'Collapse' : 'Expand'} {each.name}" onclick={() => toggle(each.id)}>
@@ -690,11 +702,12 @@
                     <span class="twist"></span>
                 {/if}
                 <button type="button" class="folder" class:current={each.id === folderId && !searching} aria-current={each.id === folderId && !searching} onclick={() => showFolder(each.id)}>
+                    <Shape size={15} aria-hidden="true" />
                     <span class="name">{each.name}</span>
                     {#if each.unread > 0}<span class="count" aria-label="{each.unread} unread">{each.unread}</span>{/if}
                 </button>
                 <button type="button" class="pin" class:pinned={each.favourite} aria-pressed={each.favourite} aria-label="{each.favourite ? 'Unpin' : 'Pin'} {each.name}" title={each.favourite ? "Remove from favourites" : "Add to favourites"} onclick={() => pin(each)}>
-                    {each.favourite ? "★" : "☆"}
+                    <Star size={13} aria-hidden="true" fill={each.favourite ? "currentColor" : "none"} />
                 </button>
             </li>
         {/snippet}
@@ -729,7 +742,7 @@
                     oninput={typedSearch}
                 />
             </form>
-            <button type="button" disabled={syncing} onclick={sync} title="Sync now (F9)">{syncing ? "Syncing…" : "Sync"}</button>
+            <button type="button" disabled={syncing} onclick={sync} title="Sync now (F9)"><RefreshCw size={15} aria-hidden="true" />{syncing ? "Syncing…" : "Sync"}</button>
         </div>
 
         {#if problem}
@@ -906,8 +919,8 @@
         flex: 1;
         min-width: 0;
         display: flex;
-        justify-content: space-between;
-        gap: 0.5rem;
+        align-items: center;
+        gap: 0.4rem;
         padding: 0.35rem 0.4rem;
         text-align: left;
     }
@@ -976,6 +989,23 @@
     .view select {
         font-size: 0.8rem;
         padding: 0.1rem 0.25rem;
+    }
+
+    .new,
+    .bar button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.4rem;
+    }
+
+    .folder :global(svg) {
+        flex: none;
+        color: var(--muted);
+    }
+
+    .folder .name {
+        flex: 1;
     }
 
     .new {
