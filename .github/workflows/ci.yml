@@ -115,13 +115,15 @@ jobs:
         run: |
           mkdir -p fuzz/corpus/pst
           cargo run --release -p brolga-pst --example make_big -- fuzz/corpus/pst/seed.pst 0 0 0
+      # The fuzzer is told the target: the copy installed here would
+      # otherwise build for the one it was built for itself.
       - name: Fuzz
         run: |
           for target in html vcard search recurrence; do
             mkdir -p "fuzz/corpus/$target"
-            cargo fuzz run "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+            cargo fuzz run --target x86_64-unknown-linux-gnu "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048
           done
-          cargo fuzz run pst -- -max_total_time=60 -max_len=1048576 -timeout=20 -rss_limit_mb=4096
+          cargo fuzz run --target x86_64-unknown-linux-gnu pst -- -max_total_time=60 -max_len=1048576 -timeout=20 -rss_limit_mb=4096
       - name: Keep what broke it
         if: failure()
         uses: actions/upload-artifact@v4
