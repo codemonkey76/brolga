@@ -6,8 +6,9 @@ Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
 **Status: milestone 3 under way.** You can sign in, sync a mailbox, read and
-search it, and mark, flag, move, archive and delete messages, with undo. You
-cannot write, reply or send yet, and there is no calendar.
+search it, mark, flag, move, archive and delete messages with undo, and write,
+reply, forward and send in plain text. There are no attachments on outgoing
+mail, no signatures and no rich text yet, and there is no calendar.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 
@@ -22,6 +23,8 @@ is called out before you click it.
 ![A folder shown as conversations, with a thread's messages listed above the one being read](docs/screenshots/conversation.png)
 
 ![A message with an attachment, just saved to the downloads folder](docs/screenshots/attachments.png)
+
+![Writing a new message](docs/screenshots/compose.png)
 
 ![A message just flagged, with the offer to undo](docs/screenshots/flagged-with-undo.png)
 

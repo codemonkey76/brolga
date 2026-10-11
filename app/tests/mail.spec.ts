@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { bulk, inbox, lunch, ran, robin, sam, withCore } from "./core";
+import { bulk, inbox, lunch, ran, robin, sam, sent, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -559,4 +559,111 @@ test("deleting the last message leaves nothing open", async ({ page }) => {
 
     await expect(page.getByText("Nothing here.")).toBeVisible();
     await expect(page.getByText("Select a message to read it.")).toBeVisible();
+});
+
+test("a new message is written, kept as it goes, and sent", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+
+    await expect(form.getByRole("textbox", { name: "To" })).toBeFocused();
+    await form.getByRole("textbox", { name: "To" }).fill("Jo Nguyen <jo.nguyen@example.test>, sam.taylor@example.test");
+    await form.getByRole("textbox", { name: "Subject" }).fill("Lunch on Friday");
+    await form.getByRole("textbox", { name: "Message" }).fill("Are you both free?\n\nRobin");
+    await picture(page, "compose");
+
+    // It is kept without being asked, and shows among what is being written.
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+    await expect(page.getByRole("list", { name: "Being written" })).toContainText("Lunch on Friday");
+
+    await form.getByRole("button", { name: "Send" }).click();
+
+    await expect(form).toHaveCount(0);
+    await expect(page.getByText("Sending.")).toBeVisible();
+    await expect(page.getByRole("list", { name: "Being written" })).toHaveCount(0);
+    const went = await sent(page);
+    expect(went).toHaveLength(1);
+    expect(went[0]).toMatchObject({
+        subject: "Lunch on Friday",
+        body: "Are you both free?\n\nRobin",
+        to: [
+            { name: "Jo Nguyen", address: "jo.nguyen@example.test" },
+            { name: null, address: "sam.taylor@example.test" },
+        ],
+    });
+});
+
+test("a reply is addressed and titled, and starts in the words", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    const form = page.getByRole("form", { name: "Reply" });
+
+    await expect(form.getByRole("textbox", { name: "To" })).toHaveValue("Sam Taylor <sam.taylor@example.test>");
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("RE: Budget review moved to Thursday");
+    await expect(form.getByRole("textbox", { name: "Message" })).toBeFocused();
+    await expect(form.getByText("The original message is added underneath")).toBeVisible();
+
+    await page.keyboard.type("Thursday is fine.");
+    await page.keyboard.press("Control+Enter");
+
+    await expect(form).toHaveCount(0);
+    expect((await sent(page))[0]).toMatchObject({ kind: "reply", message_id: "m1", body: "Thursday is fine." });
+    // The message that was being read is back.
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+});
+
+test("a draft put aside is there to come back to, and can be thrown away", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.keyboard.press("Control+n");
+    const form = page.getByRole("form", { name: "New message" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Half written");
+    await form.getByRole("textbox", { name: "Message" }).fill("To be finished");
+
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
+
+    await page.getByRole("list", { name: "Being written" }).getByRole("button", { name: "Half written" }).click();
+    await expect(form.getByRole("textbox", { name: "Message" })).toHaveValue("To be finished");
+
+    // Throwing it away takes asking twice.
+    await form.getByRole("button", { name: "Discard" }).click();
+    await expect(form).toBeVisible();
+    await form.getByRole("button", { name: "Discard for good?" }).click();
+    await expect(form).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Being written" })).toHaveCount(0);
+    expect(await sent(page)).toHaveLength(0);
+});
+
+test("a slip in an address, or nobody to send to, is said and nothing is sent", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Hello");
+
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form.getByRole("alert")).toContainText("at least one recipient");
+
+    await form.getByRole("textbox", { name: "To" }).fill("jo at example");
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form.getByRole("alert")).toContainText("`jo at example` is not an email address");
+    await expect(form.getByRole("textbox", { name: "To" })).toHaveValue("jo at example");
+    expect(await sent(page)).toHaveLength(0);
+});
+
+test("a message Microsoft 365 will not send comes back with the reason", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, sendRefused: "The mailbox is over its sending limit." });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    await form.getByRole("textbox", { name: "To" }).fill("jo@example.test");
+    await form.getByRole("textbox", { name: "Subject" }).fill("Hello");
+    await form.getByRole("textbox", { name: "Message" }).fill("Nothing of this is lost.");
+    await form.getByRole("button", { name: "Send" }).click();
+
+    const waiting = page.getByRole("list", { name: "Being written" });
+    await expect(waiting).toContainText("Not sent");
+    await waiting.getByRole("button", { name: /Hello/ }).click();
+
+    await expect(form.getByRole("alert")).toContainText("This was not sent. The mailbox is over its sending limit.");
+    await expect(form.getByRole("textbox", { name: "Message" })).toHaveValue("Nothing of this is lost.");
 });

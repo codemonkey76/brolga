@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** Why Microsoft 365 will not send anything, if it will not. */
+    sendRefused?: string;
     /** Changes Microsoft 365 refused, to be told of after the next sync. */
     refused?: { message_id: string; subject: string; change: string; error: string }[];
     /** Where the save dialog says to save. Left out, the dialog is dismissed. */
@@ -208,6 +210,16 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         /** What each action changed, by the id that undoes it. */
         const actions = new Map<string, () => void>();
         const refused = [...(core.refused ?? [])];
+        /** Drafts as the core keeps them, and what has been sent. */
+        const drafts: Record<string, unknown>[] = [];
+        const sent: Record<string, unknown>[] = [];
+        const checked = (people: unknown) => {
+            for (const each of (people as { address: string }[] | undefined) ?? []) {
+                if (!/^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$/.test(each.address)) throw { code: "failed", message: `\`${each.address}\` is not an email address.` };
+            }
+            return people;
+        };
+        const draft = (id: unknown) => drafts.find((each) => each.id === id);
         const acted = (ids: unknown, apply: (m: (typeof mail)[number]) => (() => void) | null) => {
             const undo: (() => void)[] = [];
             for (const m of mail.filter((each) => (ids as string[]).includes(each.id))) {
@@ -334,6 +346,54 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 else trusted.delete(args.address as string);
                 return { address: args.address, trusted: args.trusted };
             },
+            "mail.drafts.create": (args) => {
+                const source = mail.find((each) => each.id === args.message_id);
+                const kind = (args.kind as string) ?? "new";
+                const made = {
+                    id: `draft-${drafts.length + sent.length + 1}`,
+                    kind,
+                    message_id: source?.id ?? null,
+                    to: kind === "reply" || kind === "reply_all" ? [source?.from] : [],
+                    cc: [],
+                    bcc: [],
+                    subject: source ? `${kind === "forward" ? "FW:" : "RE:"} ${source.subject}` : "",
+                    body: "",
+                    state: "editing",
+                    error: null,
+                };
+                drafts.unshift(made);
+                return { draft: made };
+            },
+            "mail.drafts.edit": (args) => {
+                const found = draft(args.draft_id);
+                if (!found) throw { code: "failed", message: "There is no such draft." };
+                for (const line of ["to", "cc", "bcc"]) if (args[line] !== undefined) found[line] = checked(args[line]);
+                for (const part of ["subject", "body"]) if (args[part] !== undefined) found[part] = args[part];
+                found.state = "editing";
+                found.error = null;
+                return { draft: found };
+            },
+            "mail.drafts.list": () => ({ drafts }),
+            "mail.drafts.discard": (args) => {
+                const at = drafts.findIndex((each) => each.id === args.draft_id);
+                if (at >= 0) drafts.splice(at, 1);
+                return { discarded: at >= 0 };
+            },
+            "mail.drafts.send": (args) => {
+                const found = draft(args.draft_id);
+                if (!found) throw { code: "failed", message: "There is no such draft." };
+                if ([found.to, found.cc, found.bcc].every((line) => (line as unknown[]).length === 0)) {
+                    throw { code: "failed", message: "Add at least one recipient before sending." };
+                }
+                if (core.sendRefused) {
+                    found.state = "failed";
+                    found.error = core.sendRefused;
+                } else {
+                    drafts.splice(drafts.indexOf(found), 1);
+                    sent.push(found);
+                }
+                return { queued: true };
+            },
             "mail.messages.set_read": (args) =>
                 acted(args.message_ids, (m) => {
                     if (m.is_read === args.is_read) return null;
@@ -403,6 +463,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
 
         Object.assign(window, {
             ran,
+            sent,
             __TAURI_INTERNALS__: {
                 invoke: async (name: string, payload: { command: string; args?: Record<string, unknown> }) => {
                     // The save dialog: the place this test says was chosen, or dismissed.
@@ -422,3 +483,6 @@ export async function withCore(page: Page, core: FakeCore = {}) {
 
 export const ran = (page: Page) =>
     page.evaluate(() => (window as unknown as { ran: { command: string; args: Record<string, unknown> }[] }).ran);
+
+/** What the stand-in core has sent. */
+export const sent = (page: Page) => page.evaluate(() => (window as unknown as { sent: Record<string, unknown>[] }).sent);

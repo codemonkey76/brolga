@@ -15,6 +15,8 @@
         saved: string | null;
         /** Save to the downloads folder, or with `ask` to a place chosen in a dialog. */
         onSave: (attachment: Attachment, ask?: boolean) => void;
+        /** Start an answer to the message. */
+        onWrite: (kind: "reply" | "reply_all" | "forward") => void;
         onSetRead: (isRead: boolean) => void;
         onSetFlag: (status: FlagStatus) => void;
         /** Every folder, to move the message to one. */
@@ -30,7 +32,7 @@
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onSetRead, onSetFlag, folders, within, onDelete, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onWrite, onSetRead, onSetFlag, folders, within, onDelete, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
     /** Where the link under the pointer really goes. */
     let hover = $state<string | null>(null);
@@ -174,6 +176,9 @@
                 · {new Date(opened.message.received_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
             </p>
             <div class="actions" role="toolbar" aria-label="Message actions">
+                <button type="button" title="Ctrl+R" onclick={() => onWrite("reply")}>Reply</button>
+                <button type="button" title="Ctrl+Shift+R" onclick={() => onWrite("reply_all")}>Reply all</button>
+                <button type="button" title="Ctrl+F" onclick={() => onWrite("forward")}>Forward</button>
                 {#if within !== "deleteditems"}
                     <button type="button" title="Delete" onclick={onDelete}>Delete</button>
                 {/if}

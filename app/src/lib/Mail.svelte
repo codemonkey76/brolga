@@ -1,7 +1,8 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, dismissRefused, getConversation, listAttachments, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, dismissRefused, getConversation, listAttachments, listDrafts, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
 
@@ -48,6 +49,43 @@
         } catch (failure) {
             saved = say(failure);
         }
+    }
+
+    /** The messages being written on this computer, and those waiting to go. */
+    let drafts = $state<Draft[]>([]);
+    /** The one being written now, which takes the reading pane's place. */
+    let writing = $state<Draft | null>(null);
+    let notice = $state<string | null>(null);
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    async function loadDrafts() {
+        if (accountId) drafts = await listDrafts(accountId).catch(() => drafts);
+    }
+
+    function tell(what: string) {
+        clearTimeout(noticeTimer);
+        notice = what;
+        noticeTimer = setTimeout(() => (notice = null), 6_000);
+    }
+
+    /** Start a new message, or an answer to the one being read. */
+    async function write(kind: Draft["kind"]) {
+        if (!accountId) return;
+        if (kind !== "new" && !opened) return;
+        try {
+            writing = await createDraft(accountId, kind, kind === "new" ? undefined : opened?.message.id);
+            await loadDrafts();
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    async function doneWriting(how: "sent" | "discarded" | "closed") {
+        writing = null;
+        if (how === "sent") tell("Sending. It will be in Sent Items once it has gone.");
+        await loadDrafts();
+        // Sending happens in the background: look again shortly for it having gone, or come back.
+        if (how === "sent") setTimeout(loadDrafts, 1_500);
     }
 
     /** The last action, while it can still be taken back. */
@@ -400,6 +438,7 @@
             await loadFolders();
             await refresh();
             if (!failed) await tellOfRefusals();
+            await loadDrafts();
         } catch (failure) {
             problem = say(failure);
         } finally {
@@ -431,6 +470,17 @@
             event.preventDefault();
             searchBox?.focus();
             searchBox?.select();
+        } else if (writing) {
+            // The keys below act on the message being read, which is not what is on screen.
+        } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+            event.preventDefault();
+            write("new");
+        } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
+            event.preventDefault();
+            write(event.shiftKey ? "reply_all" : "reply");
+        } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+            event.preventDefault();
+            write("forward");
         } else if (opened && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) {
             const ctrl = event.ctrlKey || event.metaKey;
             if (ctrl && event.key.toLowerCase() === "q") {
@@ -450,7 +500,7 @@
                 archive();
             }
         }
-        if (undoable && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !(event.target instanceof HTMLInputElement)) {
+        if (undoable && !writing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !(event.target instanceof HTMLInputElement)) {
             event.preventDefault();
             takeBack();
         }
@@ -462,8 +512,10 @@
         folderId = null;
         opened = null;
         selectedId = null;
+        writing = null;
         reset();
         await loadFolders().catch((failure) => (problem = say(failure)));
+        await loadDrafts();
     }
 
     // Show what is already on this computer at once, then fetch what is new.
@@ -487,6 +539,31 @@
             </select>
         {:else if account}
             <p class="account" title={account.username}>{account.username}</p>
+        {/if}
+
+        <button type="button" class="new" title="Ctrl+N" onclick={() => write("new")}>New message</button>
+
+        {#if drafts.length > 0}
+            <h2 id="drafts-heading">Being written</h2>
+            <ul aria-labelledby="drafts-heading">
+                {#each drafts as each (each.id)}
+                    <li>
+                        <span class="twist"></span>
+                        <button
+                            type="button"
+                            class="folder"
+                            class:current={writing?.id === each.id}
+                            disabled={each.state === "queued"}
+                            title={each.state === "failed" ? (each.error ?? "") : undefined}
+                            onclick={() => (writing = each)}
+                        >
+                            <span class="name">{each.subject || "(No subject)"}</span>
+                            {#if each.state === "queued"}<span class="count">Sending…</span>{/if}
+                            {#if each.state === "failed"}<span class="count warn">Not sent</span>{/if}
+                        </button>
+                    </li>
+                {/each}
+            </ul>
         {/if}
 
         {#snippet row(each: Folder, parent: boolean, open: boolean, indent: number)}
@@ -517,7 +594,7 @@
             </ul>
             <h2 id="folders-heading">Folders</h2>
         {:else}
-            <h2 id="folders-heading" class="unseen">Folders</h2>
+            <h2 id="folders-heading" class:unseen={drafts.length === 0}>Folders</h2>
         {/if}
         <ul aria-labelledby="folders-heading">
             {#each tree as each (each.folder.id)}
@@ -595,6 +672,9 @@
                 <MessageList {total} {rows} {selectedId} onSelect={open} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
             </div>
         {/if}
+        {#if notice}
+            <p class="undo" role="status">{notice}</p>
+        {/if}
         {#if undoable}
             <p class="undo" role="status">
                 {undoable.said}
@@ -603,27 +683,34 @@
         {/if}
     </div>
 
-    <ReadingPane
-        {opened}
-        loading={opening}
-        problem={readingProblem}
-        {imagesShown}
-        {thread}
-        {attachments}
-        {saved}
-        onSave={save}
-        onTrust={trust}
-        onSetRead={markRead}
-        onSetFlag={flag}
-        {folders}
-        {within}
-        onDelete={remove}
-        onArchive={archive}
-        onMove={(folder) => moveTo(folder.id, `Moved to ${folder.name}`)}
-        onRead={(message) => read(message)}
-        onShowImages={() => opened && read(opened.message, true)}
-        onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}
-    />
+    {#if writing && accountId}
+        {#key writing.id}
+            <Compose {accountId} draft={writing} onDone={doneWriting} onKept={loadDrafts} />
+        {/key}
+    {:else}
+        <ReadingPane
+            {opened}
+            loading={opening}
+            problem={readingProblem}
+            {imagesShown}
+            {thread}
+            {attachments}
+            {saved}
+            onSave={save}
+            onTrust={trust}
+            onWrite={write}
+            onSetRead={markRead}
+            onSetFlag={flag}
+            {folders}
+            {within}
+            onDelete={remove}
+            onArchive={archive}
+            onMove={(folder) => moveTo(folder.id, `Moved to ${folder.name}`)}
+            onRead={(message) => read(message)}
+            onShowImages={() => opened && read(opened.message, true)}
+            onOpenLink={(url) => openLink(url).catch((failure) => (readingProblem = say(failure)))}
+        />
+    {/if}
 </div>
 
 <style>
@@ -770,6 +857,16 @@
     .view select {
         font-size: 0.8rem;
         padding: 0.1rem 0.25rem;
+    }
+
+    .new {
+        flex: none;
+        margin: 0 0.25rem;
+        font-weight: 600;
+    }
+
+    .warn {
+        color: var(--danger);
     }
 
     .undo {

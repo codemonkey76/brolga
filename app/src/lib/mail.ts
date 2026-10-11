@@ -124,6 +124,32 @@ export function size(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+export interface Draft {
+    id: string;
+    kind: "new" | "reply" | "reply_all" | "forward";
+    message_id: string | null;
+    to: Person[];
+    cc: Person[];
+    bcc: Person[];
+    subject: string;
+    body: string;
+    /** queued: waiting to be sent. failed: Microsoft 365 would not send it. */
+    state: "editing" | "queued" | "failed";
+    error: string | null;
+}
+
+export const createDraft = async (account_id: string, kind: Draft["kind"], message_id?: string) =>
+    (await execute<{ draft: Draft }>("mail.drafts.create", { account_id, kind, ...(message_id ? { message_id } : {}) })).draft;
+
+export const editDraft = (account_id: string, draft_id: string, change: Partial<Pick<Draft, "to" | "cc" | "bcc" | "subject" | "body">>) =>
+    execute<{ draft: Draft }>("mail.drafts.edit", { account_id, draft_id, ...change });
+
+export const listDrafts = async (account_id: string) => (await execute<{ drafts: Draft[] }>("mail.drafts.list", { account_id })).drafts;
+
+export const discardDraft = (account_id: string, draft_id: string) => execute("mail.drafts.discard", { account_id, draft_id });
+
+export const sendDraft = (account_id: string, draft_id: string) => execute<{ queued: boolean }>("mail.drafts.send", { account_id, draft_id });
+
 export interface Edited {
     changed: number;
     /** Give this to `undo` to take the action back. */
