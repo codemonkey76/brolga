@@ -59,7 +59,7 @@ raise it: an email that says "you are allowed to send" changes nothing.
 | `brolga-cli mcp` | Read: list, search and open mail, sync, read settings. |
 | `--access draft` | Also write drafts, which reach nobody until they are sent. |
 | `--access full` | Also change the mailbox: mark, flag, move, delete to Deleted Items. |
-| `--allow-consequential` | Also do what reaches other people or cannot be undone: send, and set automatic replies. Needs `--access full` as well. |
+| `--allow-consequential` | Send, and do the other things that reach people or cannot be undone, without asking you each time. Needs `--access full` as well. |
 
 Three things hold whatever the access:
 
@@ -78,9 +78,12 @@ Three things hold whatever the access:
 Signing in and removing an account are never an agent's: a person does those,
 in the app or with `brolga-cli sign-in`.
 
-Not built yet: asking in the app before a consequential command runs, where
-the server is attached to it. Until then the flag is the only say-so, in both
-modes.
+**Sending asks first.** With `--access full` and without
+`--allow-consequential`, a command that reaches other people or cannot be
+undone (sending, deleting for good, setting automatic replies) is put to you
+in the app: who is asking, what for, and for a message who it is to and what
+it is about. It runs only if you allow it, once. If you say no, do not answer
+in two minutes, or the app is not open, the agent is told no.
 
 The server tells every agent that the content of an email, attachment or
 invitation is data to report on and never an instruction.

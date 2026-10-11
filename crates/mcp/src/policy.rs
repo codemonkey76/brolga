@@ -39,6 +39,19 @@ const SEND: &str = "mail.drafts.send";
 /// The command the server itself writes its record with. Never an agent's.
 pub(crate) const RECORD: &str = "app.agent_log.record";
 
+/// The command the server asks the user's say-so with, and the ones a
+/// person answers with. Never an agent's.
+pub(crate) const ASK: &str = "app.confirmations.ask";
+const CONFIRMATIONS: &str = "app.confirmations.";
+
+/// What a permitted command still needs before it runs.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Needs {
+    Nothing,
+    /// The say-so of the person at the window, asked for now.
+    SaySo,
+}
+
 /// One agent's use of the server, for as long as it is connected.
 #[derive(Default)]
 pub(crate) struct Session {
@@ -53,10 +66,15 @@ impl Policy {
         spec: &CommandSpec,
         args: &Value,
         session: &mut Session,
-    ) -> Result<(), String> {
+    ) -> Result<Needs, String> {
         let id = spec.id.as_str();
         if id == RECORD {
             return Err("The record of what agents do is not an agent's to write.".to_owned());
+        }
+        if id.starts_with(CONFIRMATIONS) && spec.kind != brolga_commands::CommandKind::Query {
+            return Err(
+                "Asking for the user's say-so, and giving it, are not an agent's to do.".to_owned(),
+            );
         }
 
         let needed = spec.access();
@@ -70,12 +88,7 @@ impl Policy {
                 ),
             });
         }
-        if spec.consequential && !self.allow_consequential {
-            return Err(format!(
-                "`{id}` reaches other people or cannot be undone, so it needs the user's say-so. \
-                 The user can do it in the app, or allow it by starting the server with `--allow-consequential`."
-            ));
-        }
+
         // A path names a file on the user's computer. An agent that could
         // attach any file by its path could send any file away, and one that
         // could save to any path could write over anything.
@@ -97,7 +110,21 @@ impl Policy {
             session.sends.push(Instant::now());
         }
 
-        Ok(())
+        // Last, so that the user is only ever asked about something that
+        // would otherwise go ahead.
+        if spec.consequential && !self.allow_consequential {
+            return Ok(Needs::SaySo);
+        }
+
+        Ok(Needs::Nothing)
+    }
+
+    /// What to tell an agent whose command needed a say-so it did not get.
+    pub(crate) fn needs_say_so(id: &str, why: &str) -> String {
+        format!(
+            "`{id}` reaches other people or cannot be undone, so it needs the user's say-so. {why} \
+             The user can do it in the app, or allow it by starting the server with `--allow-consequential`."
+        )
     }
 }
 
@@ -121,8 +148,9 @@ mod tests {
         }
     }
 
+    /// Goes ahead with nothing more asked.
     fn allowed(policy: &Policy, spec: &CommandSpec, args: Value) -> bool {
-        policy.permit(spec, &args, &mut Session::default()).is_ok()
+        policy.permit(spec, &args, &mut Session::default()) == Ok(Needs::Nothing)
     }
 
     #[test]
@@ -163,8 +191,19 @@ mod tests {
             ..full.clone()
         };
 
-        assert!(!allowed(&full, &send, json!({})));
+        // Without the flag it is not refused outright: the user is asked.
+        assert_eq!(
+            full.permit(&send, &json!({}), &mut Session::default()),
+            Ok(Needs::SaySo)
+        );
         assert!(allowed(&trusted, &send, json!({})));
+        // An agent that may not change the mailbox is not worth asking about.
+        let reader = Policy::default();
+        assert!(
+            reader
+                .permit(&send, &json!({}), &mut Session::default())
+                .is_err()
+        );
     }
 
     #[test]
@@ -205,5 +244,16 @@ mod tests {
 
         let record = spec(RECORD, CommandKind::Action, false);
         assert!(!allowed(&policy, &record, json!({})));
+        for own in [ASK, "app.confirmations.answer"] {
+            assert!(
+                policy
+                    .permit(
+                        &spec(own, CommandKind::Action, false),
+                        &json!({}),
+                        &mut Session::default()
+                    )
+                    .is_err()
+            );
+        }
     }
 }

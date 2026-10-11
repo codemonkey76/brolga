@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::Backend;
 use crate::backend::Refusal;
-use crate::policy::{Policy, RECORD, Session};
+use crate::policy::{ASK, Needs, Policy, RECORD, Session};
 use crate::tools::{Route, route, tools_for};
 
 const INSTRUCTIONS: &str = "Brolga is a desktop client for Microsoft 365 mail, calendar and contacts. \
@@ -63,12 +63,39 @@ impl McpServer {
             Route::ListCommands => Ok(CallToolResult::structured(json!({ "commands": specs }))),
             Route::Execute { command, args } => {
                 // An unknown command is left for the registry to name in its own error.
-                let allowed = match specs.iter().find(|s| s.id == command) {
+                let permitted = match specs.iter().find(|s| s.id == command) {
                     Some(spec) => {
                         let mut session = self.session.lock().await;
                         self.policy.permit(spec, &args, &mut session)
                     }
-                    None => Ok(()),
+                    None => Ok(Needs::Nothing),
+                };
+                // Something that needs the user's say-so is put to them, in
+                // the window, and goes ahead only on a yes. With no window
+                // to ask in the answer is no.
+                let allowed = match permitted {
+                    Ok(Needs::Nothing) => Ok(()),
+                    Ok(Needs::SaySo) => {
+                        let asked = self
+                            .backend
+                            .execute(
+                                ASK,
+                                json!({ "client": client, "command": command, "args": args }),
+                            )
+                            .await;
+                        match asked {
+                            Ok(answer) if answer["allowed"] == true => Ok(()),
+                            Ok(answer) => Err(Policy::needs_say_so(
+                                &command,
+                                answer["reason"].as_str().unwrap_or_default(),
+                            )),
+                            Err(_) => Err(Policy::needs_say_so(
+                                &command,
+                                "The user could not be asked.",
+                            )),
+                        }
+                    }
+                    Err(reason) => Err(reason),
                 };
                 let result = match allowed {
                     Ok(()) => self.backend.execute(&command, args.clone()).await,

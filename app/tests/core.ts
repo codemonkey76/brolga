@@ -170,6 +170,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** What agents are waiting for the user's say-so on. */
+    asking?: { id: number; client: string; command: string; args: Record<string, unknown> }[];
     /** Microsoft 365 cannot be reached. */
     offline?: boolean;
     /** What agents have asked for, the latest first. */
@@ -235,6 +237,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         };
         const draft = (id: unknown) => drafts.find((each) => each.id === id);
         let signature = { text: "", on_replies: false };
+        const asking = [...(core.asking ?? [])];
         let replies: Record<string, unknown> = {
             status: "off",
             internal_message: "",
@@ -418,6 +421,13 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 };
             },
             "app.agent_log.list": () => ({ entries: core.agentLog ?? [] }),
+            "app.confirmations.list": () => ({ questions: asking }),
+            "app.confirmations.answer": (args) => {
+                const at = asking.findIndex((each) => each.id === args.id);
+                if (at >= 0) asking.splice(at, 1);
+                return { answered: at >= 0 };
+            },
+            "mail.drafts.get": (args) => ({ draft: draft(args.draft_id) ?? null }),
             "mail.signature.get": () => signature,
             "mail.signature.set": (args) => {
                 signature = { text: args.text as string, on_replies: (args.on_replies as boolean) ?? signature.on_replies };

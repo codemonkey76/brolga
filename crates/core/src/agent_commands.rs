@@ -70,7 +70,214 @@ pub(crate) fn redacted(args: &Value) -> Value {
     cut(None, args)
 }
 
+/// How long a person is given to answer before the answer is no.
+const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
+/// A window that has not looked for questions for this long is not there
+/// to be asked.
+const WINDOW_GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Something an agent wants to do that needs a person's say-so first.
+struct Question {
+    id: u64,
+    client: String,
+    command: String,
+    /// As asked, with anything long or private cut down to its size.
+    args: Value,
+    answer: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// The questions waiting for a person, and when a window last looked.
+#[derive(Default)]
+struct Questions {
+    next: u64,
+    waiting: Vec<Question>,
+    window_looked: Option<std::time::Instant>,
+}
+
+#[derive(Deserialize)]
+struct Ask {
+    client: String,
+    command: String,
+    args: Value,
+}
+
+#[derive(Deserialize)]
+struct Answer {
+    id: u64,
+    allow: bool,
+}
+
+fn lock(
+    questions: &std::sync::Mutex<Questions>,
+) -> Result<std::sync::MutexGuard<'_, Questions>, CommandError> {
+    questions
+        .lock()
+        .map_err(|_| failed("the list of questions is broken"))
+}
+
+fn register_questions(registry: &mut Registry) -> Result<(), RegistryError> {
+    let questions = Arc::new(std::sync::Mutex::new(Questions::default()));
+    let asking = questions.clone();
+    registry.register(
+        CommandSpec {
+            id: "app.confirmations.ask".to_owned(),
+            title: "Ask the user's say-so".to_owned(),
+            description: "Ask the person at the window whether an agent may run a command that reaches other people or cannot be undone, and wait for the answer. \
+                          Used by the MCP server; an agent cannot run it. The answer is no if nobody answers in two minutes, or if no window is open to ask in."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "client": { "type": "string", "maxLength": 200 },
+                    "command": { "type": "string", "maxLength": 200 },
+                    "args": {}
+                },
+                "required": ["client", "command", "args"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "allowed": { "type": "boolean" }, "reason": { "type": "string" } },
+                "required": ["allowed", "reason"]
+            }),
+            // With no window looking, it is answered at once: no.
+            examples: vec![json!({ "client": "example-agent", "command": "mail.drafts.send", "args": { "draft_id": "draft-1" } })],
+        },
+        Arc::new(move |args| {
+            let questions = asking.clone();
+            Box::pin(async move {
+                let ask: Ask = serde_json::from_value(args).map_err(failed)?;
+                let (answer, answered) = tokio::sync::oneshot::channel();
+                let id = {
+                    let mut questions = lock(&questions)?;
+                    let watched = questions.window_looked.is_some_and(|at| at.elapsed() < WINDOW_GONE_AFTER);
+                    if !watched {
+                        return Ok(json!({ "allowed": false, "reason": "There is no window open to ask the user in." }));
+                    }
+                    questions.next += 1;
+                    let id = questions.next;
+                    questions.waiting.push(Question {
+                        id,
+                        client: ask.client,
+                        command: ask.command,
+                        args: redacted(&ask.args),
+                        answer,
+                    });
+                    id
+                };
+
+                let allowed = tokio::time::timeout(ANSWER_WITHIN, answered).await;
+                // Answered or not, it is no longer waiting.
+                if let Ok(mut questions) = questions.lock() {
+                    questions.waiting.retain(|q| q.id != id);
+                }
+
+                Ok(match allowed {
+                    Ok(Ok(true)) => json!({ "allowed": true, "reason": "The user allowed it." }),
+                    Ok(_) => json!({ "allowed": false, "reason": "The user did not allow it." }),
+                    Err(_) => json!({ "allowed": false, "reason": "The user did not answer in time." }),
+                })
+            })
+        }),
+    )?;
+
+    let listing = questions.clone();
+    registry.register(
+        CommandSpec {
+            id: "app.confirmations.list".to_owned(),
+            title: "Questions waiting".to_owned(),
+            description: "What agents are waiting for the user's say-so on: for each, the program asking, the command and its arguments with anything private cut out. \
+                          The window asks this every few seconds, which is also how the client knows there is a window to ask in."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "integer" },
+                                "client": { "type": "string" },
+                                "command": { "type": "string" },
+                                "args": {}
+                            },
+                            "required": ["id", "client", "command", "args"]
+                        }
+                    }
+                },
+                "required": ["questions"]
+            }),
+            examples: vec![json!({})],
+        },
+        Arc::new(move |_| {
+            let questions = listing.clone();
+            Box::pin(async move {
+                let mut questions = lock(&questions)?;
+                questions.window_looked = Some(std::time::Instant::now());
+                let waiting: Vec<Value> = questions
+                    .waiting
+                    .iter()
+                    .map(|q| json!({ "id": q.id, "client": q.client, "command": q.command, "args": q.args }))
+                    .collect();
+
+                Ok(json!({ "questions": waiting }))
+            })
+        }),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "app.confirmations.answer".to_owned(),
+            title: "Answer a question".to_owned(),
+            description: "Say whether an agent may go ahead with what it asked. The person at the window does this; an agent cannot. \
+                          `answered` is false if the question is no longer waiting."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "id": { "type": "integer" }, "allow": { "type": "boolean" } },
+                "required": ["id", "allow"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "answered": { "type": "boolean" } },
+                "required": ["answered"]
+            }),
+            examples: vec![json!({ "id": 0, "allow": false })],
+        },
+        Arc::new(move |args| {
+            let questions = questions.clone();
+            Box::pin(async move {
+                let answer: Answer = serde_json::from_value(args).map_err(failed)?;
+                let mut questions = lock(&questions)?;
+                let Some(at) = questions.waiting.iter().position(|q| q.id == answer.id) else {
+                    return Ok(json!({ "answered": false }));
+                };
+                let question = questions.waiting.remove(at);
+                let _ = question.answer.send(answer.allow);
+
+                Ok(json!({ "answered": true }))
+            })
+        }),
+    )?;
+
+    Ok(())
+}
+
 pub(crate) fn register(registry: &mut Registry, db: Arc<GlobalDb>) -> Result<(), RegistryError> {
+    register_questions(registry)?;
+
     let record_db = db.clone();
     registry.register(
         CommandSpec {

@@ -2,6 +2,7 @@
     import { type Account, listAccounts } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
     import Agents from "./lib/Agents.svelte";
+    import Questions from "./lib/Questions.svelte";
     import Mail from "./lib/Mail.svelte";
 
     type View = "mail" | "accounts" | "agents";
@@ -35,6 +36,8 @@
 </script>
 
 <svelte:window onkeydown={keydown} />
+
+<Questions />
 
 <div class="shell">
     <nav class="rail" aria-label="Sections">

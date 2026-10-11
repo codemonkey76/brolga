@@ -189,3 +189,31 @@ test("with nothing asked yet, the agents screen says so", async ({ page }) => {
 
     await expect(page.getByText("No agent has asked for anything yet.")).toBeVisible();
 });
+
+test("an agent that wants to send is put to the user, who can say no", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        asking: [
+            { id: 1, client: "claude-code", command: "mail.drafts.send", args: { draft_id: "draft-7" } },
+            { id: 2, client: "claude-code", command: "mail.messages.delete_permanently", args: { message_ids: ["m1"] } },
+        ],
+    });
+
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toContainText("claude-code wants to send a message");
+    await expect(dialog).toContainText("1 more waiting.");
+    // Saying no is where the keyboard starts.
+    await expect(dialog.getByRole("button", { name: "Don't allow" })).toBeFocused();
+    await picture(page, "agent-asks");
+
+    await dialog.getByRole("button", { name: "Don't allow" }).click();
+    await expect(dialog).toContainText("wants to delete messages for good");
+    await dialog.getByRole("button", { name: "Allow this once" }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const answers = (await ran(page)).filter((r) => r.command === "app.confirmations.answer").map((r) => r.args);
+    expect(answers).toEqual([
+        { id: 1, allow: false },
+        { id: 2, allow: true },
+    ]);
+});

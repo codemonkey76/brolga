@@ -357,3 +357,72 @@ async fn the_commands_an_agent_may_draft_with_are_real_and_are_all_drafting() {
         brolga_commands::Access::Read
     );
 }
+
+#[tokio::test]
+async fn a_question_for_the_user_waits_for_the_window_and_takes_its_answer() {
+    let identity = FakeIdentity::start().await.unwrap();
+    let registry = core(&identity, Some(CLIENT_ID)).registry();
+    let question = json!({ "client": "an-agent", "command": "mail.drafts.send", "args": { "draft_id": "draft-1", "body": "private words" } });
+
+    // With no window looking, nobody can be asked.
+    let unasked = registry
+        .execute("app.confirmations.ask", question.clone())
+        .await
+        .unwrap();
+    assert_eq!(unasked["allowed"], false);
+
+    for allow in [true, false] {
+        // The window looks, and so is known to be there.
+        registry
+            .execute("app.confirmations.list", json!({}))
+            .await
+            .unwrap();
+        let asking = {
+            let registry = registry.clone();
+            let question = question.clone();
+            tokio::spawn(async move {
+                registry
+                    .execute("app.confirmations.ask", question)
+                    .await
+                    .unwrap()
+            })
+        };
+        let waiting = loop {
+            let listed = registry
+                .execute("app.confirmations.list", json!({}))
+                .await
+                .unwrap();
+            if let Some(first) = listed["questions"].get(0) {
+                break first.clone();
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(waiting["client"], "an-agent");
+        // What the person is shown has nothing private in it.
+        assert_eq!(waiting["args"]["body"], "[13 characters]");
+
+        let answered = registry
+            .execute(
+                "app.confirmations.answer",
+                json!({ "id": waiting["id"], "allow": allow }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answered["answered"], true);
+        assert_eq!(asking.await.unwrap()["allowed"], allow);
+        // Answered, it is no longer waiting, and cannot be answered again.
+        let after = registry
+            .execute("app.confirmations.list", json!({}))
+            .await
+            .unwrap();
+        assert!(after["questions"].as_array().unwrap().is_empty());
+        let again = registry
+            .execute(
+                "app.confirmations.answer",
+                json!({ "id": waiting["id"], "allow": true }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again["answered"], false);
+    }
+}
