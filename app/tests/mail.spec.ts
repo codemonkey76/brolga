@@ -380,3 +380,22 @@ test("the window is dark when the desktop is, the message included", async ({ pa
     expect(lightness(inMessage)).toBeGreaterThan(170);
     await picture(page, "dark");
 });
+
+test("a list by date is marked off into today, yesterday and earlier", async ({ page }) => {
+    // A Friday afternoon in Brisbane.
+    await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+
+    await expect(page.locator(".stretch")).toHaveText("Today");
+    await expect(rows.nth(0).locator(".starts")).toHaveCount(0);
+    await expect(rows.nth(1).locator(".starts")).toHaveCount(0);
+    await expect(rows.nth(2).locator(".starts")).toHaveText("Yesterday");
+    await expect(rows.nth(3).locator(".starts")).toHaveText("Earlier this week");
+    await picture(page, "mail-by-date");
+
+    // By sender there are no stretches of time to mark.
+    await page.getByRole("combobox", { name: "Sort" }).selectOption("sender");
+    await expect(page.locator(".stretch")).toHaveCount(0);
+    await expect(page.locator(".starts")).toHaveCount(0);
+});

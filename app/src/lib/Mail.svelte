@@ -457,7 +457,7 @@
             <p class="empty muted">{searching ? "Nothing matches." : syncing ? "Fetching your mail…" : "Nothing here."}</p>
         {:else}
             <div class="rows">
-                <MessageList {total} {rows} {selectedId} onSelect={open} onNeed={need} />
+                <MessageList {total} {rows} {selectedId} onSelect={open} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
             </div>
         {/if}
     </div>
@@ -664,6 +664,8 @@
     .rows {
         flex: 1;
         min-height: 0;
+        display: flex;
+        flex-direction: column;
     }
 
     .empty {

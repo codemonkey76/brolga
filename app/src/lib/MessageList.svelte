@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Message, when, who } from "./mail";
+    import { type Message, dateGroup, when, who } from "./mail";
 
     interface Props {
         /** How many messages there are in all, loaded or not. */
@@ -10,9 +10,11 @@
         onSelect: (message: Message) => void;
         /** Asked for when a position on screen has not been loaded. */
         onNeed: (index: number) => void;
+        /** The list is in date order, so it can be marked off into today, yesterday and so on. */
+        byDate: boolean;
     }
 
-    let { total, rows, selectedId, onSelect, onNeed }: Props = $props();
+    let { total, rows, selectedId, onSelect, onNeed, byDate }: Props = $props();
 
     // Only the rows on screen are in the page, however long the folder is,
     // so a folder of a hundred thousand scrolls like one of a hundred.
@@ -25,6 +27,16 @@
     const first = $derived(Math.max(0, Math.floor(scrollTop / ROW) - SPARE));
     const last = $derived(Math.min(total, Math.ceil((scrollTop + height) / ROW) + SPARE));
     const visible = $derived(Array.from({ length: Math.max(0, last - first) }, (_, i) => first + i));
+
+    // Rows are all one height, which is what lets a long folder scroll
+    // freely, so a stretch of time is named over the list and marked where
+    // it starts, with no heading rows between the messages.
+    const group = (index: number) => {
+        const row = rows[index];
+        return byDate && row ? dateGroup(row.received_at) : "";
+    };
+    const top = $derived(group(Math.min(Math.max(0, total - 1), Math.floor(scrollTop / ROW))));
+    const starts = (index: number) => index > 0 && group(index) !== "" && group(index - 1) !== "" && group(index) !== group(index - 1);
 
     $effect(() => {
         for (const index of visible) {
@@ -57,6 +69,9 @@
     }
 </script>
 
+{#if top}
+    <p class="stretch">{top}</p>
+{/if}
 <div
     class="viewport"
     role="listbox"
@@ -83,6 +98,9 @@
                 onclick={() => message && onSelect(message)}
                 onkeydown={() => {}}
             >
+                {#if starts(index)}
+                    <span class="starts">{group(index)}</span>
+                {/if}
                 {#if message}
                     <span class="from">{who(message.from)}</span>
                     <span class="date">{when(message.received_at)}</span>
@@ -103,8 +121,39 @@
 </div>
 
 <style>
+    .stretch,
+    .starts {
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+    }
+
+    .stretch {
+        flex: none;
+        margin: 0;
+        padding: 0.2rem 0.75rem;
+        border-bottom: 1px solid var(--line);
+        background: var(--raised);
+    }
+
+    /* Sits on the line above the first message of a stretch. */
+    .row .starts {
+        position: absolute;
+        top: -0.6rem;
+        right: 0.75rem;
+        padding: 0 0.4rem;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 0.6rem;
+        z-index: 1;
+        overflow: visible;
+    }
+
     .viewport {
-        height: 100%;
+        flex: 1;
+        min-height: 0;
         overflow-y: auto;
         contain: strict;
     }

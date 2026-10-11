@@ -6,7 +6,8 @@ export default defineConfig({
     testDir: "tests",
     fullyParallel: true,
     reporter: "list",
-    use: { baseURL: "http://localhost:4173", viewport: { width: 1280, height: 760 } },
+    // One time zone wherever the tests run, so a date reads the same in each.
+    use: { baseURL: "http://localhost:4173", viewport: { width: 1280, height: 760 }, timezoneId: "Australia/Brisbane" },
     // The app's window is WebKit on Linux and macOS and Chromium on Windows.
     // WebKit is run in CI, where Playwright has a build of it for the system.
     projects: [

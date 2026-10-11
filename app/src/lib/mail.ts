@@ -143,3 +143,21 @@ export function when(iso: string, now = new Date()): string {
         ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
     });
 }
+
+/** Which stretch of time a message belongs to in a list by date: today, yesterday, this week, last week, then its month. */
+export function dateGroup(iso: string, now = new Date()): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const DAY = 86_400_000;
+    const ago = Math.round((day(now) - day(date)) / DAY);
+    // Days since this week's Monday.
+    const intoWeek = (now.getDay() + 6) % 7;
+
+    if (ago < 0) return "Later";
+    if (ago === 0) return "Today";
+    if (ago === 1) return "Yesterday";
+    if (ago <= intoWeek) return "Earlier this week";
+    if (ago <= intoWeek + 7) return "Last week";
+    return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
