@@ -34,28 +34,6 @@ pub fn builtin_registry() -> Result<Registry, RegistryError> {
         handler(|| json!({ "name": "Brolga", "version": env!("CARGO_PKG_VERSION") })),
     )?;
 
-    registry.register(
-        CommandSpec {
-            id: "app.sync.status".to_owned(),
-            title: "Sync status".to_owned(),
-            description: "Whether each account is up to date with the server. Syncing is not built yet, so no account is reported.".to_owned(),
-            kind: CommandKind::Query,
-            consequential: false,
-            mcp_tool: Some("get_sync_status".to_owned()),
-            args_schema: no_arguments(),
-            result_schema: json!({
-                "type": "object",
-                "properties": {
-                    "accounts": { "type": "array", "items": { "type": "object" } }
-                },
-                "required": ["accounts"],
-                "additionalProperties": false
-            }),
-            examples: vec![json!({})],
-        },
-        handler(|| json!({ "accounts": [] })),
-    )?;
-
     Ok(registry)
 }
 

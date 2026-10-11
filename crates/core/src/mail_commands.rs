@@ -107,6 +107,27 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
     Ok(json!({ "accounts": results }))
 }
 
+async fn status(context: Context) -> Result<Value, CommandError> {
+    let mut accounts = Vec::new();
+    for account in context.accounts().map_err(failed)? {
+        let mailbox = context.open(&account).await.map_err(failed)?;
+        let (folders, messages, folders_synced, synced_at) =
+            mailbox.db.sync_summary().map_err(failed)?;
+        accounts.push(json!({
+            "account_id": account.id,
+            "username": account.username,
+            "needs_sign_in": account.needs_sign_in,
+            "syncing": mailbox.syncing.try_lock().is_err(),
+            "folders": folders,
+            "folders_synced": folders_synced,
+            "messages": messages,
+            "synced_at": synced_at,
+        }));
+    }
+
+    Ok(json!({ "accounts": accounts }))
+}
+
 async fn folders(context: Context, args: Folders) -> Result<Value, CommandError> {
     let account = context
         .account(args.account_id.as_deref())
@@ -348,6 +369,45 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             examples: vec![json!({})],
         },
         handler(&context, sync),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "app.sync.status".to_owned(),
+            title: "Sync status".to_owned(),
+            description: "For each account: whether it is syncing now, whether it needs to sign in again, how many folders and messages are on this computer, \
+                          how many folders have finished their first sync, and when the least recently synced of those was last brought up to date."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: Some("get_sync_status".to_owned()),
+            args_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "accounts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "account_id": { "type": "string" },
+                                "username": { "type": "string" },
+                                "needs_sign_in": { "type": "boolean" },
+                                "syncing": { "type": "boolean" },
+                                "folders": { "type": "integer" },
+                                "folders_synced": { "type": "integer" },
+                                "messages": { "type": "integer" },
+                                "synced_at": { "type": ["string", "null"], "description": "UTC. Null until a folder has finished its first sync." }
+                            },
+                            "required": ["account_id", "username", "needs_sign_in", "syncing", "folders", "folders_synced", "messages", "synced_at"]
+                        }
+                    }
+                },
+                "required": ["accounts"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&context, |context, _: serde_json::Map<String, Value>| status(context)),
     )?;
 
     registry.register(

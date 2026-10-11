@@ -240,6 +240,25 @@ impl AccountDb {
         restart(&self.connection(), &messages_resource(folder_id))
     }
 
+    /// How much of the mailbox is here, and how recently it was brought up
+    /// to date: (folders, messages, folders whose first sync has finished,
+    /// the oldest "last synced" among those).
+    pub fn sync_summary(&self) -> Result<(u32, u32, u32, Option<String>), StoreError> {
+        let connection = self.connection();
+        let folders =
+            connection.query_row("SELECT count(*) FROM folders WHERE hidden = 0", [], |r| {
+                r.get(0)
+            })?;
+        let messages = connection.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
+        let (complete, oldest) = connection.query_row(
+            "SELECT count(*), min(synced_at) FROM sync_state WHERE resource LIKE 'messages:%' AND complete = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        Ok((folders, messages, complete, oldest))
+    }
+
     // ---- applying pages ------------------------------------------------
 
     /// Apply one page of the folder tree's sync, and where it leaves the

@@ -80,6 +80,23 @@
         }
     }
 
+    /** Fetch again what is on screen, in place, so new mail appears without the list jumping. */
+    async function refresh() {
+        if (!accountId || !folderId || searching) return;
+        const mine = listing;
+        const next = rows.slice();
+        let now = total;
+        for (const offset of [...asked].sort((a, b) => a - b)) {
+            const page = await listMessages(accountId, folderId, offset, PAGE);
+            if (mine !== listing) return;
+            now = page.total;
+            for (let i = 0; i < PAGE; i++) next[offset + i] = page.messages[i];
+        }
+        next.length = Math.min(next.length, now);
+        rows = next;
+        total = now;
+    }
+
     async function search() {
         if (!accountId) return;
         if (!query.trim()) {
@@ -127,17 +144,29 @@
             const failed = results.find((r) => r.account_id === accountId && !r.ok) ?? results.find((r) => !r.ok);
             if (failed) problem = failed.error;
             await loadFolders();
-            // What is on screen may have changed underneath.
-            if (!searching && folderId) {
-                reset();
-                await need(0);
-            }
+            await refresh();
         } catch (failure) {
             problem = say(failure);
         } finally {
             syncing = false;
+            lastSync = Date.now();
         }
     }
+
+    // New mail is fetched every two minutes while the window is open, and
+    // when the window is come back to after half a minute or more away.
+    const EVERY = 2 * 60_000;
+    let lastSync = 0;
+    $effect(() => {
+        const timer = setInterval(sync, EVERY);
+        const back = () => Date.now() - lastSync > 30_000 && sync();
+        window.addEventListener("focus", back);
+
+        return () => {
+            clearInterval(timer);
+            window.removeEventListener("focus", back);
+        };
+    });
 
     function keydown(event: KeyboardEvent) {
         if (event.key === "F9") {

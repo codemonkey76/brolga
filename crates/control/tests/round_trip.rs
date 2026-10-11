@@ -30,10 +30,10 @@ async fn a_command_runs_over_the_channel() {
     let mut client = Client::connect(&endpoint).await.unwrap();
 
     let version = client.execute("app.version", json!({})).await.unwrap();
-    let again = client.execute("app.sync.status", json!({})).await.unwrap();
+    let again = client.execute("app.version", json!({})).await.unwrap();
 
     assert_eq!(version["name"], "Brolga");
-    assert_eq!(again, json!({ "accounts": [] }));
+    assert_eq!(again, version);
 }
 
 #[tokio::test]

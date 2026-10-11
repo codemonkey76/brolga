@@ -35,7 +35,7 @@ argument `mcp`.
 | `list_messages` | The messages in a folder, newest first, without bodies. |
 | `get_message` | One message with its body, as plain text or as HTML made safe. |
 | `search_mail` | Search synced mail: words, phrases, `from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `after:`, `before:`. |
-| `get_sync_status` | Each account's sync state. Not built yet, so no account is reported. |
+| `get_sync_status` | For each account: syncing or not, needing sign-in or not, how much is on this computer and when it was last brought up to date. |
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |
 

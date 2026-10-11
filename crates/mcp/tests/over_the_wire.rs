@@ -33,15 +33,7 @@ async fn an_agent_is_offered_the_tools() {
     let tools = agent.list_all_tools().await.unwrap();
 
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
-    assert_eq!(
-        names,
-        [
-            "get_sync_status",
-            "get_version",
-            "list_commands",
-            "execute_command"
-        ]
-    );
+    assert_eq!(names, ["get_version", "list_commands", "execute_command"]);
 }
 
 #[tokio::test]
@@ -171,6 +163,6 @@ async fn attached_to_a_running_client_the_tools_run_there() {
         .await
         .unwrap();
 
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 3);
     assert_eq!(result.structured_content.unwrap()["name"], "Brolga");
 }

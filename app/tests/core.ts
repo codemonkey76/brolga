@@ -116,6 +116,8 @@ export const bulk = (count: number): FakeMail[] =>
 export interface FakeCore {
     accounts?: FakeAccount[];
     mail?: FakeMail[];
+    /** Mail that turns up at the second sync, as new mail does. */
+    arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
     /** True when Brolga has no app registration of its own, as now. */
@@ -147,7 +149,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             return { account: outcome };
         };
 
-        const mail = core.mail ?? [];
+        const mail = [...(core.mail ?? [])];
+        let syncs = 0;
         const shown = (m: (typeof mail)[number]) => ({
             id: m.id,
             folder_id: m.folder_id,
@@ -177,16 +180,22 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             hidden: false,
         });
 
+        const sync = () => ({
+            accounts: accounts.map((a) => ({
+                account_id: a.id,
+                ok: !core.syncFails,
+                changed: 0,
+                removed: 0,
+                error: core.syncFails ?? null,
+            })),
+        });
+
         const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
-            "mail.sync": () => ({
-                accounts: accounts.map((a) => ({
-                    account_id: a.id,
-                    ok: !core.syncFails,
-                    changed: 0,
-                    removed: 0,
-                    error: core.syncFails ?? null,
-                })),
-            }),
+            "mail.sync": () => {
+                syncs += 1;
+                if (syncs === 2) mail.unshift(...(core.arrives ?? []));
+                return sync();
+            },
             "mail.folders.list": (args) => ({
                 account_id: args.account_id,
                 folders: [

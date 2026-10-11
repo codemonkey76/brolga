@@ -155,6 +155,22 @@ test("F9 syncs, and Ctrl+E goes to search", async ({ page }) => {
     await expect(page.getByRole("searchbox", { name: "Search mail" })).toBeFocused();
 });
 
+test("new mail appears at the top without losing the place in the list", async ({ page }) => {
+    const fresh = { ...inbox[0], id: "fresh", subject: "Just arrived", preview: "Hot off the press.", received_at: "2026-10-09T09:00:00Z" };
+    await withCore(page, { accounts: [robin], mail: inbox, arrives: [fresh] });
+    await messages(page).getByRole("option").nth(2).click();
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Invoice 2041 attached");
+
+    await page.keyboard.press("F9");
+
+    await expect(messages(page).getByRole("option")).toHaveCount(5);
+    await expect(messages(page).getByRole("option").first()).toContainText("Just arrived");
+    await expect(page.getByRole("button", { name: "Inbox" })).toContainText("3");
+    // What was being read is still being read.
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Invoice 2041 attached");
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Invoice 2041 attached");
+});
+
 test("a sync that fails says why and leaves the mail on screen", async ({ page }) => {
     const why = "robin@example.test needs to sign in again. Your sign-in has expired or was revoked.";
     await withCore(page, { accounts: [robin], mail: inbox, syncFails: why });

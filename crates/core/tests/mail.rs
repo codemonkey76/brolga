@@ -388,3 +388,30 @@ async fn the_only_account_need_not_be_named_and_an_unknown_one_is_refused() {
     assert!(none_named.is_ok(), "one account needs no naming");
     assert!(unknown.unwrap_err().to_string().contains("no account"));
 }
+
+#[tokio::test]
+async fn sync_status_says_how_much_is_here_and_how_fresh_it_is() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_messages(&f.inbox, 12);
+
+    let before = f.run("app.sync.status", json!({})).await["accounts"][0].clone();
+    f.sync().await;
+    let after = f.run("app.sync.status", json!({})).await["accounts"][0].clone();
+
+    assert_eq!(
+        (before["messages"].clone(), before["synced_at"].clone()),
+        (json!(0), Value::Null)
+    );
+    assert_eq!(after["username"], "robin@example.test");
+    assert_eq!(
+        (
+            after["folders"].clone(),
+            after["folders_synced"].clone(),
+            after["messages"].clone()
+        ),
+        (json!(7), json!(7), json!(12))
+    );
+    assert!(after["synced_at"].as_str().unwrap().starts_with("20"));
+    assert_eq!(after["syncing"], false);
+    assert_eq!(after["needs_sign_in"], false);
+}
