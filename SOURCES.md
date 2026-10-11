@@ -15,7 +15,6 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Get a user | https://learn.microsoft.com/graph/api/user-get | `GET /me` and the properties returned by default, in the fake Graph server |
 | Microsoft Graph throttling guidance | https://learn.microsoft.com/graph/throttling | The 429 status, the `Retry-After` header and the throttled error body, in the fake Graph server |
 | Microsoft Graph error responses and resource types | https://learn.microsoft.com/graph/errors | The shape of an error body, and the meaning of 401, 404 and 503, in the fake Graph server |
-
 | Use delta query to track changes in Microsoft Graph data | https://learn.microsoft.com/graph/delta-query-overview | nextLink and deltaLink, `@removed`, replays, the 410 reset and `syncStateNotFound`, in `crates/graph` and `crates/sync` |
 | Get incremental changes to messages in a folder | https://learn.microsoft.com/graph/delta-query-messages | The message sync round, in `crates/sync` |
 | message: delta | https://learn.microsoft.com/graph/api/message-delta | `/me/mailFolders/{id}/messages/delta`, `$select`, `$orderby=receivedDateTime desc`, `Prefer: odata.maxpagesize` |
@@ -43,7 +42,6 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | followupFlag resource type | https://learn.microsoft.com/graph/api/resources/followupflag | A flag's `dueDateTime`, which must be set together with `startDateTime` |
 | Get MIME content of a message | https://learn.microsoft.com/graph/outlook-get-mime-message | `GET /me/messages/{id}/$value`, the message whole as a `.eml` file holds it, for forwarding as an attachment |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
-
 | event: accept, event: tentativelyAccept, event: decline | https://learn.microsoft.com/graph/api/event-accept | `POST /me/events/{id}/accept`, `/tentativelyAccept` and `/decline` with `{comment, sendResponse}`; `202 Accepted` and no body; `sendResponse` defaults to true; needs `Calendars.ReadWrite`. Brolga does not repeat the request blindly: it reads the event's `responseStatus` back first |
 | Get event | https://learn.microsoft.com/graph/api/event-get | `GET /me/events/{id}` of a series master gives its `recurrence`; read before a series is changed from one occurrence on |
 | Series, changed from one occurrence on | https://learn.microsoft.com/graph/api/resources/recurrencerange | Graph has no request for "this and following". Brolga ends the old series the day before (`range.type` `endDate`) and makes a new series from that day, the new one first so nothing is lost if a step fails; a `numbered` range carries on with the count it had left. `range.startDate` must be the day the event starts |
