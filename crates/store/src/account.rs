@@ -161,6 +161,27 @@ const STEPS: &[&str] = &[
     CREATE INDEX ops_by_message ON ops (message_id, kind, state, id);
     CREATE INDEX ops_by_group ON ops (group_id);
 ",
+    "
+    -- Messages being written, and those waiting to be sent.
+    CREATE TABLE drafts (
+        id TEXT PRIMARY KEY NOT NULL,
+        -- new, reply, reply_all or forward.
+        kind TEXT NOT NULL,
+        source_id TEXT,
+        to_recipients TEXT NOT NULL DEFAULT '[]',
+        cc_recipients TEXT NOT NULL DEFAULT '[]',
+        bcc_recipients TEXT NOT NULL DEFAULT '[]',
+        subject TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        -- editing, queued or failed.
+        state TEXT NOT NULL DEFAULT 'editing',
+        error TEXT,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        server_id TEXT,
+        quoted TEXT,
+        send_tried INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

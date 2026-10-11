@@ -40,6 +40,8 @@ pub enum Fault {
 struct Inner {
     /// Handed out one a request, oldest first.
     faults: Vec<Fault>,
+    /// How many requests to answer normally before handing out faults.
+    pass_first: usize,
     /// Every request received, as `GET /v1.0/me`.
     requests: Vec<String>,
     /// Out of every thousand requests, how many to fail at random, and the
@@ -48,6 +50,11 @@ struct Inner {
     mailbox: mailbox::Mailbox,
     /// How many moves have been made.
     moves: u32,
+    /// Every message sent, as it was when it went, oldest first.
+    sent: Vec<FakeMessage>,
+    drafts_created: u32,
+    /// Send the next draft and then answer as if it had failed.
+    lose_next_send_answer: bool,
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
     /// Messages every change to which is refused.
@@ -83,6 +90,23 @@ impl FakeGraph {
             .route(
                 "/v1.0/me/messages/{message}/move",
                 axum::routing::post(move_message),
+            )
+            .route("/v1.0/me/messages", axum::routing::post(create_draft))
+            .route(
+                "/v1.0/me/messages/{message}/send",
+                axum::routing::post(send_draft),
+            )
+            .route(
+                "/v1.0/me/messages/{message}/createReply",
+                axum::routing::post(create_reply),
+            )
+            .route(
+                "/v1.0/me/messages/{message}/createReplyAll",
+                axum::routing::post(create_reply_all),
+            )
+            .route(
+                "/v1.0/me/messages/{message}/createForward",
+                axum::routing::post(create_forward),
             )
             .route("/v1.0/me/messages/{message}/attachments", get(attachments))
             .route(
@@ -125,6 +149,21 @@ impl FakeGraph {
         lock(&self.shared).faults.extend(faults);
     }
 
+    /// Answer the next `pass` requests normally, and then the ones after
+    /// with these faults: an outage that begins part-way through something.
+    pub fn fail_after(&self, pass: usize, faults: impl IntoIterator<Item = Fault>) {
+        let mut inner = lock(&self.shared);
+        inner.pass_first = pass;
+        inner.faults.extend(faults);
+    }
+
+    /// Forget any faults not yet handed out.
+    pub fn clear_faults(&self) {
+        let mut inner = lock(&self.shared);
+        inner.pass_first = 0;
+        inner.faults.clear();
+    }
+
     /// From now on fail this many requests in every thousand, at random but
     /// the same way each time for the same seed, with a 429 or a 503.
     pub fn fail_at_random(&self, per_thousand: u32, seed: u64) {
@@ -161,6 +200,21 @@ impl FakeGraph {
     /// of a request that reached the server and an answer that did not come back.
     pub fn lose_next_move_answer(&self) {
         lock(&self.shared).lose_next_move_answer = true;
+    }
+
+    /// Every message the server has sent, as it was when it went.
+    pub fn sent(&self) -> Vec<FakeMessage> {
+        lock(&self.shared).sent.clone()
+    }
+
+    /// How many drafts have been created on the server.
+    pub fn drafts_created(&self) -> u32 {
+        lock(&self.shared).drafts_created
+    }
+
+    /// The next draft is sent, but the answer to the request is an error.
+    pub fn lose_next_send_answer(&self) {
+        lock(&self.shared).lose_next_send_answer = true;
     }
 
     /// How many moves the server has made.
@@ -272,7 +326,10 @@ async fn record(State(shared): State<Shared>, request: Request, next: Next) -> R
 async fn inject_fault(State(shared): State<Shared>, request: Request, next: Next) -> Response {
     let fault = {
         let mut inner = lock(&shared);
-        if !inner.faults.is_empty() {
+        if inner.pass_first > 0 {
+            inner.pass_first -= 1;
+            None
+        } else if !inner.faults.is_empty() {
             Some(inner.faults.remove(0))
         } else if let Some((per_thousand, state)) = inner.chaos.as_mut() {
             // xorshift: small, and the same sequence for the same seed.
@@ -343,8 +400,12 @@ async fn require_token(request: Request, next: Next) -> Response {
     let path = request.uri().path();
     let mail = path.contains("/me/mailFolders") || path.contains("/me/messages");
     let reading = request.method() == axum::http::Method::GET;
-    let allowed =
-        !mail || granted.contains(&"Mail.ReadWrite") || (reading && granted.contains(&"Mail.Read"));
+    // Sending is its own permission ("message: send").
+    let allowed = if path.ends_with("/send") {
+        granted.contains(&"Mail.Send")
+    } else {
+        !mail || granted.contains(&"Mail.ReadWrite") || (reading && granted.contains(&"Mail.Read"))
+    };
     if !allowed {
         return error(
             StatusCode::FORBIDDEN,
@@ -494,8 +555,35 @@ async fn update_message(
         );
     };
 
+    let is_draft = inner.mailbox.stored(&message).is_some_and(|m| m.is_draft);
     for (property, value) in changes {
         match (property.as_str(), value) {
+            // "Update message": these may be changed only on a draft.
+            ("subject" | "body" | "toRecipients" | "ccRecipients" | "bccRecipients", _)
+                if !is_draft =>
+            {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "fakeGraphNotADraft",
+                    &format!("`{property}` can be changed only on a draft."),
+                );
+            }
+            ("subject", Value::String(subject)) => {
+                let subject = subject.clone();
+                inner.mailbox.edit(&message, |m| m.subject = subject);
+            }
+            ("body", body) if body["content"].is_string() => {
+                let content = body["content"].as_str().unwrap_or_default().to_owned();
+                inner.mailbox.edit(&message, |m| m.body_html = content);
+            }
+            ("toRecipients" | "ccRecipients" | "bccRecipients", list) if list.is_array() => {
+                let list = people(list);
+                inner.mailbox.edit(&message, |m| match property.as_str() {
+                    "toRecipients" => m.to = list,
+                    "ccRecipients" => m.cc = list,
+                    _ => m.bcc = list,
+                });
+            }
             ("isRead", Value::Bool(read)) => inner.mailbox.set_read(&message, *read),
             ("flag", flag) if flag["flagStatus"].is_string() => {
                 let status = flag["flagStatus"].as_str().unwrap_or_default().to_owned();
@@ -515,6 +603,150 @@ async fn update_message(
         Some(updated) => axum::Json(updated).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Recipients as Graph writes them, read into `(name, address)`.
+fn people(list: &Value) -> Vec<(String, String)> {
+    list.as_array()
+        .map(|list| {
+            list.iter()
+                .map(|each| {
+                    let text = |key: &str| {
+                        each["emailAddress"][key]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned()
+                    };
+                    (text("name"), text("address"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn created(inner: &mut Inner, draft: FakeMessage) -> Response {
+    let drafts = inner.mailbox.folder_id("drafts").unwrap_or_default();
+    let id = inner.mailbox.add_message(&drafts, draft);
+    inner.drafts_created += 1;
+
+    match inner.mailbox.message(&id) {
+        Some(message) => (StatusCode::CREATED, axum::Json(message)).into_response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn new_draft(subject: &str) -> FakeMessage {
+    let mut draft = FakeMessage::new(
+        subject,
+        "Robin Example",
+        "robin@example.test",
+        "2026-10-10T00:00:00Z",
+    );
+    draft.is_draft = true;
+    draft.is_read = true;
+    draft.body_html = String::new();
+    draft
+}
+
+/// "Create message" (SOURCES.md): a draft, in Drafts, from a message object.
+async fn create_draft(
+    State(shared): State<Shared>,
+    axum::Json(message): axum::Json<Value>,
+) -> Response {
+    let mut draft = new_draft(message["subject"].as_str().unwrap_or_default());
+    draft.body_html = message["body"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    draft.to = people(&message["toRecipients"]);
+    draft.cc = people(&message["ccRecipients"]);
+    draft.bcc = people(&message["bccRecipients"]);
+
+    created(&mut lock(&shared), draft)
+}
+
+/// A draft answering or forwarding a message: the original quoted in its
+/// body, in the same conversation, addressed as the kind of answer needs.
+fn create_from(shared: &Shared, message: &str, kind: &str) -> Response {
+    let mut inner = lock(shared);
+    let Some(original) = inner.mailbox.stored(message) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        );
+    };
+
+    let prefix = if kind == "forward" { "FW: " } else { "RE: " };
+    let mut draft = new_draft(&format!("{prefix}{}", original.subject));
+    draft.conversation = Some(
+        original
+            .conversation
+            .clone()
+            .unwrap_or_else(|| format!("conversation-{message}")),
+    );
+    draft.body_html = format!(
+        "<hr><p><b>From:</b> {}</p>{}",
+        original.from_name, original.body_html
+    );
+    if kind != "forward" {
+        draft.to = vec![(original.from_name.clone(), original.from_address.clone())];
+    }
+    if kind == "replyAll" {
+        draft.cc = original.cc.clone();
+    }
+
+    created(&mut inner, draft)
+}
+
+async fn create_reply(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
+    create_from(&shared, &message, "reply")
+}
+
+async fn create_reply_all(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
+    create_from(&shared, &message, "replyAll")
+}
+
+async fn create_forward(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
+    create_from(&shared, &message, "forward")
+}
+
+/// "message: send" (SOURCES.md): the draft is sent and saved in Sent
+/// Items, and the answer is 202 with nothing in it.
+async fn send_draft(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
+    let mut inner = lock(&shared);
+    let Some(draft) = inner.mailbox.stored(&message) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        );
+    };
+    if !draft.is_draft {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "fakeGraphNotADraft",
+            "Only a draft can be sent.",
+        );
+    }
+    if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "ErrorInvalidRecipients",
+            "At least one recipient is required.",
+        );
+    }
+
+    let sent = inner.mailbox.folder_id("sentitems").unwrap_or_default();
+    inner.mailbox.edit(&message, |m| m.is_draft = false);
+    inner.mailbox.move_message(&message, &sent);
+    inner.sent.push(draft);
+    if std::mem::take(&mut inner.lose_next_send_answer) {
+        // Sent, and the caller never hears of it.
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
+
+    StatusCode::ACCEPTED.into_response()
 }
 
 /// "message: move" (SOURCES.md): to a folder by id or well-known name,

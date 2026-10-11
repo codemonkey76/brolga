@@ -208,6 +208,58 @@ impl GraphClient {
         Ok(())
     }
 
+    /// Create a draft from a message object: subject, body and recipients
+    /// ("Create message", SOURCES.md). Gives back the draft as created.
+    ///
+    /// Not safe to repeat blindly: a second request makes a second draft.
+    pub async fn create_draft(&self, message: &serde_json::Value) -> Result<Message, GraphError> {
+        let url = format!("{}/me/messages", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(message), false)
+                .await?,
+        )
+    }
+
+    /// Create a draft that answers or forwards a message: `createReply`,
+    /// `createReplyAll` or `createForward`. The draft comes back with the
+    /// original quoted in its body and, for a reply, its recipients filled in.
+    pub async fn create_draft_from(
+        &self,
+        message_id: &str,
+        action: &str,
+    ) -> Result<Message, GraphError> {
+        let url = format!("{}/me/messages/{message_id}/{action}", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, None, false)
+                .await?,
+        )
+    }
+
+    /// Send a draft ("message: send", SOURCES.md). It is saved in Sent
+    /// Items. Never repeated here: a second request could send a second copy.
+    pub async fn send_draft(&self, message_id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/messages/{message_id}/send", self.base);
+        self.send(reqwest::Method::POST, &url, None, None, false)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Whether a message is still a draft. Nothing if it is no longer there.
+    pub async fn is_draft(&self, message_id: &str) -> Result<Option<bool>, GraphError> {
+        let url = format!("{}/me/messages/{message_id}?$select=id,isDraft", self.base);
+
+        match self.get(&url, None).await {
+            Ok(body) => Ok(Some(decode::<Message>(&body)?.is_draft.unwrap_or(false))),
+            Err(GraphError::Refused { status: 404, .. }) => Ok(None),
+            Err(other) => Err(other),
+        }
+    }
+
     /// The id of the folder a message is in now.
     pub async fn message_folder(&self, message_id: &str) -> Result<Option<String>, GraphError> {
         let url = format!(
@@ -260,9 +312,12 @@ impl GraphClient {
                 .request(method.clone(), url.clone())
                 .header(AUTHORIZATION, format!("Bearer {token}"))
                 .header("Prefer", prefer);
-            if let Some(body) = body {
-                request = request.json(body);
-            }
+            request = match body {
+                Some(body) => request.json(body),
+                // "message: send" asks for a Content-Length of 0 by name.
+                None if method == reqwest::Method::POST => request.body(Vec::new()),
+                None => request,
+            };
             let sent = request.send().await;
 
             let last_try = attempt + 1 >= self.retry.attempts;

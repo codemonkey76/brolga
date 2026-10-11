@@ -7,7 +7,7 @@ use std::sync::Arc;
 use brolga_fake_graph::{FakeGraph, FakeMessage, Fault};
 use brolga_graph::{GraphClient, GraphError, RetryPolicy, TokenSource};
 use brolga_ops::{Drained, Outbox};
-use brolga_store::{AccountDb, MessageChange, MessageEdit, Round};
+use brolga_store::{AccountDb, DraftEdit, MessageChange, MessageEdit, Round};
 use futures::future::BoxFuture;
 
 struct Token(&'static str);
@@ -70,7 +70,16 @@ async fn fixture_with(token: &'static str) -> Fixture {
 }
 
 async fn fixture() -> Fixture {
-    fixture_with("token.Mail.ReadWrite").await
+    fixture_with("token.Mail.ReadWrite,Mail.Send").await
+}
+
+fn to(address: &str) -> DraftEdit {
+    DraftEdit {
+        to_recipients: Some(format!(r#"[{{"name":"Jo","address":"{address}"}}]"#)),
+        subject: Some("Lunch".to_owned()),
+        body: Some("Friday?".to_owned()),
+        ..DraftEdit::default()
+    }
 }
 
 impl Fixture {
@@ -256,4 +265,160 @@ async fn a_move_whose_answer_was_lost_is_not_made_twice() {
     assert_eq!(second.sent, 1);
     assert_eq!(f.graph.moves(), 1, "the move was sent again");
     assert_eq!(f.graph.messages()[&f.ids[0]].0, archive);
+}
+
+#[tokio::test]
+async fn a_queued_message_is_sent_with_what_was_written() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!(drained.sent, 1);
+    let sent = f.graph.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "Lunch");
+    assert_eq!(
+        sent[0].to,
+        [("Jo".to_owned(), "jo@example.test".to_owned())]
+    );
+    assert_eq!(
+        sent[0].body_html,
+        "<html><body><p>Friday?</p></body></html>"
+    );
+    assert!(f.db.drafts().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_reply_goes_out_above_the_original_and_in_its_conversation() {
+    let f = fixture().await;
+    let start = DraftEdit {
+        to_recipients: Some(r#"[{"name":"Sam","address":"sam@example.test"}]"#.to_owned()),
+        subject: Some("RE: One".to_owned()),
+        body: Some("Yes.".to_owned()),
+        ..DraftEdit::default()
+    };
+    let draft = f.db.create_draft("reply", Some(&f.ids[0]), &start).unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+
+    f.outbox.drain().await.unwrap();
+
+    let sent = &f.graph.sent()[0];
+    assert!(
+        sent.body_html.starts_with("<html><body><p>Yes.</p><hr>"),
+        "{}",
+        sent.body_html
+    );
+    assert!(sent.body_html.contains("One"));
+    assert_eq!(
+        sent.conversation.as_deref(),
+        Some(format!("conversation-{}", f.ids[0]).as_str())
+    );
+}
+
+#[tokio::test]
+async fn a_message_is_not_sent_twice_when_the_answer_to_sending_is_lost() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    f.graph.lose_next_send_answer();
+
+    let first = f.outbox.drain().await.unwrap();
+    // It may or may not have gone, so it is still owed and still kept.
+    assert_eq!(
+        first,
+        Drained {
+            sent: 0,
+            waiting: 1,
+            refused: 0
+        }
+    );
+    assert_eq!(f.db.queued_drafts().unwrap().len(), 1);
+
+    let second = f.outbox.drain().await.unwrap();
+    assert_eq!(second.sent, 1);
+    assert_eq!(f.graph.sent().len(), 1, "the message was sent twice");
+    assert!(f.db.drafts().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sending_carries_on_from_wherever_it_was_stopped() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+
+    // The server falls over at each step in turn: creating the draft,
+    // filling it in, sending it. Each time the outbox is run again.
+    for outage in [0, 1, 2] {
+        f.graph
+            .fail_after(outage, std::iter::repeat_n(Fault::Unavailable, 12));
+        let mut passes = 0;
+        while !f.db.queued_drafts().unwrap().is_empty() {
+            f.outbox.drain().await.unwrap();
+            passes += 1;
+            assert!(passes < 20, "never sent");
+        }
+        assert_eq!(f.graph.sent().len(), outage + 1);
+        assert_eq!(
+            f.graph.drafts_created() as usize,
+            outage + 1,
+            "a draft was made twice"
+        );
+
+        let again =
+            f.db.create_draft("new", None, &to("jo@example.test"))
+                .unwrap();
+        f.db.queue_draft(&again.id).unwrap();
+        f.graph.clear_faults();
+    }
+}
+
+#[tokio::test]
+async fn a_message_the_server_will_not_send_comes_back_to_be_put_right() {
+    let f = fixture().await;
+    let nobody = DraftEdit {
+        subject: Some("To nobody".to_owned()),
+        body: Some("Hello?".to_owned()),
+        ..DraftEdit::default()
+    };
+    let draft = f.db.create_draft("new", None, &nobody).unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!(drained.refused, 1);
+    assert!(f.graph.sent().is_empty());
+    let back = f.db.draft(&draft.id).unwrap().unwrap();
+    assert_eq!(back.state, "failed");
+    assert_eq!(back.body, "Hello?");
+    assert!(back.error.unwrap().contains("recipient"));
+
+    // Put right, it goes, as the same draft on the server and not a second.
+    f.db.edit_draft(&draft.id, &to("jo@example.test")).unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.drafts_created(), 1);
+    assert_eq!(f.graph.sent()[0].subject, "Lunch");
+}
+
+#[tokio::test]
+async fn a_sign_in_that_may_not_send_does_not() {
+    let f = fixture_with("token.Mail.ReadWrite").await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!(drained.refused, 1);
+    assert!(f.graph.sent().is_empty());
+    assert_eq!(f.db.draft(&draft.id).unwrap().unwrap().state, "failed");
 }

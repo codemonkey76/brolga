@@ -31,6 +31,11 @@ pub struct FakeMessage {
     pub conversation: Option<String>,
     /// `notFlagged`, `flagged` or `complete`.
     pub flag: String,
+    pub is_draft: bool,
+    /// `(name, address)`. Left empty, the message is to the mailbox's owner.
+    pub to: Vec<(String, String)>,
+    pub cc: Vec<(String, String)>,
+    pub bcc: Vec<(String, String)>,
     pub attachments: Vec<FakeAttachment>,
 }
 
@@ -58,6 +63,10 @@ impl FakeMessage {
             body_html: format!("<html><body><p>{subject}</p></body></html>"),
             conversation: None,
             flag: "notFlagged".to_owned(),
+            is_draft: false,
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
             attachments: Vec::new(),
         }
     }
@@ -337,6 +346,20 @@ impl Mailbox {
         self.log_message(to, id, false);
     }
 
+    /// A copy of a message as the server holds it.
+    pub fn stored(&self, id: &str) -> Option<FakeMessage> {
+        self.messages.get(id).map(|stored| stored.message.clone())
+    }
+
+    /// Change a draft in place, and note that it changed.
+    pub fn edit(&mut self, id: &str, change: impl FnOnce(&mut FakeMessage)) {
+        if let Some(stored) = self.messages.get_mut(id) {
+            change(&mut stored.message);
+            let folder = stored.folder.clone();
+            self.log_message(&folder, id, false);
+        }
+    }
+
     pub fn delete_message(&mut self, id: &str) {
         if let Some(stored) = self.messages.remove(id) {
             self.log_message(&stored.folder, id, true);
@@ -403,12 +426,17 @@ impl Mailbox {
             "subject": m.subject,
             "bodyPreview": preview,
             "from": { "emailAddress": { "name": m.from_name, "address": m.from_address } },
-            "toRecipients": [{ "emailAddress": { "name": "Robin Example", "address": "robin@example.test" } }],
-            "ccRecipients": [],
+            "toRecipients": if m.to.is_empty() && !m.is_draft {
+                json!([{ "emailAddress": { "name": "Robin Example", "address": "robin@example.test" } }])
+            } else {
+                recipients(&m.to)
+            },
+            "ccRecipients": recipients(&m.cc),
+            "bccRecipients": recipients(&m.bcc),
             "receivedDateTime": m.received,
             "sentDateTime": m.received,
             "isRead": m.is_read,
-            "isDraft": false,
+            "isDraft": m.is_draft,
             "hasAttachments": m.has_attachments,
             "importance": "normal",
             "flag": { "flagStatus": m.flag },
@@ -653,4 +681,10 @@ fn strip_tags(html: &str) -> String {
     }
 
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn recipients(list: &[(String, String)]) -> Value {
+    list.iter()
+        .map(|(name, address)| json!({ "emailAddress": { "name": name, "address": address } }))
+        .collect()
 }

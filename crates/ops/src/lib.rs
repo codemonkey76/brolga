@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use brolga_graph::{GraphClient, GraphError};
-use brolga_store::{AccountDb, Op, StoreError};
+use brolga_store::{AccountDb, Draft, Op, StoreError};
 use serde_json::json;
 use tokio::sync::Mutex;
 
@@ -79,7 +79,87 @@ impl Outbox {
             }
         }
 
+        for draft in self.db.queued_drafts()? {
+            match self.send_draft(&draft).await {
+                Ok(()) => {
+                    self.db.draft_sent(&draft.id)?;
+                    drained.sent += 1;
+                }
+                Err(error) if will_pass(&error) => {
+                    self.db.draft_waits(&draft.id, &error.to_string())?;
+                    drained.waiting += 1;
+                }
+                Err(error) => {
+                    self.db.draft_refused(&draft.id, &error.to_string())?;
+                    drained.refused += 1;
+                }
+            }
+        }
+
         Ok(drained)
+    }
+
+    /// Send a queued draft, exactly once.
+    ///
+    /// It is made a draft on the server, given its words and recipients,
+    /// and then sent. Each step is written down before the next, so this can
+    /// be stopped anywhere and run again. The one step that cannot simply
+    /// be run again is the sending itself: where a request to send may have
+    /// reached the server, the draft is looked at first, and if it is no
+    /// longer a draft there it has been sent and is not sent again.
+    async fn send_draft(&self, draft: &Draft) -> Result<(), GraphError> {
+        if draft.send_tried
+            && let Some(server_id) = &draft.server_id
+            && self.graph.is_draft(server_id).await? != Some(true)
+        {
+            return Ok(());
+        }
+
+        let (server_id, quoted) = match &draft.server_id {
+            Some(server_id) => (server_id.clone(), draft.quoted.clone()),
+            None => {
+                let created = match (draft.kind.as_str(), &draft.source_id) {
+                    ("reply", Some(source)) => {
+                        self.graph.create_draft_from(source, "createReply").await?
+                    }
+                    ("reply_all", Some(source)) => {
+                        self.graph
+                            .create_draft_from(source, "createReplyAll")
+                            .await?
+                    }
+                    ("forward", Some(source)) => {
+                        self.graph
+                            .create_draft_from(source, "createForward")
+                            .await?
+                    }
+                    _ => self.graph.create_draft(&json!({})).await?,
+                };
+                // What the server put in the draft is the original, quoted
+                // as mail programs expect. The words written go above it.
+                let quoted = created
+                    .body
+                    .map(|body| body.content)
+                    .filter(|q| !q.trim().is_empty());
+                self.db
+                    .draft_on_server(&draft.id, &created.id, quoted.as_deref())
+                    .map_err(|e| GraphError::Decode(e.to_string()))?;
+                (created.id, quoted)
+            }
+        };
+
+        let content = json!({
+            "subject": draft.subject,
+            "body": { "contentType": "html", "content": html(&draft.body, quoted.as_deref()) },
+            "toRecipients": recipients(&draft.to_recipients),
+            "ccRecipients": recipients(&draft.cc_recipients),
+            "bccRecipients": recipients(&draft.bcc_recipients),
+        });
+        self.graph.update_message(&server_id, &content).await?;
+
+        self.db
+            .draft_send_tried(&draft.id)
+            .map_err(|e| GraphError::Decode(e.to_string()))?;
+        self.graph.send_draft(&server_id).await
     }
 
     async fn send(&self, op: &Op) -> Result<(), GraphError> {
@@ -123,4 +203,76 @@ fn will_pass(error: &GraphError) -> bool {
             error,
             GraphError::Token(_) | GraphError::Unauthorized { .. }
         )
+}
+
+/// Recipients as kept (`[{name, address}]`) in the shape Graph takes.
+fn recipients(kept: &str) -> serde_json::Value {
+    let list: Vec<serde_json::Value> = serde_json::from_str(kept).unwrap_or_default();
+
+    list.iter()
+        .filter_map(|each| {
+            let address = each["address"].as_str()?.trim();
+            (!address.is_empty()).then(|| {
+                json!({ "emailAddress": { "name": each["name"].as_str().unwrap_or(address), "address": address } })
+            })
+        })
+        .collect()
+}
+
+/// The words as typed, as the plain HTML a mail program shows well: a
+/// paragraph for each, line breaks kept, nothing else. Whatever is quoted
+/// goes underneath as the server wrote it.
+fn html(typed: &str, quoted: Option<&str>) -> String {
+    let mut out = String::from("<html><body>");
+    for paragraph in typed.replace("\r\n", "\n").split("\n\n") {
+        if paragraph.trim().is_empty() {
+            continue;
+        }
+        out.push_str("<p>");
+        out.push_str(&escape(paragraph).replace('\n', "<br>"));
+        out.push_str("</p>");
+    }
+    if let Some(quoted) = quoted {
+        out.push_str(quoted);
+    }
+    out.push_str("</body></html>");
+
+    out
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_words_become_plain_paragraphs_and_nothing_typed_becomes_markup() {
+        assert_eq!(
+            html("Hi Sam,\n\nTwo lines\nhere <b>&</b>.\n", None),
+            "<html><body><p>Hi Sam,</p><p>Two lines<br>here &lt;b&gt;&amp;&lt;/b&gt;.<br></p></body></html>"
+        );
+        assert_eq!(
+            html("Yes.", Some("<hr><p>Original</p>")),
+            "<html><body><p>Yes.</p><hr><p>Original</p></body></html>"
+        );
+    }
+
+    #[test]
+    fn recipients_without_an_address_are_left_out() {
+        let kept = r#"[{"name":"Sam","address":"sam@example.test"},{"name":"Nobody","address":" "},{"address":"jo@example.test"}]"#;
+
+        assert_eq!(
+            recipients(kept),
+            json!([
+                { "emailAddress": { "name": "Sam", "address": "sam@example.test" } },
+                { "emailAddress": { "name": "jo@example.test", "address": "jo@example.test" } }
+            ])
+        );
+    }
 }
