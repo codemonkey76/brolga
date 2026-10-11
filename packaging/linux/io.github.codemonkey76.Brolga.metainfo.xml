@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.2" date="2026-10-12">
+      <description>
+        <p>Run as an AppImage, signing in and links in messages open your browser.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-12">
       <description>
         <p>Signing in on Windows works: a sign-in longer than one entry of the system's secret store holds is kept in several.</p>
