@@ -239,6 +239,9 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         };
         const draft = (id: unknown) => drafts.find((each) => each.id === id);
         let signature = { text: "", on_replies: false };
+        const notified: { title: string; body: string }[] = [];
+        /** What has been done about each reminder: dismissed, or put off until a time. */
+        const done = new Map<unknown, number>();
         const diaries = [
             { id: "main", name: "Calendar", color: "auto", hex_color: "", is_default: true, can_edit: true, shown: true },
             { id: "family", name: "Family", color: "auto", hex_color: "#b3305f", is_default: false, can_edit: true, shown: true },
@@ -465,6 +468,21 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 more: false,
                 note: "",
             }),
+            "calendar.reminders.due": () => ({
+                reminders: (core.events ?? [])
+                    .filter((e) => !e.is_cancelled)
+                    .map((e) => ({ event: event(e), starts_in_minutes: Math.round((+new Date(e.start) - Date.now()) / 60_000) }))
+                    .filter((r) => r.starts_in_minutes <= 15 && r.starts_in_minutes > -24 * 60 && (done.get(r.event.id) ?? 0) <= Date.now()),
+                note: "",
+            }),
+            "calendar.reminders.dismiss": (args) => {
+                done.set(args.event_id, Infinity);
+                return { dismissed: true };
+            },
+            "calendar.reminders.snooze": (args) => {
+                done.set(args.event_id, Date.now() + (args.minutes as number) * 60_000);
+                return { snoozed_until: "" };
+            },
             "calendar.events.get": (args) => {
                 const found = (core.events ?? []).find((each) => each.id === args.event_id);
                 if (!found) throw { code: "failed", message: "There is no such event on this computer." };
@@ -658,6 +676,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         };
 
         Object.assign(window, {
+            notified,
             arrive: () =>
                 mail.push({
                     id: "arrived",
@@ -678,6 +697,11 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     if (name === "choose_save_path") return core.savePath ?? null;
                     // The file dialog: the files this test says were chosen.
                     if (name === "choose_files") return core.pickFiles ?? [];
+                    // A notification on the desktop: written down, for a test to read.
+                    if (name === "notify") {
+                        notified.push(payload as unknown as { title: string; body: string });
+                        return null;
+                    }
                     if (name !== "execute_command") throw new Error(`The frontend called ${name}, which is not a command.`);
                     const run = commands[payload.command];
                     if (!run) throw { code: "unknown_command", message: `there is no command called \`${payload.command}\`` };
@@ -742,3 +766,6 @@ export const week: FakeEvent[] = [
 
 /** What the stand-in core has sent. */
 export const sent = (page: Page) => page.evaluate(() => (window as unknown as { sent: Record<string, unknown>[] }).sent);
+
+/** What the desktop has been asked to show as notifications. */
+export const notified = (page: Page) => page.evaluate(() => (window as unknown as { notified: { title: string; body: string }[] }).notified);

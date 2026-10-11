@@ -15,6 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
 
 /// A command that did not run, as the frontend receives it.
 #[derive(Serialize)]
@@ -89,6 +90,21 @@ async fn choose_files(app: tauri::AppHandle) -> Vec<String> {
         .collect()
 }
 
+/// Show a notification on the desktop. The words are a reminder's: an
+/// event's subject and when it starts. Showing is all this does; if the
+/// desktop will not show it, the reminder is still in the window.
+#[tauri::command]
+fn notify(app: tauri::AppHandle, title: String, body: String) {
+    // Kept short: a subject is written by whoever made the event.
+    let short = |text: String, most: usize| text.chars().take(most).collect::<String>();
+    let _ = app
+        .notification()
+        .builder()
+        .title(short(title, 120))
+        .body(short(body, 240))
+        .show();
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Opening the channel is how a second copy finds out it is one, so it is
     // done first, before any data is opened or there is a window to show.
@@ -112,6 +128,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(registry)
         .setup(move |_app| {
             tauri::async_runtime::spawn(server.run(control));
@@ -120,7 +137,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(tauri::generate_handler![
             execute_command,
             choose_save_path,
-            choose_files
+            choose_files,
+            notify
         ])
         .run(tauri::generate_context!())?;
 

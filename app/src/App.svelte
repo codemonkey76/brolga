@@ -5,6 +5,7 @@
     import Agents from "./lib/Agents.svelte";
     import Calendar from "./lib/Calendar.svelte";
     import Questions from "./lib/Questions.svelte";
+    import Reminders from "./lib/Reminders.svelte";
     import Mail from "./lib/Mail.svelte";
 
     type View = "mail" | "calendar" | "accounts" | "agents";
@@ -41,6 +42,7 @@
 <svelte:window onkeydown={keydown} />
 
 <Questions />
+<Reminders {accounts} onOpen={() => (view = "calendar")} />
 
 <div class="shell">
     <nav class="rail" aria-label="Sections">

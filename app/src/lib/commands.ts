@@ -26,6 +26,9 @@ export const chooseSavePath = (suggestedName: string) => invoke<string | null>("
 /** Ask which files to attach, with the system's own dialog. Empty if it was dismissed. */
 export const chooseFiles = () => invoke<string[]>("choose_files");
 
+/** Show a notification on the desktop. If the desktop will not, nothing is lost: the window shows it too. */
+export const notify = (title: string, body: string) => invoke<void>("notify", { title, body }).catch(() => {});
+
 export function isCommandFailure(value: unknown): value is CommandFailure {
     return typeof value === "object" && value !== null && "code" in value && "message" in value;
 }

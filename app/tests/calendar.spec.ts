@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { ran, robin, week, withCore } from "./core";
+import { notified, ran, robin, week, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -157,4 +157,43 @@ test("the calendar is dark when the desktop is", async ({ page }) => {
     const ground = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     const [r, g, b] = (ground.match(/[\d.]+/g) ?? []).map(Number);
     expect((r + g + b) / 3).toBeLessThan(ground.startsWith("color(") ? 0.32 : 80);
+});
+
+test("a reminder shows in the window and on the desktop, once, and can be put off or dismissed", async ({ page }) => {
+    // Ten to two on Wednesday afternoon in Brisbane: the budget review is in ten minutes.
+    await page.clock.install({ time: new Date("2026-10-14T03:50:00Z") });
+    await withCore(page, { accounts: [robin], events: week });
+    const reminders = page.getByRole("region", { name: "Reminders" });
+
+    // It shows wherever in the app you are, not only in the calendar. This
+    // morning's stand-up was never dismissed, so it is still there too.
+    await expect(reminders.getByRole("article")).toHaveCount(2);
+    await expect(reminders).toContainText("started 5 hours ago");
+    await reminders.getByRole("article").filter({ hasText: "Stand-up" }).getByRole("button", { name: "Dismiss" }).click();
+    await expect(reminders.getByRole("article")).toHaveCount(1);
+    await expect(reminders).toContainText("Budget review");
+    await expect(reminders).toContainText("in 10 minutes");
+    await expect(reminders).toContainText("Harbour Room");
+    expect((await notified(page)).find((n) => n.title === "Budget review")?.body).toMatch(/2:00\s?PM · in 10 minutes · Harbour Room/i);
+    await page.screenshot({ path: process.env.SCREENSHOTS ? "../docs/screenshots/reminder.png" : "test-results/reminder.png" });
+
+    // Looked for again, the desktop is not told a second time.
+    await page.clock.fastForward(31_000);
+    expect(await notified(page)).toHaveLength(2);
+
+    await reminders.getByRole("combobox", { name: "Snooze Budget review" }).selectOption("5");
+    await expect(reminders).toHaveCount(0);
+    // Five minutes on it is back, and the desktop is told again.
+    await page.clock.fastForward(5 * 60_000 + 31_000);
+    await expect(reminders.getByRole("article")).toHaveCount(1);
+    await expect(reminders).toContainText("in 4 minutes");
+    expect((await notified(page)).filter((n) => n.title === "Budget review")).toHaveLength(2);
+
+    // Its name goes to the calendar; dismissed, it is gone for good.
+    await reminders.getByRole("button", { name: "Budget review" }).click();
+    await expect(page.getByRole("region", { name: "Calendar" })).toBeVisible();
+    await reminders.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect(reminders).toHaveCount(0);
+    await page.clock.fastForward(60_000);
+    await expect(reminders).toHaveCount(0);
 });
