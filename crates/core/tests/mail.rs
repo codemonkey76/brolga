@@ -4164,3 +4164,306 @@ async fn the_main_calendar_is_shared_changed_and_unshared_on_the_server() {
         "{error}"
     );
 }
+
+/// A PST file of this test's own: two messages in the inbox, one with a
+/// picture within it and a file attached, and one in a folder two deep.
+fn sample_pst(name: &str) -> std::path::PathBuf {
+    use pst_writer::{
+        UnicodePstAttachment, UnicodePstFile, UnicodePstMessage, UnicodePstRecipient,
+        UnicodePstRecipientType,
+    };
+    let folder = downloads().join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("Old mail.pst");
+    let recipients = [
+        UnicodePstRecipient {
+            name: "Robin Example",
+            email: "robin@example.test",
+            recipient_type: UnicodePstRecipientType::To,
+        },
+        UnicodePstRecipient {
+            name: "Jo Nguyen",
+            email: "jo@example.test",
+            recipient_type: UnicodePstRecipientType::Cc,
+        },
+    ];
+    let first = UnicodePstMessage {
+        subject: "Harbour tender",
+        sender_name: "Sam Taylor",
+        sender_email: "sam@example.test",
+        recipients: &recipients,
+        body: "The tender closes on Friday.",
+        html_body: Some(
+            "<p>The tender closes on <b>Friday</b>.</p><img src=\"cid:plan@example.test\"><script>alert(1)</script>",
+        ),
+        message_id: "<one@example.test>",
+        delivery_time: 133_750_656_000_000_000,
+    };
+    let attachments = [
+        UnicodePstAttachment {
+            filename: "plan.png",
+            mime_type: "image/png",
+            content_id: Some("<plan@example.test>"),
+            data: &[0x89, 0x50, 0x4e, 0x47, 1, 2, 3],
+        },
+        UnicodePstAttachment {
+            filename: "../tender.txt",
+            mime_type: "text/plain",
+            content_id: None,
+            data: b"Terms of the tender.",
+        },
+    ];
+    drop(UnicodePstFile::create_with_attachments(&path, &first, &attachments).unwrap());
+    drop(
+        UnicodePstFile::append(
+            &path,
+            &UnicodePstMessage {
+                subject: "Lunch",
+                body: "Noodles on Tuesday?",
+                html_body: None,
+                message_id: "<two@example.test>",
+                ..first
+            },
+        )
+        .unwrap(),
+    );
+    drop(
+        UnicodePstFile::append_in_folder(
+            &path,
+            &["Projects", "Wharf"],
+            &UnicodePstMessage {
+                subject: "Piling survey",
+                body: "The survey is attached.",
+                html_body: None,
+                message_id: "<three@example.test>",
+                ..first
+            },
+        )
+        .unwrap(),
+    );
+
+    path
+}
+
+/// Wait for an import to stop, and give what the list then says of it.
+async fn imported(f: &Fixture, id: &str) -> Value {
+    for _ in 0..400 {
+        let listed = f.run("archives.list", json!({})).await;
+        let archive = listed["archives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|each| each["id"] == id)
+            .unwrap()
+            .clone();
+        if archive["state"] != "importing" {
+            return archive;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the import never finished");
+}
+
+#[tokio::test]
+async fn a_pst_file_is_read_into_an_archive_that_is_read_and_searched_like_a_mailbox() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let path = sample_pst("whole");
+    let before = std::fs::read(&path).unwrap();
+
+    let started = f
+        .run("archives.import", json!({ "path": path.to_string_lossy() }))
+        .await;
+    let id = started["archive"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(started["archive"]["name"], "Old mail");
+    assert_eq!(started["archive"]["state"], "importing");
+    let done = imported(&f, &id).await;
+    assert_eq!(done["state"], "ready", "{done}");
+    assert_eq!(done["messages"], 3);
+    assert_eq!(done["skipped"], 0);
+    // The file is exactly as it was.
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // Its folders are a tree, with the inbox known for what it is.
+    let folders = f
+        .run("mail.folders.list", json!({ "account_id": id }))
+        .await;
+    let folder = |name: &str| {
+        folders["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|each| each["name"] == name)
+            .unwrap_or_else(|| panic!("no folder {name} in {folders}"))
+            .clone()
+    };
+    assert_eq!(folder("Inbox")["well_known"], "inbox");
+    assert_eq!(folder("Inbox")["total"], 2);
+    assert_eq!(folder("Wharf")["parent_id"], folder("Projects")["id"]);
+    assert_eq!(folder("Wharf")["depth"], 1);
+
+    let listed = f
+        .run(
+            "mail.messages.list",
+            json!({ "account_id": id, "folder_id": folder("Inbox")["id"] }),
+        )
+        .await;
+    let tender = listed["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["subject"] == "Harbour tender")
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(tender["from"]["address"], "sam@example.test");
+    assert_eq!(tender["received_at"], "2024-11-03T00:00:00Z");
+    assert_eq!(tender["has_attachments"], true);
+    let message = tender["id"].as_str().unwrap();
+
+    // Its body is here, made safe like any other, with its picture shown from the archive.
+    let opened = f
+        .run(
+            "mail.messages.get",
+            json!({ "account_id": id, "message_id": message, "format": "html" }),
+        )
+        .await;
+    let body = opened["body"]["content"].as_str().unwrap();
+    assert!(body.contains("<b>Friday</b>"), "{opened}");
+    assert!(!body.contains("script"), "{body}");
+    assert!(body.contains("data:image/png;base64,"), "{body}");
+    assert_eq!(opened["message"]["to"][0]["address"], "robin@example.test");
+    assert_eq!(opened["message"]["cc"][0]["address"], "jo@example.test");
+
+    // Its attachment is saved from the archive, under a name made safe.
+    let attached = f
+        .run(
+            "mail.attachments.list",
+            json!({ "account_id": id, "message_id": message }),
+        )
+        .await;
+    let file = attached["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["is_inline"] == false)
+        .unwrap();
+    let saved = f
+        .run(
+            "mail.attachments.save",
+            json!({ "account_id": id, "message_id": message, "attachment_id": file["id"] }),
+        )
+        .await;
+    let saved = std::path::PathBuf::from(saved["path"].as_str().unwrap());
+    assert_eq!(std::fs::read(&saved).unwrap(), b"Terms of the tender.");
+    assert!(
+        saved
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("tender.txt")
+    );
+    assert!(!saved.to_string_lossy().contains(".."));
+
+    // It is searched like any mailbox, and its mail is not among the account's own.
+    let found = f
+        .run(
+            "mail.search",
+            json!({ "account_id": id, "query": "survey" }),
+        )
+        .await;
+    assert_eq!(found["messages"][0]["subject"], "Piling survey");
+    let mine = f.run("mail.search", json!({ "query": "survey" })).await;
+    assert!(mine["messages"].as_array().unwrap().is_empty());
+
+    // A change is made here and is the whole of it: nothing waits to be sent.
+    let requests = f.graph.requests().len();
+    f.run(
+        "mail.messages.set_read",
+        json!({ "account_id": id, "message_ids": [message], "is_read": true }),
+    )
+    .await;
+    let reread = f
+        .run(
+            "mail.messages.list",
+            json!({ "account_id": id, "folder_id": folder("Inbox")["id"] }),
+        )
+        .await;
+    assert!(
+        reread["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|each| each["id"] == message && each["is_read"] == true)
+    );
+    let synced = f.run("mail.sync", json!({ "account_id": id })).await;
+    assert_eq!(synced["accounts"][0]["ok"], true);
+    assert_eq!(f.graph.requests().len(), requests);
+
+    // What needs the server says there is none.
+    let refused = f
+        .registry
+        .execute("calendar.sharing.list", json!({ "account_id": id }))
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("not connected to Microsoft 365"),
+        "{refused}"
+    );
+
+    // Removed, it is gone and the file is still there, as it was.
+    assert_eq!(
+        f.run("archives.remove", json!({ "archive_id": id })).await["removed"],
+        true
+    );
+    assert!(
+        f.run("archives.list", json!({})).await["archives"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        f.registry
+            .execute("mail.folders.list", json!({ "account_id": id }))
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn a_file_that_is_not_a_pst_fails_and_says_so_and_a_missing_one_makes_no_archive() {
+    let f = Fixture::signed_in().await;
+    let folder = downloads().join("not-pst");
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("letter.pst");
+    std::fs::write(&path, b"Dear Sam, this is not a mailbox.").unwrap();
+
+    let started = f
+        .run(
+            "archives.import",
+            json!({ "path": path.to_string_lossy(), "name": "  A letter " }),
+        )
+        .await;
+    assert_eq!(started["archive"]["name"], "A letter");
+    let done = imported(&f, started["archive"]["id"].as_str().unwrap()).await;
+    assert_eq!(done["state"], "failed");
+    assert!(
+        done["error"].as_str().unwrap().contains("not a PST"),
+        "{done}"
+    );
+
+    for wrong in [
+        json!({ "path": "relative.pst" }),
+        json!({ "path": "/no/such/file.pst" }),
+    ] {
+        assert!(f.registry.execute("archives.import", wrong).await.is_err());
+    }
+    assert_eq!(
+        f.run("archives.list", json!({})).await["archives"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

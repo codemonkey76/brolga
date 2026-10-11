@@ -322,6 +322,17 @@ const STEPS: &[&str] = &[
     -- mailbox's own: a mailbox the writer may send as or on behalf of.
     ALTER TABLE drafts ADD COLUMN from_address TEXT NOT NULL DEFAULT '';
 ",
+    "
+    -- The files attached to messages that were brought in from an archive
+    -- file. Mail from the server keeps none here: its attachments are
+    -- fetched when asked for. An archive has nowhere else to fetch from.
+    CREATE TABLE attachment_content (
+        message_id TEXT NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
+        attachment_id TEXT NOT NULL,
+        content BLOB NOT NULL,
+        PRIMARY KEY (message_id, attachment_id)
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1428,7 +1439,7 @@ fn delete_messages(
     Ok(())
 }
 
-fn upsert_message(
+pub(crate) fn upsert_message(
     transaction: &Transaction<'_>,
     folder_id: &str,
     m: &MessageChange,
@@ -1501,7 +1512,7 @@ fn upsert_message(
 
 /// Bring a message's search entry in line with what is stored. Until its
 /// body has been fetched, the preview stands in for it.
-fn index(transaction: &Transaction<'_>, message_id: &str) -> Result<(), StoreError> {
+pub(crate) fn index(transaction: &Transaction<'_>, message_id: &str) -> Result<(), StoreError> {
     transaction.execute(
         "DELETE FROM messages_fts WHERE rowid = (SELECT rowid FROM messages WHERE id = ?1)",
         [message_id],

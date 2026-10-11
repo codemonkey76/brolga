@@ -122,6 +122,15 @@ impl AccountDb {
         Ok(changed)
     }
 
+    /// Count every waiting change as made. For mail with no server behind
+    /// it, where the change made here is all the change there is.
+    pub fn settle_queued_ops(&self) -> Result<(), StoreError> {
+        self.connection()
+            .execute("UPDATE ops SET state = 'done' WHERE state = 'queued'", [])?;
+
+        Ok(())
+    }
+
     /// The changes waiting to be sent, oldest first.
     pub fn queued_ops(&self) -> Result<Vec<Op>, StoreError> {
         let connection = self.connection();

@@ -12,6 +12,7 @@ base64.workspace = true
 brolga-auth.workspace = true
 brolga-calendar = { path = "../calendar" }
 brolga-contacts = { path = "../contacts" }
+brolga-pst = { path = "../pst" }
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 brolga-commands.workspace = true
 brolga-graph.workspace = true
@@ -28,6 +29,8 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+# Makes the PST files the tests import. Never part of the client itself.
+pst-writer = { package = "outlook-pst-rw", version = "1.2" }
 axum.workspace = true
 brolga-fake-graph.workspace = true
 

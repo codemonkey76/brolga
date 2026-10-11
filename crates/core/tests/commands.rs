@@ -143,6 +143,25 @@ async fn every_command_is_described_and_its_examples_run() {
         .unwrap();
     registry.execute("mail.sync", json!({})).await.unwrap();
     let mut seen = 0;
+    // A PST file, for `archives.import`.
+    let archive = std::env::temp_dir().join(format!("brolga-gate-{}.pst", std::process::id()));
+    let _ = std::fs::remove_file(&archive);
+    drop(
+        pst_writer::UnicodePstFile::create(
+            &archive,
+            &pst_writer::UnicodePstMessage {
+                subject: "An old message",
+                sender_name: "Sam Taylor",
+                sender_email: "sam@example.test",
+                recipients: &[],
+                body: "Kept from long ago.",
+                html_body: None,
+                message_id: "<old@example.test>",
+                delivery_time: 133_750_656_000_000_000,
+            },
+        )
+        .unwrap(),
+    );
 
     for spec in registry.specs() {
         seen += 1;
@@ -164,6 +183,12 @@ async fn every_command_is_described_and_its_examples_run() {
         );
 
         for example in &spec.examples {
+            // An example that names a file is given one that is there.
+            let mut example = example.clone();
+            if spec.id == "archives.import" {
+                example["path"] = json!(archive.to_string_lossy());
+            }
+            let example = &example;
             let result = registry.execute(&spec.id, example.clone()).await;
             assert!(
                 result.is_ok(),

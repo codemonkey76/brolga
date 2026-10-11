@@ -174,6 +174,14 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
     // does not stop them syncing.
     let mut results = Vec::new();
     for account in accounts {
+        // An archive has no server to sync with: it is as up to date as it will ever be.
+        if account.id.starts_with(crate::mailboxes::ARCHIVE) {
+            results.push(json!({
+                "account_id": account.id, "ok": true, "changed": 0, "removed": 0,
+                "bodies_downloaded": 0, "syncing_elsewhere": false, "error": null
+            }));
+            continue;
+        }
         let outcome = async {
             let mailbox = context.open(&account).await?;
             let _one_at_a_time = mailbox.syncing.lock().await;
@@ -518,11 +526,24 @@ async fn save_attachment(context: Context, args: SaveAttachment) -> Result<Value
         ));
     }
 
-    let content = mailbox
-        .graph
-        .attachment_content(&args.message_id, &args.attachment_id)
-        .await
-        .map_err(|e| failed(format!("The attachment could not be downloaded. {e}")))?;
+    let content = if mailbox.archive {
+        // An archive's files were read in with it, or were never in it.
+        mailbox
+            .db
+            .attachment_content(&args.message_id, &args.attachment_id)
+            .map_err(failed)?
+            .ok_or_else(|| {
+                failed(
+                    "The archive this message came from held only this attachment's name, not the file itself.",
+                )
+            })?
+    } else {
+        mailbox
+            .graph
+            .attachment_content(&args.message_id, &args.attachment_id)
+            .await
+            .map_err(|e| failed(format!("The attachment could not be downloaded. {e}")))?
+    };
 
     // An attached message, event or contact comes in its MIME form, and is
     // named for what it turns out to be.
@@ -572,6 +593,11 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
     // The body is fetched the first time a message is opened, and kept.
     let body = match mailbox.db.body(&args.message_id).map_err(failed)? {
         Some(body) => body,
+        // A message from an archive with no body there had none to read in.
+        None if mailbox.archive => Body {
+            content_type: "text".to_owned(),
+            content: String::new(),
+        },
         None => {
             let fetched = mailbox.graph.message_body(&args.message_id).await.map_err(|e| {
                 failed(format!("This message has not been downloaded yet, and it could not be fetched now. {e}"))

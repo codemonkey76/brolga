@@ -23,6 +23,8 @@ pub(crate) struct Mailbox {
     pub shared: Option<String>,
     /// Someone else's mailbox of which only the calendar was shared.
     pub calendar_only: bool,
+    /// Mail read in from a file: there is no server behind it.
+    pub archive: bool,
     /// Sends the changes made here to the server.
     pub outbox: Arc<brolga_ops::Outbox>,
     /// One sync of an account at a time: two would fetch the same pages.
@@ -91,11 +93,39 @@ pub(crate) struct Mailboxes {
 struct AccountTokens {
     accounts: Arc<Accounts>,
     account_id: String,
+    /// An archive has no server, and so no token to reach one with.
+    archive: bool,
+}
+
+/// What starts the id of an archive: mail read in from a file, kept on
+/// this computer and nowhere else.
+pub(crate) const ARCHIVE: &str = "archive:";
+
+const NO_SERVER: &str = "This is an archive kept on this computer. It is not connected to Microsoft 365, \
+                         so nothing in it can be sent, fetched or changed there.";
+
+/// Mail read in from a file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Archive {
+    pub id: String,
+    pub name: String,
+    /// The file it was read from, as it was called then.
+    pub source: String,
+    pub added_at: String,
+    /// `importing`, `ready`, `cancelled` or `failed`.
+    pub state: String,
+    pub messages: u64,
+    /// Messages and folders in the file that could not be read.
+    pub skipped: u64,
+    pub error: Option<String>,
 }
 
 impl TokenSource for AccountTokens {
     fn token(&self) -> BoxFuture<'_, Result<String, GraphError>> {
         Box::pin(async move {
+            if self.archive {
+                return Err(GraphError::Token(NO_SERVER.to_owned()));
+            }
             // The registry's own words say whether the account needs to sign
             // in again or the sign-in service is out of reach.
             self.accounts
@@ -134,6 +164,35 @@ impl Mailboxes {
             .unwrap_or_default())
     }
 
+    /// The archives read in from files, oldest first.
+    pub fn archives(&self) -> Result<Vec<Archive>, String> {
+        let kept = self.global.setting("archives").map_err(|e| e.to_string())?;
+
+        Ok(kept
+            .and_then(|kept| serde_json::from_str(&kept).ok())
+            .unwrap_or_default())
+    }
+
+    pub fn set_archives(&self, archives: &[Archive]) -> Result<(), String> {
+        let kept = serde_json::to_string(archives).map_err(|e| e.to_string())?;
+        self.global
+            .set_setting("archives", &kept)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Change what is kept about one archive.
+    pub fn change_archive(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut Archive),
+    ) -> Result<(), String> {
+        let mut all = self.archives()?;
+        if let Some(archive) = all.iter_mut().find(|archive| archive.id == id) {
+            change(archive);
+        }
+        self.set_archives(&all)
+    }
+
     pub fn set_shared(&self, account_id: &str, shared: &[SharedMailbox]) -> Result<(), String> {
         let kept = serde_json::to_string(shared).map_err(|e| e.to_string())?;
         self.global
@@ -167,6 +226,26 @@ impl Mailboxes {
     /// The account asked for, or the only one where none is named. A
     /// mailbox shared with an account is asked for by its own id.
     pub fn account(&self, id: Option<&str>) -> Result<Account, String> {
+        if let Some(id) = id.filter(|id| id.starts_with(ARCHIVE)) {
+            return self
+                .archives()?
+                .into_iter()
+                .find(|archive| archive.id == id)
+                .map(|archive| Account {
+                    id: archive.id,
+                    tenant_id: String::new(),
+                    object_id: String::new(),
+                    username: archive.name.clone(),
+                    display_name: Some(archive.name),
+                    client_id: String::new(),
+                    tenant: String::new(),
+                    needs_sign_in: false,
+                    added_at: archive.added_at,
+                })
+                .ok_or_else(|| {
+                    format!("There is no archive `{id}`. Those there are, are in archives.list.")
+                });
+        }
         let mut accounts = self.accounts.list().map_err(|e| e.to_string())?;
 
         if let Some((owner, address)) = id.and_then(|id| id.split_once(SHARED)) {
@@ -236,9 +315,11 @@ impl Mailboxes {
             None => (account.id.clone(), None),
         };
         let owner_id = owner.clone();
+        let archive = account.id.starts_with(ARCHIVE);
         let tokens = Arc::new(AccountTokens {
             accounts: self.accounts.clone(),
             account_id: owner,
+            archive,
         });
         let graph = match &self.graph_base {
             Some(base) => GraphClient::new(base.clone(), tokens, RetryPolicy::impatient()),
@@ -256,6 +337,7 @@ impl Mailboxes {
             outbox: Arc::new(brolga_ops::Outbox::new(graph.clone(), db.clone())),
             db,
             graph,
+            archive,
             calendar_only: shared.as_ref().is_some_and(|address| {
                 self.shared(&owner_id)
                     .unwrap_or_default()

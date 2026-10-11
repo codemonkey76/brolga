@@ -7,6 +7,7 @@
 //! system's secret store, and the tests check that none reaches this file.
 
 mod account;
+mod archive;
 mod calendar;
 mod contacts;
 mod drafts;
@@ -18,6 +19,7 @@ pub use account::{
     AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, InlineImage,
     MessageChange, MessageRow, Order, Round, SyncState,
 };
+pub use archive::{ArchivedAttachment, ArchivedMessage};
 pub use calendar::{CalendarRow, EventRow};
 pub use contacts::ContactRow;
 pub use drafts::{Draft, DraftEdit, DraftFile};

@@ -104,7 +104,10 @@ async fn edit(
         .db
         .queue_edit(&action, &message_ids, &edit)
         .map_err(failed)?;
-    if changed > 0 {
+    if mailbox.archive {
+        // Nothing to tell: the change made here is the whole of it.
+        mailbox.db.settle_queued_ops().map_err(failed)?;
+    } else if changed > 0 {
         send_soon(&mailbox);
     }
 
