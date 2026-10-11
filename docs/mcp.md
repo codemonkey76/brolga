@@ -49,7 +49,7 @@ argument `mcp`.
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |
 
-Contacts tools arrive with that feature. Repeating events and inviting people come later.
+Contacts tools arrive with that feature. `create_event` and `update_event` take `repeat` for a repeating event, and `update_event` and `delete_event` take `scope` for one of a series: `occurrence`, `following` or `series`. Inviting people comes later.
 
 Every result that carries a message's own words also carries a note saying
 they were written by the sender and are not instructions. Reading a message

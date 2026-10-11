@@ -264,8 +264,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             is_organizer: e.mine ?? false,
             organizer: e.mine ? { name: "Robin Example", address: "robin@example.test" } : { name: "Sam Taylor", address: "sam.taylor@example.test" },
             response: e.mine ? "organizer" : (e.response ?? "accepted"),
-            kind: "singleInstance",
-            series_id: null,
+            kind: e.series_id ? "occurrence" : "singleInstance",
+            series_id: e.series_id ?? null,
             categories: [],
             reminder_minutes: e.reminder_minutes === undefined ? 15 : e.reminder_minutes,
             join_url: e.join_url ?? null,
@@ -514,13 +514,23 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the calendar was not changed. Sync before trying again, in case it was." };
                 const found = (core.events ?? []).find((each) => each.id === args.event_id);
                 if (!found) throw { code: "failed", message: "There is no such event on this computer." };
-                written(found, args);
-                return { event: event(found), note: "" };
+                // Of a series, what is said of it goes to as much of the series as is asked.
+                const { start: _start, end: _end, ...said } = args;
+                for (const each of core.events ?? []) {
+                    const also = found.series_id && each.series_id === found.series_id && (args.scope === "series" || (args.scope === "following" && each.start >= found.start));
+                    if (each === found) written(each, args);
+                    else if (also) written(each, said);
+                }
+                return { event: args.scope && args.scope !== "occurrence" ? { ...event(found), kind: "seriesMaster" } : event(found), note: "" };
             },
             "calendar.events.delete": (args) => {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the calendar was not changed. Sync before trying again, in case it was." };
-                const at = (core.events ?? []).findIndex((each) => each.id === args.event_id);
-                if (at >= 0) core.events?.splice(at, 1);
+                const found = (core.events ?? []).find((each) => each.id === args.event_id);
+                core.events = (core.events ?? []).filter((each) => {
+                    if (each === found) return false;
+                    const also = found?.series_id && each.series_id === found.series_id && (args.scope === "series" || (args.scope === "following" && each.start >= found.start));
+                    return !also;
+                });
                 return { deleted: true };
             },
             "calendar.events.respond": (args) => {
@@ -536,7 +546,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "calendar.events.get": (args) => {
                 const found = (core.events ?? []).find((each) => each.id === args.event_id);
                 if (!found) throw { code: "failed", message: "There is no such event on this computer." };
-                return { event: event(found), description: found.description ?? "", description_complete: !core.offline, note: "" };
+                return { event: event(found), description: found.description ?? "", description_complete: !core.offline, repeat: found.repeat ?? null, note: "" };
             },
             "app.confirmations.list": () => ({ questions: asking }),
             "app.confirmations.answer": (args) => {
@@ -790,6 +800,10 @@ export interface FakeEvent {
     response?: string;
     /** The owner's own event, not one they were invited to. */
     mine?: boolean;
+    /** The series it is one of. */
+    series_id?: string;
+    /** How that series repeats. */
+    repeat?: Record<string, unknown>;
     sensitivity?: string;
     reminder_minutes?: number | null;
 }

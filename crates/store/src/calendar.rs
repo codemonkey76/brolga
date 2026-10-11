@@ -326,6 +326,17 @@ impl AccountDb {
         Ok(())
     }
 
+    /// Take out the occurrences of a series that are on this computer: all
+    /// of them, or with `from` those that start at that moment or later.
+    pub fn forget_series(&self, master_id: &str, from: Option<&str>) -> Result<(), StoreError> {
+        self.connection().execute(
+            "DELETE FROM events WHERE series_master_id = ?1 AND start_at >= ?2",
+            params![master_id, from.unwrap_or("")],
+        )?;
+
+        Ok(())
+    }
+
     /// The events that overlap the time from `after` up to `before`, both
     /// in UTC, earliest first. With `only_shown`, those of the calendars
     /// that are shown.

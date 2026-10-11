@@ -12,10 +12,8 @@ license.workspace = true
 # computer, whatever zone data it has or lacks of its own.
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 serde = { workspace = true }
-thiserror.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

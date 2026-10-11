@@ -39,6 +39,12 @@ pub struct FakeEvent {
     pub cancelled_days: Vec<String>,
     /// Occurrences that were moved: the day one fell on, and its new start and end in UTC.
     pub moved: Vec<(String, String, String)>,
+    /// How the series ran before it was changed, so that occurrences it
+    /// no longer has can be named as gone.
+    pub former: Vec<Series>,
+    /// Occurrences changed on their own: the day one fell on, and what of
+    /// it differs from the series, as Graph names it.
+    pub overrides: Vec<(String, Value)>,
     pub sensitivity: String,
     pub categories: Vec<String>,
     /// What it says, as HTML or plain words.
@@ -67,6 +73,8 @@ impl FakeEvent {
             series: None,
             cancelled_days: Vec::new(),
             moved: Vec::new(),
+            former: Vec::new(),
+            overrides: Vec::new(),
             sensitivity: "normal".to_owned(),
             categories: Vec::new(),
             body: None,
@@ -212,6 +220,57 @@ fn write(event: &mut FakeEvent, body: &Value) -> Result<(), &'static str> {
         return Err(INVALID);
     }
 
+    // How it repeats. The series' first start and end are by the clock in
+    // the event's zone: as just given, or as the series already had them.
+    let zone = brolga_calendar::iana_zone(&event.zone)
+        .ok_or(INVALID)?
+        .to_owned();
+    let by_clock = |name: &str, kept: &str, all_day: bool| -> Option<jiff::civil::DateTime> {
+        if let Some(local) = body[name]["dateTime"].as_str() {
+            return local.split('.').next()?.parse().ok();
+        }
+        let moment = stamp(kept)?;
+        if all_day {
+            return Some(moment.to_zoned(jiff::tz::TimeZone::UTC).datetime());
+        }
+        Some(
+            moment
+                .to_zoned(jiff::tz::TimeZone::get(&zone).ok()?)
+                .datetime(),
+        )
+    };
+    let given = &body["recurrence"];
+    if given.is_object() {
+        let was = event.series.take();
+        let (start, end) = match (&was, body["start"].is_null()) {
+            (Some(was), true) => (was.start, was.end),
+            _ => (
+                by_clock("start", &event.start, event.is_all_day).ok_or(INVALID)?,
+                by_clock("end", &event.end, event.is_all_day).ok_or(INVALID)?,
+            ),
+        };
+        let series = Series::from_graph(start, end, &zone, given).ok_or(INVALID)?;
+        // "recurrenceRange": the range starts on the day the event starts.
+        if series.from != start.date()
+            || occurrences(&series, Timestamp::MIN, Timestamp::MAX, 1).is_err()
+        {
+            return Err(INVALID);
+        }
+        event.former.extend(was);
+        event.series = Some(series);
+    } else if let (Some(series), false) = (&mut event.series, body["start"].is_null()) {
+        // The whole series moved: its first occurrence is when it is now said to start.
+        let (start, end) = (
+            by_clock("start", &event.start, event.is_all_day).ok_or(INVALID)?,
+            by_clock("end", &event.end, event.is_all_day).ok_or(INVALID)?,
+        );
+        let was = series.clone();
+        series.start = start;
+        series.end = end;
+        series.from = start.date();
+        event.former.push(was);
+    }
+
     Ok(())
 }
 
@@ -328,6 +387,40 @@ impl Calendars {
 
     /// "Update event" (SOURCES.md): only what is given is changed.
     pub fn update(&mut self, id: &str, body: &Value) -> Result<(), &'static str> {
+        if let Some((own, day)) = self.occurrence(id) {
+            let stored = self.events.get_mut(&own).ok_or("ErrorItemNotFound")?;
+            // An occurrence changed on its own becomes an exception: moved,
+            // or differing in what it says.
+            if !body["start"].is_null() || !body["end"].is_null() {
+                let moment = |at: &Value| {
+                    brolga_calendar::utc(at["dateTime"].as_str()?, at["timeZone"].as_str()?)
+                };
+                let (Some(start), Some(end)) = (moment(&body["start"]), moment(&body["end"]))
+                else {
+                    return Err("ErrorPropertyValidationFailure");
+                };
+                stored.event.moved.retain(|(on, _, _)| *on != day);
+                stored.event.moved.push((day.clone(), start, end));
+            }
+            let mut differs = serde_json::Map::new();
+            for name in ["subject", "location", "showAs", "sensitivity", "categories"] {
+                if !body[name].is_null() {
+                    differs.insert(name.to_owned(), body[name].clone());
+                }
+            }
+            if !differs.is_empty() {
+                let mut all = match stored.event.overrides.iter().position(|(on, _)| *on == day) {
+                    Some(at) => stored.event.overrides.remove(at).1,
+                    None => json!({}),
+                };
+                for (name, value) in differs {
+                    all[name.as_str()] = value;
+                }
+                stored.event.overrides.push((day, all));
+            }
+            self.touched(&own);
+            return Ok(());
+        }
         let Some(stored) = self.events.get_mut(id).filter(|stored| !stored.deleted) else {
             return Err("ErrorItemNotFound");
         };
@@ -340,7 +433,30 @@ impl Calendars {
     }
 
     /// "Delete event" (SOURCES.md).
+    /// The series and the day of an occurrence's id, if it is one and
+    /// there is such an occurrence.
+    fn occurrence(&self, id: &str) -> Option<(String, String)> {
+        let (own, compact) = id.split_once('.')?;
+        let stored = self.events.get(own).filter(|stored| !stored.deleted)?;
+        stored.event.series.as_ref()?;
+        let day = format!(
+            "{}-{}-{}",
+            compact.get(..4)?,
+            compact.get(4..6)?,
+            compact.get(6..8)?
+        );
+
+        (!stored.event.cancelled_days.contains(&day)).then(|| (own.to_owned(), day))
+    }
+
     pub fn delete(&mut self, id: &str) -> Result<(), &'static str> {
+        if let Some((own, day)) = self.occurrence(id) {
+            if let Some(stored) = self.events.get_mut(&own) {
+                stored.event.cancelled_days.push(day);
+            }
+            self.touched(&own);
+            return Ok(());
+        }
         if !self.events.get(id).is_some_and(|stored| !stored.deleted) {
             return Err("ErrorItemNotFound");
         }
@@ -461,11 +577,23 @@ impl Calendars {
                     }
                     let instance_id = format!("{id}.{}", day.replace('-', ""));
                     let moved = event.moved.iter().find(|(on, _, _)| *on == day);
+                    let differs = event.overrides.iter().find(|(on, _)| *on == day);
                     let (kind, start, end) = match moved {
                         Some((_, start, end)) => ("exception", stamp(start)?, stamp(end)?),
+                        None if differs.is_some() => {
+                            ("exception", occurrence.start, occurrence.end)
+                        }
                         None => ("occurrence", occurrence.start, occurrence.end),
                     };
-                    (start < before && end > after).then(|| shown(instance_id, kind, start, end))
+                    (start < before && end > after).then(|| {
+                        let mut instance = shown(instance_id, kind, start, end);
+                        if let Some((_, Value::Object(changes))) = differs {
+                            for (name, value) in changes {
+                                instance[name.as_str()] = value.clone();
+                            }
+                        }
+                        instance
+                    })
                 })
                 .collect(),
         }
@@ -474,18 +602,27 @@ impl Calendars {
     /// Every id an event could have had in a view: its own, or one for each
     /// day of the series. A deleted event is named as removed under each.
     fn all_ids(&self, id: &str, after: Timestamp, before: Timestamp) -> Vec<String> {
-        match self
-            .events
-            .get(id)
-            .and_then(|stored| stored.event.series.as_ref())
-        {
-            None => vec![id.to_owned()],
-            Some(series) => occurrences(series, wider(after, -1), wider(before, 1), 20_000)
-                .unwrap_or_default()
-                .iter()
-                .map(|o| format!("{id}.{}", o.local_start.date().to_string().replace('-', "")))
-                .collect(),
+        let Some(stored) = self.events.get(id) else {
+            return vec![id.to_owned()];
+        };
+        // A single event that was once a series, or a series that was once
+        // otherwise, had other ids then.
+        let mut all: Vec<String> = stored
+            .event
+            .series
+            .iter()
+            .chain(&stored.event.former)
+            .flat_map(|series| {
+                occurrences(series, wider(after, -1), wider(before, 1), 20_000).unwrap_or_default()
+            })
+            .map(|o| format!("{id}.{}", o.local_start.date().to_string().replace('-', "")))
+            .collect();
+        if stored.event.series.is_none() || all.is_empty() {
+            all.push(id.to_owned());
         }
+        all.sort();
+        all.dedup();
+        all
     }
 
     /// "event: delta" (SOURCES.md), for the default calendar. The window is
@@ -661,6 +798,38 @@ impl Calendars {
     pub fn one(&self, id: &str) -> Option<Value> {
         let own = id.split('.').next().unwrap_or(id);
         let stored = self.events.get(own).filter(|stored| !stored.deleted)?;
+        // A series by its own id is its master: as its first occurrence
+        // was made, with how it repeats.
+        if let (true, Some(series)) = (own == id, &stored.event.series) {
+            let first = occurrences(series, Timestamp::MIN, Timestamp::MAX, 1)
+                .ok()?
+                .into_iter()
+                .next()?;
+            let mut plain = stored.event.clone();
+            plain.series = None;
+            plain.start = format!("{}Z", utc(first.start).trim_end_matches(".0000000"));
+            plain.end = format!("{}Z", utc(first.end).trim_end_matches(".0000000"));
+            let alone = Self {
+                events: BTreeMap::from([(
+                    own.to_owned(),
+                    Stored {
+                        calendar: stored.calendar.clone(),
+                        event: plain,
+                        deleted: false,
+                    },
+                )]),
+                seq: self.seq,
+                ..Self::default()
+            };
+            let mut master = alone
+                .instances(own, Timestamp::MIN, Timestamp::MAX)
+                .into_iter()
+                .next()?;
+            master["type"] = json!("seriesMaster");
+            master["recurrence"] = series.to_graph(&stored.event.zone);
+            master["body"] = json!({ "contentType": "text", "content": stored.event.body.clone().unwrap_or_default() });
+            return Some(master);
+        }
         let mut found = self
             .instances(
                 own,

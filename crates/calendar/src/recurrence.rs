@@ -118,6 +118,60 @@ pub struct Series {
 }
 
 /// One time a repeating event falls.
+impl Series {
+    /// A series from how Graph writes one ("patternedRecurrence resource
+    /// type", SOURCES.md): its first start and end by the clock in its
+    /// zone, and the `recurrence` of its event. Nothing if that cannot be read.
+    pub fn from_graph(
+        start: DateTime,
+        end: DateTime,
+        zone: &str,
+        recurrence: &serde_json::Value,
+    ) -> Option<Self> {
+        let pattern: Pattern = serde_json::from_value(recurrence["pattern"].clone()).ok()?;
+        let range = &recurrence["range"];
+        let from: Date = range["startDate"].as_str()?.parse().ok()?;
+        let ends = match range["type"].as_str()? {
+            "endDate" => Ends::On(range["endDate"].as_str()?.parse().ok()?),
+            "numbered" => Ends::After(u32::try_from(range["numberOfOccurrences"].as_u64()?).ok()?),
+            _ => Ends::Never,
+        };
+
+        Some(Self {
+            start,
+            end,
+            zone: zone.to_owned(),
+            pattern,
+            from,
+            ends,
+        })
+    }
+
+    /// The series as Graph writes one, with its zone named as given.
+    pub fn to_graph(&self, zone: &str) -> serde_json::Value {
+        let mut range = serde_json::json!({
+            "type": "noEnd",
+            "startDate": self.from.to_string(),
+            "endDate": "0001-01-01",
+            "numberOfOccurrences": 0,
+            "recurrenceTimeZone": zone
+        });
+        match self.ends {
+            Ends::Never => {}
+            Ends::On(last) => {
+                range["type"] = "endDate".into();
+                range["endDate"] = last.to_string().into();
+            }
+            Ends::After(count) => {
+                range["type"] = "numbered".into();
+                range["numberOfOccurrences"] = count.into();
+            }
+        }
+
+        serde_json::json!({ "pattern": self.pattern, "range": range })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Occurrence {
     pub start: Timestamp,

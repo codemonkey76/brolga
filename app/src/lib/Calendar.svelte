@@ -5,6 +5,9 @@
         type Answer,
         type Calendar,
         type EventFields,
+        type Repeat,
+        type Scope,
+        repeatSaid,
         createEvent,
         deleteEvent,
         updateEvent,
@@ -69,6 +72,12 @@
 
     let selected = $state<CalendarEvent | null>(null);
     let description = $state<{ text: string; complete: boolean } | null>(null);
+    /** How the selected event's series repeats, where it is of one and it is known. */
+    let repeat = $state<Repeat | null>(null);
+    /** How much of a series is being changed. */
+    let scope = $state<Scope>("occurrence");
+    /** What is being asked of a series: how much of it to change, or to delete. */
+    let asking = $state<"change" | "delete" | null>(null);
     /** An event is being made (`new`) or the selected one changed (`change`). */
     let editing = $state<"new" | "change" | null>(null);
     /** True once Delete has been pressed once, and it is being asked whether to. */
@@ -84,17 +93,20 @@
 
     async function save(fields: EventFields, calendarId: string | null) {
         if (!accountId) return;
-        const saved = editing === "change" && selected ? await updateEvent(accountId, selected.id, fields) : await createEvent(accountId, calendarId, fields);
+        const saved = editing === "change" && selected ? await updateEvent(accountId, selected.id, fields, scope) : await createEvent(accountId, calendarId, fields);
         editing = null;
         await load();
-        await select(saved);
+        // A series is in the calendar as its occurrences, not as itself.
+        if (saved.kind === "seriesMaster") selected = null;
+        else await select(saved);
     }
 
-    async function remove() {
+    async function remove(of: Scope = "occurrence") {
         const event = selected;
         if (!accountId || !event) return;
         try {
-            await deleteEvent(accountId, event.id);
+            await deleteEvent(accountId, event.id, of);
+            asking = null;
             selected = null;
             sure = false;
             await load();
@@ -181,14 +193,37 @@
         selected = event;
         editing = null;
         sure = false;
+        asking = null;
+        scope = "occurrence";
         description = null;
-        if (!accountId) return;
-        try {
-            const got = await getEvent(accountId, event.id);
-            if (selected?.id === event.id) description = { text: got.description, complete: got.description_complete };
-        } catch {
-            // What the list knows of it is still shown.
-        }
+        repeat = null;
+        const id = accountId;
+        if (!id) return;
+        fetching = (async () => {
+            try {
+                const got = await getEvent(id, event.id);
+                if (selected?.id === event.id) {
+                    description = { text: got.description, complete: got.description_complete };
+                    repeat = got.repeat ?? null;
+                }
+            } catch {
+                // What the list knows of it is still shown.
+            }
+        })();
+        await fetching;
+    }
+
+    /** The rest of the selected event being fetched: what it says, and how it repeats. */
+    let fetching: Promise<void> = Promise.resolve();
+
+    /** Open the selected event to be changed, once all of it is here: the form starts from what it is. */
+    async function change(of: Scope) {
+        const event = selected;
+        await fetching;
+        if (selected?.id !== event?.id) return;
+        scope = of;
+        asking = null;
+        editing = "change";
     }
 
     /** Answer the invitation that is open. A failure is for the buttons to say. */
@@ -334,12 +369,14 @@
 
     {#if editing}
         <aside class="details" aria-label="Event">
-            {#key editing + (selected?.id ?? "")}
+            {#key editing + scope + (selected?.id ?? "")}
                 <EventEditor
                     event={editing === "change" ? selected : null}
                     description={editing === "change" ? (description?.complete ? description.text : null) : ""}
                     startAt={newStart()}
                     {calendars}
+                    scope={editing === "change" ? scope : "occurrence"}
+                    repeat={editing === "change" ? repeat : null}
                     onSave={save}
                     onCancel={() => (editing = null)}
                 />
@@ -350,22 +387,41 @@
             <button type="button" class="close" aria-label="Close" title="Escape" onclick={() => (selected = null)}>✕</button>
             {#if calendars.find((c) => c.id === selected?.calendar_id)?.can_edit ?? true}
                 <div class="tools">
-                    {#if sure}
-                        <button type="button" class="danger" onclick={remove}>
+                    {#if asking}
+                        <!-- One of a series: how much of it? -->
+                        <span class="ask">{asking === "delete" ? "Delete" : "Change"}</span>
+                        {#each [["occurrence", "This event"], ["following", "This and following"], ["series", "The whole series"]] as [each, label] (each)}
+                            <button
+                                type="button"
+                                class:danger={asking === "delete"}
+                                onclick={() => {
+                                    if (asking === "delete") remove(each as Scope);
+                                    else change(each as Scope);
+                                }}>{label}</button
+                            >
+                        {/each}
+                        <button type="button" onclick={() => (asking = null)}>Cancel</button>
+                    {:else if sure}
+                        <button type="button" class="danger" onclick={() => remove()}>
                             {selected.is_organizer && selected.attendees.length > 0 ? "Delete, and tell everyone it is cancelled?" : "Delete for good?"}
                         </button>
                         <button type="button" onclick={() => (sure = false)}>Keep</button>
                     {:else}
                         {#if selected.is_organizer || selected.response === "none"}
-                            <button type="button" aria-label="Change" title="Change" onclick={() => (editing = "change")}><Pencil size={16} aria-hidden="true" /></button>
+                            <button type="button" aria-label="Change" title="Change" onclick={() => (selected?.series_id ? (asking = "change") : change("occurrence"))}
+                                ><Pencil size={16} aria-hidden="true" /></button
+                            >
                         {/if}
-                        <button type="button" aria-label="Delete" title="Delete" onclick={() => (sure = true)}><Trash size={16} aria-hidden="true" /></button>
+                        <button type="button" aria-label="Delete" title="Delete" onclick={() => (selected?.series_id ? (asking = "delete") : (sure = true))}
+                            ><Trash size={16} aria-hidden="true" /></button
+                        >
                     {/if}
                 </div>
             {/if}
             <h2 class:cancelled={selected.is_cancelled}>{selected.subject || "(No subject)"}</h2>
             {#if selected.is_cancelled}<p class="warn">Cancelled</p>{/if}
             <p>{whenSaid(selected)}</p>
+            {#if selected.series_id}<p class="muted small">↻ {repeat ? repeatSaid(repeat) : "Repeats"}</p>{/if}
             {#if !selected.is_all_day && selected.time_zone && selected.time_zone !== Intl.DateTimeFormat().resolvedOptions().timeZone}
                 <p class="muted small">Made in {selected.time_zone}; shown in your time.</p>
             {/if}
@@ -426,6 +482,12 @@
         font-size: 0.85rem;
     }
 
+    .tools .ask {
+        align-self: center;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+
     .tools .danger {
         color: var(--danger);
     }
@@ -451,6 +513,8 @@
         border-right: 0;
         border-left: 1px solid var(--line);
         background: var(--surface);
+        /* Room to scroll the foot of a form clear of a reminder shown over it. */
+        padding-bottom: 5rem;
     }
 
     .main {

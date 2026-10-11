@@ -164,6 +164,14 @@ impl GraphClient {
         decode(&self.get(&url, None).await?)
     }
 
+    /// An event whole, as Graph gives it: for a series, its master, with
+    /// how it repeats ("Get event", SOURCES.md).
+    pub async fn event_raw(&self, event_id: &str) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/events/{event_id}", self.base);
+
+        decode(&self.get(&url, None).await?)
+    }
+
     /// Make an event, in a calendar or with none named in the default one
     /// ("Create event", SOURCES.md). Gives back the event as made.
     ///

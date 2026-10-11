@@ -435,3 +435,103 @@ test("an event that cannot be saved says so and the form is kept", async ({ page
     await page.keyboard.press("Escape");
     await expect(form).toHaveCount(0);
 });
+
+test("a new event is made to repeat, as it is said to", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: week });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    // The reminder for the stand-up sits over the foot of the form until it is dealt with.
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await page.getByRole("button", { name: "New event" }).click();
+    const form = page.getByRole("form", { name: "New event" });
+    const sent = async () => (await ran(page)).filter((r) => r.command === "calendar.events.create").at(-1)?.args as Record<string, unknown>;
+
+    await form.getByRole("textbox", { name: "Subject" }).fill("Stand-up");
+    // Tuesday 13 October 2026: the second Tuesday of its month.
+    await form.getByLabel("Start day").fill("2026-10-13");
+    await form.getByLabel("Start time").fill("09:00");
+    await form.getByLabel("Repeats").selectOption("week");
+    await form.getByLabel("Every so many").fill("2");
+    await form.getByRole("group", { name: "On" }).getByLabel("Tue").check();
+    await form.getByRole("group", { name: "On" }).getByLabel("Thu").check();
+    await form.getByLabel("Ends").selectOption("count");
+    await form.getByLabel("How many times").fill("8");
+    if (process.env.SCREENSHOTS) await page.screenshot({ path: "../docs/screenshots/calendar-repeat.png" });
+    await form.getByRole("button", { name: "Save" }).click();
+    expect(await sent()).toMatchObject({
+        start: "2026-10-13T09:00",
+        end: "2026-10-13T09:30",
+        repeat: { unit: "week", every: 2, days_of_week: ["thursday", "tuesday"], count: 8 },
+    });
+
+    // Monthly, on that weekday of the month, until a day.
+    await page.getByRole("button", { name: "New event" }).click();
+    await form.getByRole("textbox", { name: "Subject" }).fill("Board");
+    await form.getByLabel("Start day").fill("2026-10-13");
+    await form.getByLabel("Repeats").selectOption("month");
+    await expect(form.getByLabel("On which day")).toContainText("Day 13 of the month");
+    await form.getByLabel("On which day").selectOption("weekday");
+    await expect(form.getByLabel("On which day")).toContainText("The second Tuesday");
+    await form.getByLabel("Ends").selectOption("until");
+    await form.getByLabel("Last day").fill("2027-03-31");
+    await form.getByRole("button", { name: "Save" }).click();
+    expect((await sent()).repeat).toEqual({ unit: "month", every: 1, week_of_month: "second", days_of_week: ["tuesday"], until: "2027-03-31" });
+});
+
+const standUps = ["12", "13", "14", "15"].map((day, at) => ({
+    id: `s${at}`,
+    subject: "Stand-up",
+    start: `2026-10-${day}T23:00:00Z`,
+    end: `2026-10-${day}T23:15:00Z`,
+    mine: true,
+    series_id: "series",
+    repeat: { unit: "day", every: 1, days_of_week: null, week_of_month: null, until: null, count: null },
+}));
+
+test("one of a series is changed alone, or with the rest, and deleted the same ways", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: standUps });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    const calendar = page.getByRole("region", { name: "Calendar" });
+    const panel = page.getByRole("complementary", { name: "Event" });
+    const updates = async () => (await ran(page)).filter((r) => r.command === "calendar.events.update").map((r) => r.args as Record<string, unknown>);
+
+    await calendar.getByRole("button", { name: /Stand-up/ }).nth(1).click();
+    await expect(panel).toContainText("Every day");
+
+    // This one alone: it does not repeat on its own, so that is not offered.
+    await panel.getByRole("button", { name: "Change" }).click();
+    await panel.getByRole("button", { name: "This event" }).click();
+    const one = panel.getByRole("form", { name: "Change event" });
+    await expect(one.getByLabel("Repeats")).toHaveCount(0);
+    await one.getByRole("textbox", { name: "Subject" }).fill("Stand-up (short)");
+    await one.getByRole("button", { name: "Save" }).click();
+    expect((await updates()).at(-1)).toEqual({ account_id: "tenant-1.robin", event_id: "s1", subject: "Stand-up (short)" });
+    await expect(calendar.getByRole("button", { name: /Stand-up \(short\)/ })).toHaveCount(1);
+
+    // The whole series: how it repeats is there to change.
+    await calendar.getByRole("button", { name: /^Stand-up(?! \()/ }).first().click();
+    await panel.getByRole("button", { name: "Change" }).click();
+    await panel.getByRole("button", { name: "The whole series" }).click();
+    const all = panel.getByRole("form", { name: "Change the whole series" });
+    await expect(all.getByLabel("Repeats")).toHaveValue("day");
+    await all.getByRole("textbox", { name: "Location" }).fill("Room 2");
+    await all.getByRole("button", { name: "Save" }).click();
+    expect((await updates()).at(-1)).toEqual({ account_id: "tenant-1.robin", event_id: "s0", scope: "series", location: "Room 2" });
+
+    // Changing how it repeats sends when it starts with it.
+    await calendar.getByRole("button", { name: /Stand-up/ }).nth(2).click();
+    await panel.getByRole("button", { name: "Change" }).click();
+    await panel.getByRole("button", { name: "This and following" }).click();
+    const rest = panel.getByRole("form", { name: "Change this and following" });
+    await rest.getByLabel("Every so many").fill("2");
+    await rest.getByRole("button", { name: "Save" }).click();
+    expect((await updates()).at(-1)).toMatchObject({ event_id: "s2", scope: "following", repeat: { unit: "day", every: 2 }, start: "2026-10-15T09:00", end: "2026-10-15T09:15" });
+
+    // Deleted from one on.
+    await calendar.getByRole("button", { name: /Stand-up/ }).nth(2).click();
+    await panel.getByRole("button", { name: "Delete" }).click();
+    await panel.getByRole("button", { name: "This and following" }).click();
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.delete").at(-1)?.args).toEqual({ account_id: "tenant-1.robin", event_id: "s2", scope: "following" });
+    await expect(calendar.getByRole("button", { name: /Stand-up/ })).toHaveCount(2);
+});

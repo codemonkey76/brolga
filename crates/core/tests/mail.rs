@@ -2352,3 +2352,303 @@ async fn an_event_is_made_changed_and_deleted_and_the_server_has_it_so() {
             .is_err()
     );
 }
+
+/// What is in the calendar here between two days of 2027, as (subject, start), in order.
+async fn in_calendar(f: &Fixture, from: &str, to: &str) -> Vec<(String, String)> {
+    f.run(
+        "calendar.events.list",
+        json!({ "start": format!("2027-{from}T00:00:00Z"), "end": format!("2027-{to}T00:00:00Z") }),
+    )
+    .await["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["subject"].as_str().unwrap().to_owned(),
+                e["start"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn id_on(events: &Value, start: &str) -> String {
+    events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["start"] == start)
+        .unwrap_or_else(|| panic!("nothing starts at {start}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_series_is_made_and_one_of_it_or_the_rest_or_all_of_it_changed() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let all = || async {
+        f.run(
+            "calendar.events.list",
+            json!({ "start": "2027-03-01T00:00:00Z", "end": "2027-06-01T00:00:00Z" }),
+        )
+        .await
+    };
+
+    // Every Monday at nine in Sydney, six times, over the Sunday its clocks go back (4 April 2027).
+    let made = f
+        .run(
+            "calendar.events.create",
+            json!({
+                "subject": "Stand-up", "start": "2027-03-22T09:00", "end": "2027-03-22T09:30", "time_zone": "Australia/Sydney",
+                "repeat": { "unit": "week", "count": 6 }
+            }),
+        )
+        .await;
+    assert_eq!(made["event"]["kind"], "seriesMaster");
+    assert_eq!(made["on_this_computer"], true);
+    // Nine by the clock every week: ten at night UTC while the clocks are forward, eleven after.
+    let stand_ups = |starts: &[&str]| -> Vec<(String, String)> {
+        starts
+            .iter()
+            .map(|s| ("Stand-up".to_owned(), (*s).to_owned()))
+            .collect()
+    };
+    assert_eq!(
+        in_calendar(&f, "03-01", "06-01").await,
+        stand_ups(&[
+            "2027-03-21T22:00:00Z",
+            "2027-03-28T22:00:00Z",
+            "2027-04-04T23:00:00Z",
+            "2027-04-11T23:00:00Z",
+            "2027-04-18T23:00:00Z",
+            "2027-04-25T23:00:00Z",
+        ])
+    );
+    let second = id_on(&all().await, "2027-03-28T22:00:00Z");
+    assert_eq!(
+        f.run("calendar.events.get", json!({ "event_id": second }))
+            .await["repeat"],
+        json!({ "unit": "week", "every": 1, "days_of_week": ["monday"], "week_of_month": null, "until": null, "count": 6 })
+    );
+
+    // One of them moved to the afternoon and renamed: an exception, and the rest are as they were.
+    let moved = f
+        .run(
+            "calendar.events.update",
+            json!({ "event_id": second, "subject": "Stand-up (late)", "start": "2027-03-29T14:00", "end": "2027-03-29T14:30", "time_zone": "Australia/Sydney" }),
+        )
+        .await;
+    assert_eq!(moved["event"]["kind"], "exception");
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(
+        now[1],
+        (
+            "Stand-up (late)".to_owned(),
+            "2027-03-29T03:00:00Z".to_owned()
+        )
+    );
+    assert_eq!(now.len(), 6);
+
+    // One deleted.
+    let third = id_on(&all().await, "2027-04-04T23:00:00Z");
+    f.run("calendar.events.delete", json!({ "event_id": third }))
+        .await;
+    assert_eq!(in_calendar(&f, "03-01", "06-01").await.len(), 5);
+    f.sync().await;
+    assert_eq!(in_calendar(&f, "03-01", "06-01").await.len(), 5);
+
+    // The whole series moved to ten, from one in the middle of it: it still begins on the day it began.
+    let fourth = id_on(&all().await, "2027-04-11T23:00:00Z");
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": fourth, "scope": "series", "start": "2027-04-12T10:00", "end": "2027-04-12T11:00", "time_zone": "Australia/Sydney", "location": "Room 4" }),
+    )
+    .await;
+    let now = all().await;
+    let starts: Vec<&str> = now["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["start"].as_str().unwrap())
+        .collect();
+    assert_eq!(starts[0], "2027-03-21T23:00:00Z");
+    assert!(starts.contains(&"2027-04-12T00:00:00Z"), "{starts:?}");
+    assert!(
+        now["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["location"] == "Room 4" || e["kind"] == "exception")
+    );
+
+    // From the fifth on, renamed: the old series stops, and a new one carries on for the two that were left.
+    let fifth = id_on(&now, "2027-04-19T00:00:00Z");
+    let carried = f
+        .run(
+            "calendar.events.update",
+            json!({ "event_id": fifth, "scope": "following", "subject": "Check-in" }),
+        )
+        .await;
+    assert_eq!(carried["event"]["kind"], "seriesMaster");
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(
+        now.iter()
+            .filter(|(subject, _)| subject == "Check-in")
+            .map(|(_, start)| start.as_str())
+            .collect::<Vec<_>>(),
+        ["2027-04-19T00:00:00Z", "2027-04-26T00:00:00Z"]
+    );
+    assert_eq!(now.len(), 5, "{now:?}");
+    f.sync().await;
+    assert_eq!(in_calendar(&f, "03-01", "06-01").await, now);
+    // The server has the same: no more of the old one from then on, and none lost before.
+    let main = f.graph.default_calendar();
+    assert_eq!(
+        f.graph
+            .events(&main, "2027-03-01T00:00:00", "2027-06-01T00:00:00")
+            .len(),
+        5
+    );
+
+    // The last of the new series deleted "from here on", and then the first: which is all of it.
+    let last = id_on(&all().await, "2027-04-26T00:00:00Z");
+    f.run(
+        "calendar.events.delete",
+        json!({ "event_id": last, "scope": "following" }),
+    )
+    .await;
+    assert_eq!(in_calendar(&f, "04-15", "06-01").await.len(), 1);
+    let only = id_on(&all().await, "2027-04-19T00:00:00Z");
+    f.run(
+        "calendar.events.delete",
+        json!({ "event_id": only, "scope": "following" }),
+    )
+    .await;
+    assert_eq!(in_calendar(&f, "04-15", "06-01").await, []);
+
+    // And what is left of the first series, all at once.
+    let first = id_on(&all().await, "2027-03-21T23:00:00Z");
+    f.run(
+        "calendar.events.delete",
+        json!({ "event_id": first, "scope": "series" }),
+    )
+    .await;
+    assert_eq!(in_calendar(&f, "03-01", "06-01").await, []);
+    f.sync().await;
+    assert_eq!(in_calendar(&f, "03-01", "06-01").await, []);
+    assert_eq!(
+        f.graph
+            .events(&main, "2027-03-01T00:00:00", "2027-06-01T00:00:00"),
+        []
+    );
+}
+
+#[tokio::test]
+async fn a_series_repeats_as_it_is_said_to() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let f = &f;
+    let starts = |subject: &'static str| async move {
+        in_calendar(f, "01-01", "12-31")
+            .await
+            .into_iter()
+            .filter(|(s, _)| s == subject)
+            .map(|(_, start)| start[..10].to_owned())
+            .collect::<Vec<_>>()
+    };
+    let make = |subject: &'static str, start: &'static str, repeat: Value| async move {
+        f.run(
+            "calendar.events.create",
+            json!({ "subject": subject, "start": format!("{start}T12:00"), "end": format!("{start}T13:00"), "time_zone": "UTC", "repeat": repeat }),
+        )
+        .await
+    };
+
+    make(
+        "Daily",
+        "2027-02-01",
+        json!({ "unit": "day", "every": 2, "until": "2027-02-06" }),
+    )
+    .await;
+    assert_eq!(
+        starts("Daily").await,
+        ["2027-02-01", "2027-02-03", "2027-02-05"]
+    );
+
+    make(
+        "Twice a week",
+        "2027-02-02",
+        json!({ "unit": "week", "days_of_week": ["tuesday", "thursday"], "count": 4 }),
+    )
+    .await;
+    assert_eq!(
+        starts("Twice a week").await,
+        ["2027-02-02", "2027-02-04", "2027-02-09", "2027-02-11"]
+    );
+
+    make(
+        "Monthly",
+        "2027-02-15",
+        json!({ "unit": "month", "count": 3 }),
+    )
+    .await;
+    assert_eq!(
+        starts("Monthly").await,
+        ["2027-02-15", "2027-03-15", "2027-04-15"]
+    );
+
+    // The second Tuesday of the month.
+    make(
+        "Board",
+        "2027-02-09",
+        json!({ "unit": "month", "week_of_month": "second", "count": 3 }),
+    )
+    .await;
+    assert_eq!(
+        starts("Board").await,
+        ["2027-02-09", "2027-03-09", "2027-04-13"]
+    );
+
+    make(
+        "Yearly",
+        "2027-03-03",
+        json!({ "unit": "year", "count": 2 }),
+    )
+    .await;
+    assert_eq!(starts("Yearly").await, ["2027-03-03"]);
+
+    // What cannot be said.
+    for bad in [
+        json!({ "unit": "fortnight" }),
+        json!({ "unit": "day", "until": "2027-01-01" }),
+        json!({ "unit": "day", "until": "2027-06-01", "count": 3 }),
+    ] {
+        let asked = json!({ "subject": "x", "start": "2027-05-01T09:00", "end": "2027-05-01T10:00", "repeat": bad });
+        assert!(
+            f.registry
+                .execute("calendar.events.create", asked.clone())
+                .await
+                .is_err(),
+            "{asked}"
+        );
+    }
+    // An event that was alone is made to repeat.
+    let alone = f
+        .run("calendar.events.create", json!({ "subject": "Walk", "start": "2027-06-07T07:00", "end": "2027-06-07T08:00", "time_zone": "UTC" }))
+        .await["event"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": alone, "start": "2027-06-07T07:00", "end": "2027-06-07T08:00", "time_zone": "UTC", "repeat": { "unit": "day", "count": 3 } }),
+    )
+    .await;
+    assert_eq!(
+        starts("Walk").await,
+        ["2027-06-07", "2027-06-08", "2027-06-09"]
+    );
+}

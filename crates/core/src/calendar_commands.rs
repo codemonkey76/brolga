@@ -332,9 +332,20 @@ async fn event(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandErr
         Err(_) => None,
     };
     let complete = description.is_some();
+    // How its series repeats, where it is of one and that can be read.
+    let repeat = match &row.series_master_id {
+        Some(master) => mailbox
+            .graph
+            .event_raw(master)
+            .await
+            .ok()
+            .and_then(|master| repeat_said(&master["recurrence"])),
+        None => None,
+    };
 
     Ok(json!({
         "event": shown(&row),
+        "repeat": repeat,
         "description": description.unwrap_or_else(|| row.preview.clone()),
         "description_complete": complete,
         "note": UNTRUSTED
@@ -358,6 +369,133 @@ struct Fields {
     #[serde(default, deserialize_with = "given")]
     reminder_minutes: Option<Option<i64>>,
     categories: Option<Vec<String>>,
+    repeat: Option<Repeat>,
+}
+
+/// How an event repeats, as a person would say it: every so many days,
+/// weeks, months or years, on which days, and until when.
+#[derive(Deserialize, serde::Serialize, Clone)]
+struct Repeat {
+    unit: String,
+    every: Option<u32>,
+    days_of_week: Option<Vec<brolga_calendar::DayOfWeek>>,
+    week_of_month: Option<brolga_calendar::WeekIndex>,
+    until: Option<String>,
+    count: Option<u32>,
+}
+
+fn day_of_week(day: jiff::civil::Date) -> brolga_calendar::DayOfWeek {
+    use brolga_calendar::DayOfWeek;
+    use jiff::civil::Weekday;
+    match day.weekday() {
+        Weekday::Monday => DayOfWeek::Monday,
+        Weekday::Tuesday => DayOfWeek::Tuesday,
+        Weekday::Wednesday => DayOfWeek::Wednesday,
+        Weekday::Thursday => DayOfWeek::Thursday,
+        Weekday::Friday => DayOfWeek::Friday,
+        Weekday::Saturday => DayOfWeek::Saturday,
+        Weekday::Sunday => DayOfWeek::Sunday,
+    }
+}
+
+/// A way of repeating as Graph is told it ("recurrencePattern and
+/// recurrenceRange resource types", SOURCES.md), for an event that first
+/// starts on `first`. What is not said is taken from that day: a weekly
+/// event falls on its weekday, a monthly one on its day of the month.
+fn recurrence(
+    repeat: &Repeat,
+    first: jiff::civil::Date,
+    zone: &str,
+) -> Result<Value, CommandError> {
+    let interval = repeat.every.unwrap_or(1);
+    if interval == 0 {
+        return Err(failed(
+            "An event repeats every 1 or more: `every` cannot be 0.",
+        ));
+    }
+    let days = match &repeat.days_of_week {
+        Some(days) if !days.is_empty() => json!(days),
+        _ => json!([day_of_week(first)]),
+    };
+    let pattern = match (repeat.unit.as_str(), repeat.week_of_month) {
+        ("day", _) => json!({ "type": "daily", "interval": interval }),
+        ("week", _) => {
+            json!({ "type": "weekly", "interval": interval, "daysOfWeek": days, "firstDayOfWeek": "monday" })
+        }
+        ("month", None) => {
+            json!({ "type": "absoluteMonthly", "interval": interval, "dayOfMonth": first.day() })
+        }
+        ("month", Some(index)) => {
+            json!({ "type": "relativeMonthly", "interval": interval, "daysOfWeek": days, "index": index })
+        }
+        ("year", None) => {
+            json!({ "type": "absoluteYearly", "interval": interval, "month": first.month(), "dayOfMonth": first.day() })
+        }
+        ("year", Some(index)) => {
+            json!({ "type": "relativeYearly", "interval": interval, "month": first.month(), "daysOfWeek": days, "index": index })
+        }
+        (other, _) => {
+            return Err(failed(format!(
+                "`{other}` is not a way to repeat: use day, week, month or year."
+            )));
+        }
+    };
+    let mut range =
+        json!({ "type": "noEnd", "startDate": first.to_string(), "recurrenceTimeZone": zone });
+    match (&repeat.until, repeat.count) {
+        (Some(_), Some(_)) => {
+            return Err(failed(
+                "Give `until` or `count` for when it stops repeating, not both.",
+            ));
+        }
+        (Some(until), None) => {
+            let last: jiff::civil::Date = until
+                .get(..10)
+                .and_then(|day| day.parse().ok())
+                .ok_or_else(|| {
+                    failed(format!("`{until}` is not a day. Use the form 2026-12-31."))
+                })?;
+            if last < first {
+                return Err(failed("It would stop repeating before it first happens."));
+            }
+            range["type"] = json!("endDate");
+            range["endDate"] = json!(last.to_string());
+        }
+        (None, Some(0)) => {
+            return Err(failed("It must happen at least once: `count` cannot be 0."));
+        }
+        (None, Some(count)) => {
+            range["type"] = json!("numbered");
+            range["numberOfOccurrences"] = json!(count);
+        }
+        (None, None) => {}
+    }
+
+    Ok(json!({ "pattern": pattern, "range": range }))
+}
+
+/// How a series repeats, said back the way it is asked for. Nothing for
+/// what Graph gives that cannot be read.
+fn repeat_said(recurrence: &Value) -> Option<Value> {
+    let pattern = &recurrence["pattern"];
+    let kind = pattern["type"].as_str()?;
+    let relative = kind.starts_with("relative");
+    let range = &recurrence["range"];
+
+    Some(json!({
+        "unit": match kind {
+            "daily" => "day",
+            "weekly" => "week",
+            "absoluteMonthly" | "relativeMonthly" => "month",
+            "absoluteYearly" | "relativeYearly" => "year",
+            _ => return None,
+        },
+        "every": pattern["interval"].as_u64().unwrap_or(1),
+        "days_of_week": if kind == "weekly" || relative { pattern["daysOfWeek"].clone() } else { Value::Null },
+        "week_of_month": if relative { pattern["index"].clone() } else { Value::Null },
+        "until": if range["type"] == "endDate" { range["endDate"].clone() } else { Value::Null },
+        "count": if range["type"] == "numbered" { range["numberOfOccurrences"].clone() } else { Value::Null },
+    }))
 }
 
 /// A value that was given, even where what was given is null.
@@ -450,6 +588,18 @@ fn event_body(fields: &Fields) -> Result<Value, CommandError> {
                 json!({ "dateTime": end, "timeZone": zone }),
             );
             body.insert("isAllDay".to_owned(), json!(all_day));
+            if let Some(repeat) = &fields.repeat {
+                let first: jiff::civil::Date = start
+                    .get(..10)
+                    .and_then(|day| day.parse().ok())
+                    .ok_or_else(|| failed("The start could not be read as a day."))?;
+                body.insert("recurrence".to_owned(), recurrence(repeat, first, zone)?);
+            }
+        }
+        _ if fields.repeat.is_some() => {
+            return Err(failed(
+                "To say how an event repeats, give its start and its end as well: it repeats from its start.",
+            ));
         }
         (None, None) if fields.is_all_day.is_none() && fields.time_zone.is_none() => {}
         _ => {
@@ -523,6 +673,150 @@ fn kept(
     Ok(json!({ "event": shown(&row), "note": UNTRUSTED }))
 }
 
+/// Read a calendar again straight after a series in it was changed, so
+/// that its occurrences here are the ones there are. False if that could
+/// not be done now; the next sync does it.
+async fn refresh(mailbox: &crate::mailboxes::Mailbox, calendar_id: &str) -> bool {
+    let Ok(_one_at_a_time) = mailbox.syncing.try_lock() else {
+        return false;
+    };
+    let Ok(Some(_turn)) = mailbox.sync_turn() else {
+        return false;
+    };
+
+    mailbox
+        .calendars
+        .sync_calendar(calendar_id, jiff::Timestamp::now())
+        .await
+        .is_ok()
+}
+
+/// A series as its master says it is: when it first starts and ends by
+/// the clock in its own zone, and how it repeats.
+struct Master {
+    raw: Value,
+    /// Windows' name for its zone.
+    zone: String,
+    start: jiff::civil::DateTime,
+    end: jiff::civil::DateTime,
+}
+
+impl Master {
+    async fn read(mailbox: &crate::mailboxes::Mailbox, id: &str) -> Result<Self, CommandError> {
+        let raw = mailbox.graph.event_raw(id).await.map_err(not_made)?;
+        let unreadable =
+            || failed("Microsoft 365 gave the series back in a form this client cannot read.");
+        let zone = raw["originalStartTimeZone"]
+            .as_str()
+            .ok_or_else(unreadable)?
+            .to_owned();
+        let all_day = raw["isAllDay"].as_bool().unwrap_or(false);
+        let tz = brolga_calendar::iana_zone(&zone)
+            .and_then(|name| jiff::tz::TimeZone::get(name).ok())
+            .ok_or_else(unreadable)?;
+        let by_clock = |at: &Value| -> Option<jiff::civil::DateTime> {
+            let written = at["dateTime"].as_str()?.split('.').next()?;
+            // An all-day event is days as written; a timed one is a moment, put into its zone.
+            if all_day {
+                return written.parse().ok();
+            }
+            let moment: jiff::Timestamp =
+                brolga_calendar::utc(written, at["timeZone"].as_str().unwrap_or("UTC"))?
+                    .parse()
+                    .ok()?;
+            Some(moment.to_zoned(tz.clone()).datetime())
+        };
+        let (start, end) = (
+            by_clock(&raw["start"]).ok_or_else(unreadable)?,
+            by_clock(&raw["end"]).ok_or_else(unreadable)?,
+        );
+        if !raw["recurrence"]["pattern"].is_object() {
+            return Err(unreadable());
+        }
+
+        Ok(Self {
+            raw,
+            zone,
+            start,
+            end,
+        })
+    }
+
+    /// The day an occurrence of it falls on, by the calendar in its zone.
+    fn day_of(&self, occurrence: &EventRow) -> Option<jiff::civil::Date> {
+        if occurrence.is_all_day {
+            return occurrence.start.get(..10)?.parse().ok();
+        }
+        let tz = jiff::tz::TimeZone::get(brolga_calendar::iana_zone(&self.zone)?).ok()?;
+        let moment: jiff::Timestamp = occurrence.start.parse().ok()?;
+
+        Some(moment.to_zoned(tz).date())
+    }
+
+    fn first_day(&self) -> Option<jiff::civil::Date> {
+        self.raw["recurrence"]["range"]["startDate"]
+            .as_str()?
+            .parse()
+            .ok()
+    }
+
+    /// The series, stopped on the day before `day`.
+    fn ending_before(&self, day: jiff::civil::Date) -> Option<Value> {
+        let last = day.yesterday().ok()?;
+        let mut recurrence = json!({ "pattern": self.raw["recurrence"]["pattern"], "range": self.raw["recurrence"]["range"] });
+        recurrence["range"]["type"] = json!("endDate");
+        recurrence["range"]["endDate"] = json!(last.to_string());
+
+        Some(json!({ "recurrence": recurrence }))
+    }
+
+    /// How the rest of the series repeats, taken up again from `day`: as
+    /// before, for as long as before. A series that was to happen so many
+    /// times has left what it has not yet had.
+    fn carried_on_from(&self, day: jiff::civil::Date) -> Option<Value> {
+        let mut recurrence = json!({ "pattern": self.raw["recurrence"]["pattern"], "range": self.raw["recurrence"]["range"] });
+        recurrence["range"]["startDate"] = json!(day.to_string());
+        if recurrence["range"]["type"] == "numbered" {
+            let zone = brolga_calendar::iana_zone(&self.zone)?;
+            let mut series = brolga_calendar::Series::from_graph(
+                self.start,
+                self.end,
+                zone,
+                &self.raw["recurrence"],
+            )?;
+            let all = recurrence["range"]["numberOfOccurrences"].as_u64()?;
+            series.ends = brolga_calendar::Ends::Never;
+            let split = jiff::tz::TimeZone::get(zone)
+                .ok()?
+                .to_ambiguous_zoned(day.at(0, 0, 0, 0))
+                .compatible()
+                .ok()?
+                .timestamp();
+            let had = brolga_calendar::occurrences(&series, jiff::Timestamp::MIN, split, usize::MAX)
+                .ok()?
+                .iter()
+                .filter(|each| each.local_start.date() < day)
+                .count() as u64;
+            recurrence["range"]["numberOfOccurrences"] = json!(all.saturating_sub(had).max(1));
+        }
+
+        Some(recurrence)
+    }
+}
+
+/// Which of a series a change is for.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+enum Scope {
+    /// The event named, alone.
+    #[default]
+    Occurrence,
+    /// The event named and every later one of its series.
+    Following,
+    /// Every event of its series.
+    Series,
+}
+
 #[derive(Deserialize)]
 struct Create {
     account_id: Option<String>,
@@ -564,13 +858,22 @@ async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, Comman
         .await
         .map_err(not_made)?;
 
-    kept(&mailbox, &calendar.id, made)
+    let repeats = fields.repeat.is_some();
+    let said = kept(&mailbox, &calendar.id, made)?;
+    if repeats {
+        let synced = refresh(&mailbox, &calendar.id).await;
+        return Ok(with(said, synced));
+    }
+
+    Ok(said)
 }
 
 #[derive(Deserialize)]
 struct Update {
     account_id: Option<String>,
     event_id: String,
+    #[serde(default)]
+    scope: Scope,
     #[serde(flatten)]
     fields: Fields,
 }
@@ -590,37 +893,241 @@ async fn update(mailboxes: Arc<Mailboxes>, args: Update) -> Result<Value, Comman
                 args.event_id
             ))
         })?;
-    let body = event_body(&args.fields)?;
-    if body.as_object().is_none_or(serde_json::Map::is_empty) {
-        return Err(failed("Nothing to change was given."));
+    let mut fields = args.fields;
+    let series = row.series_master_id.clone();
+
+    let (Some(master_id), true) = (series, args.scope != Scope::Occurrence) else {
+        // The one event, be it alone or one of a series: of a series it
+        // becomes an exception to it.
+        if fields.repeat.is_some() && row.series_master_id.is_some() {
+            return Err(failed(
+                "One occurrence cannot repeat on its own. Change how the series repeats with scope `series` or `following`.",
+            ));
+        }
+        let body = event_body(&fields)?;
+        if body.as_object().is_none_or(serde_json::Map::is_empty) {
+            return Err(failed("Nothing to change was given."));
+        }
+        let changed = mailbox
+            .graph
+            .update_event(&args.event_id, &body)
+            .await
+            .map_err(not_made)?;
+        let made_series = fields.repeat.is_some();
+        let said = kept(&mailbox, &row.calendar_id, changed)?;
+        if made_series {
+            // It was one event and is now a series: it is here under its occurrences' ids.
+            mailbox.db.forget_event(&args.event_id).map_err(failed)?;
+            refresh(&mailbox, &row.calendar_id).await;
+        }
+        return Ok(said);
+    };
+
+    let master = Master::read(&mailbox, &master_id).await?;
+    let unreadable = || failed("This occurrence's place in its series could not be worked out.");
+    let day = master.day_of(&row).ok_or_else(unreadable)?;
+    let first = master.first_day().ok_or_else(unreadable)?;
+    let whole = args.scope == Scope::Series || day <= first;
+
+    // Where the times are not given, the series keeps the ones it has.
+    // Where they are, a change to the whole series moves its time of day
+    // and its length and leaves the day it began on; a change from here on
+    // starts on the day given.
+    let all_day = fields.is_all_day.unwrap_or(row.is_all_day);
+    let said = |at: jiff::civil::DateTime| at.strftime("%Y-%m-%dT%H:%M:%S").to_string();
+    let length = |start: jiff::civil::DateTime, end: jiff::civil::DateTime| {
+        start.until(end).unwrap_or_default()
+    };
+    match (&fields.start, &fields.end) {
+        (Some(start), Some(end)) if whole => {
+            let (start, end, _) = times(
+                start,
+                end,
+                fields.time_zone.as_deref().or(Some(&master.zone)),
+                all_day,
+            )?;
+            let (start, end): (jiff::civil::DateTime, jiff::civil::DateTime) =
+                (start.parse().map_err(failed)?, end.parse().map_err(failed)?);
+            let moved = first.to_datetime(start.time());
+            fields.start = Some(said(moved));
+            fields.end = Some(said(moved.checked_add(length(start, end)).map_err(failed)?));
+            fields.time_zone.get_or_insert_with(|| master.zone.clone());
+            fields.is_all_day = Some(all_day);
+        }
+        (None, None) if !whole || fields.repeat.is_some() => {
+            let begins = if whole { first } else { day };
+            let start = begins.to_datetime(master.start.time());
+            fields.start = Some(said(start));
+            fields.end = Some(said(
+                start
+                    .checked_add(length(master.start, master.end))
+                    .map_err(failed)?,
+            ));
+            fields.time_zone = Some(master.zone.clone());
+            fields.is_all_day = Some(row.is_all_day);
+        }
+        _ => {}
     }
 
-    let changed = mailbox
+    if whole {
+        let body = event_body(&fields)?;
+        if body.as_object().is_none_or(serde_json::Map::is_empty) {
+            return Err(failed("Nothing to change was given."));
+        }
+        let changed = mailbox
+            .graph
+            .update_event(&master_id, &body)
+            .await
+            .map_err(not_made)?;
+        let said = kept(&mailbox, &row.calendar_id, changed)?;
+        let synced = refresh(&mailbox, &row.calendar_id).await;
+        return Ok(with(said, synced));
+    }
+
+    // From here on: the series is stopped the day before, and a new one
+    // made from this day with what it had and what is now changed. The new
+    // one is made first, so that if anything fails nothing has been lost.
+    let mut body = serde_json::Map::new();
+    for name in [
+        "subject",
+        "location",
+        "showAs",
+        "sensitivity",
+        "categories",
+        "isReminderOn",
+        "reminderMinutesBeforeStart",
+        "importance",
+        "isOnlineMeeting",
+        "onlineMeetingProvider",
+    ] {
+        if !master.raw[name].is_null() {
+            body.insert(name.to_owned(), master.raw[name].clone());
+        }
+    }
+    // What an online meeting says holds the way in to that meeting, and the
+    // new series is a meeting of its own.
+    if master.raw["isOnlineMeeting"] != true && master.raw["body"].is_object() {
+        body.insert("body".to_owned(), master.raw["body"].clone());
+    }
+    if let Some(attendees) = master.raw["attendees"].as_array() {
+        let invited: Vec<Value> = attendees
+            .iter()
+            .map(|each| json!({ "emailAddress": each["emailAddress"], "type": each["type"] }))
+            .collect();
+        body.insert("attendees".to_owned(), json!(invited));
+    }
+    let begins: jiff::civil::Date = fields
+        .start
+        .as_deref()
+        .and_then(|start| start.get(..10))
+        .and_then(|day| day.parse().ok())
+        .unwrap_or(day);
+    if fields.repeat.is_none() {
+        body.insert(
+            "recurrence".to_owned(),
+            master.carried_on_from(begins).ok_or_else(unreadable)?,
+        );
+    }
+    if let Value::Object(changes) = event_body(&fields)? {
+        body.extend(changes);
+    }
+
+    let made = mailbox
         .graph
-        .update_event(&args.event_id, &body)
+        .create_event(Some(&row.calendar_id), &Value::Object(body))
         .await
         .map_err(not_made)?;
+    let stopped = master.ending_before(day).ok_or_else(unreadable)?;
+    if let Err(error) = mailbox.graph.update_event(&master_id, &stopped).await {
+        // The old series still runs on: take the new one away again rather than leave both.
+        let undone = mailbox.graph.delete_event(&made.id).await.is_ok();
+        return Err(if undone {
+            not_made(error)
+        } else {
+            failed(
+                "The series from here on was made anew, but the old one could not be stopped, so both are in the calendar. Delete one of them.",
+            )
+        });
+    }
+    mailbox
+        .db
+        .forget_series(&master_id, Some(&row.start))
+        .map_err(failed)?;
+    let said = kept(&mailbox, &row.calendar_id, made)?;
+    let synced = refresh(&mailbox, &row.calendar_id).await;
 
-    kept(&mailbox, &row.calendar_id, changed)
+    Ok(with(said, synced))
 }
 
-async fn delete(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
+/// A result, with whether the calendar here has caught up with it.
+fn with(mut said: Value, synced: bool) -> Value {
+    said["on_this_computer"] = json!(synced);
+    said
+}
+
+#[derive(Deserialize)]
+struct Delete {
+    account_id: Option<String>,
+    event_id: String,
+    #[serde(default)]
+    scope: Scope,
+}
+
+async fn delete(mailboxes: Arc<Mailboxes>, args: Delete) -> Result<Value, CommandError> {
     let account = mailboxes
         .account(args.account_id.as_deref())
         .map_err(failed)?;
     let mailbox = mailboxes.open(&account).await.map_err(failed)?;
-    if mailbox.db.event(&args.event_id).map_err(failed)?.is_none() {
-        return Err(failed(format!(
-            "There is no event `{}` on this computer.",
-            args.event_id
-        )));
+    let row = mailbox
+        .db
+        .event(&args.event_id)
+        .map_err(failed)?
+        .ok_or_else(|| {
+            failed(format!(
+                "There is no event `{}` on this computer.",
+                args.event_id
+            ))
+        })?;
+
+    let (Some(master_id), true) = (
+        row.series_master_id.clone(),
+        args.scope != Scope::Occurrence,
+    ) else {
+        mailbox
+            .graph
+            .delete_event(&args.event_id)
+            .await
+            .map_err(not_made)?;
+        mailbox.db.forget_event(&args.event_id).map_err(failed)?;
+        return Ok(json!({ "deleted": true }));
+    };
+
+    let mut from = None;
+    if args.scope == Scope::Following {
+        let master = Master::read(&mailbox, &master_id).await?;
+        let unreadable =
+            || failed("This occurrence's place in its series could not be worked out.");
+        let day = master.day_of(&row).ok_or_else(unreadable)?;
+        // From its first day on is all of it.
+        if day > master.first_day().ok_or_else(unreadable)? {
+            let stopped = master.ending_before(day).ok_or_else(unreadable)?;
+            mailbox
+                .graph
+                .update_event(&master_id, &stopped)
+                .await
+                .map_err(not_made)?;
+            from = Some(row.start.as_str());
+        }
     }
-    mailbox
-        .graph
-        .delete_event(&args.event_id)
-        .await
-        .map_err(not_made)?;
-    mailbox.db.forget_event(&args.event_id).map_err(failed)?;
+    if from.is_none() {
+        mailbox
+            .graph
+            .delete_event(&master_id)
+            .await
+            .map_err(not_made)?;
+    }
+    mailbox.db.forget_series(&master_id, from).map_err(failed)?;
+    refresh(&mailbox, &row.calendar_id).await;
 
     Ok(json!({ "deleted": true }))
 }
@@ -882,6 +1389,25 @@ pub(crate) fn register(
         handler(&mailboxes, event),
     )?;
 
+    let repeat_schema = json!({
+        "type": "object",
+        "description": "How the event repeats, from its start. What is left out is taken from the start: a weekly event falls on its \
+                        weekday, a monthly one on its day of the month, or with week_of_month on that weekday of the month. Give start and end with it.",
+        "properties": {
+            "unit": { "enum": ["day", "week", "month", "year"] },
+            "every": { "type": "integer", "minimum": 1, "maximum": 99, "description": "Every so many units. Default 1." },
+            "days_of_week": { "type": ["array", "null"], "items": { "enum": ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] } },
+            "week_of_month": { "enum": ["first", "second", "third", "fourth", "last", null] },
+            "until": { "type": ["string", "null"], "description": "The last day it may fall on: 2026-12-31." },
+            "count": { "type": ["integer", "null"], "minimum": 1, "maximum": 999, "description": "How many times it happens. Not with until." }
+        },
+        "required": ["unit"],
+        "additionalProperties": false
+    });
+    let scope_schema = json!({
+        "enum": ["occurrence", "following", "series"],
+        "description": "For an event of a repeating series: this one alone (the default), this one and every later one, or the whole series."
+    });
     let fields = |required: &[&str], first: Value| {
         let mut properties = first;
         for (name, schema) in [
@@ -920,6 +1446,7 @@ pub(crate) fn register(
                 "categories",
                 json!({ "type": "array", "items": { "type": "string" }, "maxItems": 25 }),
             ),
+            ("repeat", repeat_schema.clone()),
         ] {
             properties[name] = schema;
         }
@@ -965,7 +1492,7 @@ pub(crate) fn register(
             mcp_tool: Some("delete_event".to_owned()),
             args_schema: json!({
                 "type": "object",
-                "properties": { "account_id": account_id, "event_id": { "type": "string" } },
+                "properties": { "account_id": account_id, "event_id": { "type": "string" }, "scope": scope_schema },
                 "required": ["event_id"],
                 "additionalProperties": false
             }),
@@ -983,7 +1510,8 @@ pub(crate) fn register(
         CommandSpec {
             id: "calendar.events.update".to_owned(),
             title: "Change an event".to_owned(),
-            description: "Change an event: only what is given is changed. To move it, give start and end together. \
+            description: "Change an event: only what is given is changed. To move it, give start and end together. For one of a \
+                          repeating series, scope says how much of the series: changing the whole series keeps the day it began on. \
                           If it is a meeting you organised, those invited are told of the change. It needs Microsoft 365 to be in reach."
                 .to_owned(),
             kind: CommandKind::Action,
@@ -991,7 +1519,7 @@ pub(crate) fn register(
             mcp_tool: Some("update_event".to_owned()),
             args_schema: fields(
                 &["event_id"],
-                json!({ "account_id": account_id, "event_id": { "type": "string" } }),
+                json!({ "account_id": account_id, "event_id": { "type": "string" }, "scope": scope_schema }),
             ),
             result_schema: one_event,
             examples: vec![json!({ "event_id": "event-0001", "location": "Level 2" })],

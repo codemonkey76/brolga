@@ -29,6 +29,8 @@ export interface CalendarEvent {
     organizer: { name: string | null; address: string | null };
     response: string;
     kind: string;
+    /** The series it is one of, if it repeats. */
+    series_id?: string | null;
     reminder_minutes: number | null;
     join_url: string | null;
     attendees: { name: string | null; address: string | null; kind: string; response: string }[];
@@ -43,10 +45,26 @@ export const listEvents = async (account_id: string, start: Date, end: Date) =>
     (await execute<{ events: CalendarEvent[] }>("calendar.events.list", { account_id, start: start.toISOString(), end: end.toISOString() })).events;
 
 export const getEvent = (account_id: string, event_id: string) =>
-    execute<{ event: CalendarEvent; description: string; description_complete: boolean }>("calendar.events.get", { account_id, event_id });
+    execute<{ event: CalendarEvent; description: string; description_complete: boolean; repeat?: Repeat | null }>("calendar.events.get", { account_id, event_id });
+
+/** How an event repeats: every so many days, weeks, months or years, from its start. */
+export interface Repeat {
+    unit: "day" | "week" | "month" | "year";
+    every?: number;
+    days_of_week?: string[] | null;
+    /** For a month or a year: on that weekday of the month, not that day of it. */
+    week_of_month?: string | null;
+    /** The last day it may fall on. */
+    until?: string | null;
+    count?: number | null;
+}
+
+/** Which of a repeating series a change is for. */
+export type Scope = "occurrence" | "following" | "series";
 
 /** What an event is made of, to make one or to change one. What is left out is left as it is. */
 export interface EventFields {
+    repeat?: Repeat;
     subject?: string;
     /** By the clock in `time_zone`: `2026-10-20T09:00`. For an all-day event, its first day. */
     start?: string;
@@ -64,10 +82,34 @@ export interface EventFields {
 export const createEvent = async (account_id: string, calendar_id: string | null, fields: EventFields) =>
     (await execute<{ event: CalendarEvent }>("calendar.events.create", { account_id, ...(calendar_id ? { calendar_id } : {}), ...fields })).event;
 
-export const updateEvent = async (account_id: string, event_id: string, fields: EventFields) =>
-    (await execute<{ event: CalendarEvent }>("calendar.events.update", { account_id, event_id, ...fields })).event;
+export const updateEvent = async (account_id: string, event_id: string, fields: EventFields, scope: Scope = "occurrence") =>
+    (await execute<{ event: CalendarEvent }>("calendar.events.update", { account_id, event_id, ...(scope === "occurrence" ? {} : { scope }), ...fields })).event;
 
-export const deleteEvent = (account_id: string, event_id: string) => execute("calendar.events.delete", { account_id, event_id });
+export const deleteEvent = (account_id: string, event_id: string, scope: Scope = "occurrence") =>
+    execute("calendar.events.delete", { account_id, event_id, ...(scope === "occurrence" ? {} : { scope }) });
+
+const DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const NTH = ["first", "second", "third", "fourth", "last"];
+const name = (day: string) => day[0].toUpperCase() + day.slice(1);
+
+/** How an event repeats, as a person would say it. */
+export function repeatSaid(repeat: Repeat): string {
+    const every = repeat.every ?? 1;
+    const days = [...(repeat.days_of_week ?? [])].sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b)).map(name);
+    let said = every === 1 ? `Every ${repeat.unit}` : `Every ${every} ${repeat.unit}s`;
+    if (repeat.unit === "week" && days.length > 0) said += ` on ${days.join(", ")}`;
+    if (repeat.week_of_month && days.length > 0) said += ` on the ${repeat.week_of_month} ${days[0]}`;
+    if (repeat.until) said += `, until ${new Date(`${repeat.until}T00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`;
+    if (repeat.count) said += `, ${repeat.count} times`;
+    return said;
+}
+
+/** Which weekday a day is, and which of its kind in its month: the second Tuesday, or the last. */
+export function placeInMonth(day: Date): { weekday: string; nth: string; isLast: boolean } {
+    const nth = Math.floor((day.getDate() - 1) / 7);
+    const isLast = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 7).getMonth() !== day.getMonth();
+    return { weekday: DAYS[day.getDay()], nth: NTH[Math.min(nth, 3)], isLast };
+}
 
 export type Answer = "accept" | "tentative" | "decline";
 
