@@ -359,6 +359,31 @@ impl GraphClient {
         Ok(())
     }
 
+    /// The categories the mailbox has, each a name and a colour
+    /// ("List masterCategories", SOURCES.md), as `(name, colour)` where the
+    /// colour is `none` or `preset0` to `preset24`.
+    pub async fn master_categories(&self) -> Result<Vec<(String, String)>, GraphError> {
+        let url = format!("{}/me/outlook/masterCategories", self.base);
+        let list: serde_json::Value = decode(&self.get(&url, None).await?)?;
+
+        Ok(list["value"]
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter_map(|each| {
+                        Some((
+                            each["displayName"].as_str()?.to_owned(),
+                            each["color"]
+                                .as_str()
+                                .unwrap_or("none")
+                                .to_ascii_lowercase(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// Send a draft ("message: send", SOURCES.md). It is saved in Sent
     /// Items. Never repeated here: a second request could send a second copy.
     pub async fn send_draft(&self, message_id: &str) -> Result<(), GraphError> {

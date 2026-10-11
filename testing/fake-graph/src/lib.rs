@@ -98,6 +98,7 @@ impl FakeGraph {
         let shared = Shared::default();
         let app = Router::new()
             .route("/v1.0/me", get(me))
+            .route("/v1.0/me/outlook/masterCategories", get(master_categories))
             .route(
                 "/v1.0/me/mailboxSettings",
                 axum::routing::patch(update_mailbox_settings),
@@ -280,6 +281,15 @@ impl FakeGraph {
         lock(&self.shared)
             .refused_updates
             .insert(message.to_owned());
+    }
+
+    /// A message's categories, as the server has them.
+    pub fn categories(&self, message: &str) -> Vec<String> {
+        lock(&self.shared)
+            .mailbox
+            .stored(message)
+            .map(|m| m.categories)
+            .unwrap_or_default()
     }
 
     /// A message's flag, as the server has it.
@@ -478,7 +488,7 @@ async fn require_token(request: Request, next: Next) -> Response {
     let reading = request.method() == axum::http::Method::GET;
     // Sending is its own permission ("message: send"), and so are the
     // mailbox's settings ("Update user mailbox settings").
-    let allowed = if path.contains("/me/mailboxSettings") {
+    let allowed = if path.contains("/me/mailboxSettings") || path.contains("/me/outlook/") {
         granted.contains(&"MailboxSettings.ReadWrite")
             || (reading && granted.contains(&"MailboxSettings.Read"))
     } else if path.ends_with("/send") {
@@ -495,6 +505,16 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// "List masterCategories" (SOURCES.md). Read with the mailbox's settings.
+async fn master_categories() -> Response {
+    axum::Json(json!({ "value": [
+        { "id": "1", "displayName": "Red category", "color": "preset0" },
+        { "id": "2", "displayName": "Clients", "color": "preset7" },
+        { "id": "3", "displayName": "Plain", "color": "none" }
+    ] }))
+    .into_response()
 }
 
 async fn automatic_replies(State(shared): State<Shared>) -> Response {
@@ -684,6 +704,13 @@ async fn update_message(
     let is_draft = inner.mailbox.stored(&message).is_some_and(|m| m.is_draft);
     for (property, value) in changes {
         match (property.as_str(), value) {
+            ("categories", Value::Array(names)) => {
+                let names: Vec<String> = names
+                    .iter()
+                    .filter_map(|n| n.as_str().map(str::to_owned))
+                    .collect();
+                inner.mailbox.edit(&message, |m| m.categories = names);
+            }
             // "Update message": these may be changed only on a draft.
             ("subject" | "body" | "toRecipients" | "ccRecipients" | "bccRecipients", _)
                 if !is_draft =>

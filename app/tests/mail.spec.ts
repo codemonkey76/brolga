@@ -889,3 +889,29 @@ test("a message can be sent to junk and brought back", async ({ page }) => {
     await folder(page, "Inbox").click();
     await expect(rows).toHaveCount(4);
 });
+
+test("a message is given categories, shown in their colours, and that can be undone", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    const pane = page.getByRole("region", { name: "Message" });
+    await first.click();
+
+    await pane.getByText("Categories", { exact: true }).click();
+    const menu = pane.getByRole("list", { name: "Categories" });
+    await menu.getByRole("checkbox", { name: "Clients" }).check();
+    await menu.getByRole("checkbox", { name: "Red category" }).check();
+
+    await expect(pane.getByLabel("This message's categories")).toContainText("Clients");
+    await expect(pane.getByLabel("This message's categories")).toContainText("Red category");
+    await expect(first.getByLabel("Category Clients")).toBeVisible();
+    await expect(first.getByLabel("Category Clients")).toHaveCSS("background-color", "rgb(47, 111, 206)");
+    await picture(page, "categories");
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(first.getByLabel("Category Red category")).toHaveCount(0);
+    await expect(first.getByLabel("Category Clients")).toBeVisible();
+
+    await menu.getByRole("checkbox", { name: "Clients" }).uncheck();
+    await expect(first.getByLabel("Category Clients")).toHaveCount(0);
+    await expect(pane.getByLabel("This message's categories")).toHaveCount(0);
+});

@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, deletePermanently, dismissRefused, getConversation, listAttachments, listDrafts, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, deletePermanently, dismissRefused, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -95,6 +95,23 @@
         if (how === "sent") setTimeout(loadDrafts, 1_500);
     }
 
+    /** The categories the mailbox has, to show each in its colour and to choose from. */
+    let categories = $state<Category[]>([]);
+
+    async function categorise(names: string[]) {
+        if (!accountId || !opened) return;
+        const id = opened.message.id;
+        try {
+            const done = await setCategories(accountId, [id], names);
+            if (opened?.message.id === id) opened = { ...opened, message: { ...opened.message, categories: names } };
+            if (searching) rows = rows.map((row) => (row?.id === id ? { ...row, categories: names } : row));
+            else await refresh();
+            if (done.changed > 0) offerUndo(names.length === 0 ? "Categories cleared" : "Categories changed", done.undo_id);
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
     /** The last action, while it can still be taken back. */
     let undoable = $state<{ said: string; id: string } | null>(null);
     let undoTimer: ReturnType<typeof setTimeout> | undefined;
@@ -137,7 +154,9 @@
             folders = await listFolders(accountId);
             // The message being read is drawn again from what the list now says of it.
             const now = rows.find((row) => row && row.id === opened?.message.id);
-            if (opened && now) opened = { ...opened, message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status } };
+            if (opened && now) {
+                opened = { ...opened, message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status, categories: now.categories } };
+            }
         } catch (failure) {
             problem = say(failure);
         }
@@ -575,6 +594,10 @@
         reset();
         await loadFolders().catch((failure) => (problem = say(failure)));
         await loadDrafts();
+        // Asked of the server, which may be slow or out of reach: not waited for.
+        listCategories(id)
+            .then((found) => accountId === id && (categories = found))
+            .catch(() => {});
     }
 
     // Show what is already on this computer at once, then fetch what is new.
@@ -728,7 +751,7 @@
             <p class="empty muted">{searching ? "Nothing matches." : syncing ? "Fetching your mail…" : "Nothing here."}</p>
         {:else}
             <div class="rows">
-                <MessageList {total} {rows} {selectedId} onSelect={open} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
+                <MessageList {total} {rows} {selectedId} {categories} onSelect={open} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
             </div>
         {/if}
         {#if notice}
@@ -760,6 +783,8 @@
             onWrite={write}
             onSetRead={markRead}
             onSetFlag={flag}
+        {categories}
+        onCategorise={categorise}
             {folders}
             {within}
             onDelete={remove}

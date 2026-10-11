@@ -39,6 +39,13 @@ struct Move {
 }
 
 #[derive(Deserialize)]
+struct SetCategories {
+    account_id: Option<String>,
+    message_ids: Vec<String>,
+    categories: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct Purge {
     account_id: Option<String>,
     message_ids: Vec<String>,
@@ -118,6 +125,27 @@ async fn move_messages(mailboxes: Arc<Mailboxes>, args: Move) -> Result<Value, C
     .await
 }
 
+/// The mailbox's categories, as `[{name, color}]`: from Microsoft 365 when
+/// it can be reached, and otherwise as they were when last it could.
+async fn categories(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    if let Ok(list) = mailbox.graph.master_categories().await {
+        let list: Vec<Value> = list
+            .into_iter()
+            .map(|(name, color)| json!({ "name": name, "color": color }))
+            .collect();
+        let _ = mailbox
+            .db
+            .set_setting("categories", &Value::Array(list).to_string());
+    }
+    let kept = mailbox.db.setting("categories").map_err(failed)?;
+    let list: Value = kept
+        .and_then(|kept| serde_json::from_str(&kept).ok())
+        .unwrap_or_else(|| json!([]));
+
+    Ok(json!({ "categories": list }))
+}
+
 /// Delete for good. This is not queued: it cannot be undone, so it is done
 /// while the person waits and they are told at once whether it happened.
 async fn purge(mailboxes: Arc<Mailboxes>, args: Purge) -> Result<Value, CommandError> {
@@ -163,6 +191,7 @@ async fn outbox(mailboxes: Arc<Mailboxes>) -> Result<Value, CommandError> {
                         "is_read" => "read or unread",
                         "flag_status" => "flag",
                         "folder_id" => "folder",
+                        "categories" => "categories",
                         other => other,
                     },
                     "error": op.error,
@@ -320,6 +349,69 @@ pub(crate) fn register(
             examples: vec![json!({ "message_ids": ["message-000008"], "folder_id": "archive" })],
         },
         handler(&mailboxes, move_messages),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.messages.set_categories".to_owned(),
+            title: "Set categories".to_owned(),
+            description: format!(
+                "Give messages exactly these categories, by name, in place of whatever they had; an empty list clears them. \
+                 The names the mailbox has are in mail.categories.list. {HOW}"
+            ),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "message_ids": message_ids(),
+                    "categories": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 255 }, "maxItems": 25, "uniqueItems": true }
+                },
+                "required": ["message_ids", "categories"],
+                "additionalProperties": false
+            }),
+            result_schema: edited(),
+            examples: vec![json!({ "message_ids": ["message-000008"], "categories": ["Clients"] })],
+        },
+        handler(&mailboxes, |mailboxes, args: SetCategories| {
+            edit(mailboxes, args.account_id, args.message_ids, MessageEdit::Categories(args.categories))
+        }),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.categories.list".to_owned(),
+            title: "List categories".to_owned(),
+            description: "The categories this mailbox has, each a name and a colour (`none`, or `preset0` to `preset24`, which mail programs map to colours of their own). \
+                          Read from Microsoft 365 when it can be reached, and otherwise as last read."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id() },
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "categories": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": { "name": { "type": "string" }, "color": { "type": "string" } },
+                            "required": ["name", "color"]
+                        }
+                    }
+                },
+                "required": ["categories"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, categories),
     )?;
 
     registry.register(

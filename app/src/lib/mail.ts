@@ -35,7 +35,33 @@ export interface Message {
     has_attachments: boolean;
     importance: string;
     flag_status: string;
+    categories: string[];
 }
+
+export interface Category {
+    name: string;
+    /** `none`, or `preset0` to `preset24`. */
+    color: string;
+}
+
+/**
+ * A colour for each of the presets a category can have. Microsoft documents
+ * the colour Outlook gives each by name (red, orange, brown and so on); these
+ * are our own shades of those, not Outlook's.
+ */
+const PRESETS = [
+    "#d13438", "#e8730c", "#8e562e", "#c8a200", "#3a8a3a", "#00857a", "#7a7a22", "#2f6fce", "#7b4bb7", "#b3305f",
+    "#5b7a8c", "#3c4f5a", "#8a8a8a", "#5a5a5a", "#222222", "#8f1d1f", "#a8500a", "#5c3a20", "#8a6f00", "#1f5f1f",
+    "#005a52", "#55551a", "#1d4a8c", "#52307a", "#7a1f40",
+];
+
+export const categoryColour = (color: string | undefined) => PRESETS[Number(color?.replace("preset", "") ?? NaN)] ?? "var(--muted)";
+
+export const listCategories = async (account_id: string) =>
+    (await execute<{ categories: Category[] }>("mail.categories.list", { account_id })).categories;
+
+export const setCategories = (account_id: string, message_ids: string[], categories: string[]) =>
+    execute<{ changed: number; undo_id: string }>("mail.messages.set_categories", { account_id, message_ids, categories });
 
 export interface Attachment {
     id: string;

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Message, dateGroup, when, who } from "./mail";
+    import { type Category, type Message, categoryColour, dateGroup, when, who } from "./mail";
 
     interface Props {
         /** How many messages there are in all, loaded or not. */
@@ -10,11 +10,13 @@
         onSelect: (message: Message) => void;
         /** Asked for when a position on screen has not been loaded. */
         onNeed: (index: number) => void;
+        /** The mailbox's categories, for the colour of each. */
+        categories: Category[];
         /** The list is in date order, so it can be marked off into today, yesterday and so on. */
         byDate: boolean;
     }
 
-    let { total, rows, selectedId, onSelect, onNeed, byDate }: Props = $props();
+    let { total, rows, selectedId, onSelect, onNeed, byDate, categories }: Props = $props();
 
     // Only the rows on screen are in the page, however long the folder is,
     // so a folder of a hundred thousand scrolls like one of a hundred.
@@ -109,6 +111,9 @@
                         {#if message.flag_status === "flagged"}<span class="clip" title="Flagged" aria-label="Flagged">🚩</span>{/if}
                         {#if message.flag_status === "complete"}<span class="clip" title="Complete" aria-label="Complete">✓</span>{/if}
                         {message.subject || "(No subject)"}
+                        {#each message.categories ?? [] as name (name)}
+                            <span class="dot" style:background={categoryColour(categories.find((c) => c.name === name)?.color)} title={name} aria-label="Category {name}"></span>
+                        {/each}
                         {#if message.conversation && message.conversation.count > 1}
                             <span class="many" aria-label="{message.conversation.count} messages">{message.conversation.count}</span>
                         {/if}
@@ -215,6 +220,15 @@
 
     .preview {
         color: var(--muted);
+    }
+
+    .dot {
+        display: inline-block;
+        width: 0.6rem;
+        height: 0.6rem;
+        margin-left: 0.25rem;
+        border-radius: 50%;
+        vertical-align: baseline;
     }
 
     .many {

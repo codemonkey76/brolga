@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Attachment, type FlagStatus, type Folder, type Message, type Opened, size, when, who } from "./mail";
+    import { type Attachment, type Category, type FlagStatus, type Folder, type Message, type Opened, categoryColour, size, when, who } from "./mail";
 
     interface Props {
         opened: Opened | null;
@@ -19,6 +19,10 @@
         onWrite: (kind: "reply" | "reply_all" | "forward") => void;
         onSetRead: (isRead: boolean) => void;
         onSetFlag: (status: FlagStatus) => void;
+        /** The mailbox's categories, to choose from. */
+        categories: Category[];
+        /** Give the message exactly these categories. */
+        onCategorise: (names: string[]) => void;
         /** Every folder, to move the message to one. */
         folders: Folder[];
         /** The standard folder the message is in, if it is in one. */
@@ -36,7 +40,7 @@
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onWrite, onSetRead, onSetFlag, folders, within, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onWrite, onSetRead, onSetFlag, categories, onCategorise, folders, within, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
     /** The message being asked about, once "Delete permanently" has been pressed once. */
     let sureOf = $state<string | null>(null);
@@ -228,9 +232,38 @@
                 {:else}
                     <button type="button" title="Insert" onclick={() => onSetFlag("flagged")}>Flag</button>
                 {/if}
+                {#if categories.length > 0}
+                    <details class="menu">
+                        <summary>Categories</summary>
+                        <ul aria-label="Categories">
+                            {#each categories as each (each.name)}
+                                {@const has = (opened.message.categories ?? []).includes(each.name)}
+                                <li>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={has}
+                                            onchange={() =>
+                                                onCategorise(has ? opened.message.categories.filter((n) => n !== each.name) : [...(opened.message.categories ?? []), each.name])}
+                                        />
+                                        <span class="dot" style:background={categoryColour(each.color)}></span>
+                                        {each.name}
+                                    </label>
+                                </li>
+                            {/each}
+                        </ul>
+                    </details>
+                {/if}
                 {#if opened.message.flag_status === "flagged"}<span class="flagged">🚩 Flagged</span>{/if}
                 {#if opened.message.flag_status === "complete"}<span class="muted">✓ Complete</span>{/if}
             </div>
+            {#if (opened.message.categories ?? []).length > 0}
+                <p class="chips" aria-label="This message's categories">
+                    {#each opened.message.categories as name (name)}
+                        <span class="chip"><span class="dot" style:background={categoryColour(categories.find((c) => c.name === name)?.color)}></span>{name}</span>
+                    {/each}
+                </p>
+            {/if}
         </header>
 
         {#if attachments.length > 0}
@@ -326,6 +359,72 @@
 
     .flagged {
         color: var(--danger);
+    }
+
+    .dot {
+        display: inline-block;
+        width: 0.65rem;
+        height: 0.65rem;
+        border-radius: 50%;
+    }
+
+    .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin: 0.5rem 0 0;
+    }
+
+    .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.1rem 0.55rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        font-size: 0.8rem;
+    }
+
+    .menu {
+        position: relative;
+    }
+
+    .menu summary {
+        list-style: none;
+        cursor: default;
+        padding: 0.2rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        background: var(--surface);
+    }
+
+    .menu summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .menu ul {
+        position: absolute;
+        z-index: 5;
+        top: 100%;
+        left: 0;
+        min-width: 12rem;
+        max-height: 16rem;
+        overflow-y: auto;
+        margin: 0.2rem 0 0;
+        padding: 0.3rem;
+        list-style: none;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        box-shadow: 0 6px 18px color-mix(in srgb, CanvasText 18%, transparent);
+    }
+
+    .menu label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.25rem 0.4rem;
+        white-space: nowrap;
     }
 
     .danger {

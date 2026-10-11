@@ -18,6 +18,8 @@ pub enum MessageEdit {
     Flag(String),
     /// To the folder with this id.
     Move(String),
+    /// These categories and no others, by name.
+    Categories(Vec<String>),
 }
 
 impl MessageEdit {
@@ -27,6 +29,7 @@ impl MessageEdit {
             Self::Read(_) => "is_read",
             Self::Flag(_) => "flag_status",
             Self::Move(_) => "folder_id",
+            Self::Categories(_) => "categories",
         }
     }
 
@@ -35,6 +38,8 @@ impl MessageEdit {
             Self::Read(read) => i64::from(*read).to_string(),
             Self::Flag(status) => status.clone(),
             Self::Move(folder) => folder.clone(),
+            // Kept as the message keeps them: a JSON array of names.
+            Self::Categories(names) => serde_json::Value::from(names.clone()).to_string(),
         }
     }
 }
@@ -47,7 +52,7 @@ pub struct Op {
     /// use it to recognise a repeat.
     pub key: String,
     pub message_id: String,
-    /// `is_read`, `flag_status` or `folder_id`.
+    /// `is_read`, `flag_status`, `folder_id` or `categories`.
     pub kind: String,
     pub value: String,
     /// How many times it has been tried. After the first, a change that is
@@ -72,6 +77,7 @@ fn column(kind: &str) -> Option<&'static str> {
         "is_read" => Some("is_read"),
         "flag_status" => Some("flag_status"),
         "folder_id" => Some("folder_id"),
+        "categories" => Some("categories"),
         _ => None,
     }
 }
@@ -359,7 +365,7 @@ pub(crate) fn keep_queued_edits(
         return Ok(());
     }
 
-    for kind in ["is_read", "flag_status", "folder_id"] {
+    for kind in ["is_read", "flag_status", "folder_id", "categories"] {
         let Some(column) = column(kind) else {
             continue;
         };

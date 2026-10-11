@@ -217,6 +217,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
 
         const mail = (core.mail ?? []).map((m) => ({ ...m }));
         const flags = new Map<string, string>();
+        const tags = new Map<string, string[]>();
         /** What each action changed, by the id that undoes it. */
         const actions = new Map<string, () => void>();
         const refused = [...(core.refused ?? [])];
@@ -266,7 +267,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             has_attachments: m.has_attachments,
             importance: "normal",
             flag_status: flags.get(m.id) ?? "notFlagged",
-            categories: [],
+            categories: tags.get(m.id) ?? [],
             focused: true,
         });
         const inFolder = (id: unknown) => mail.filter((m) => m.folder_id === id);
@@ -472,6 +473,19 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     if (was === args.flag) return null;
                     flags.set(m.id, args.flag as string);
                     return () => flags.set(m.id, was);
+                }),
+            "mail.categories.list": () => ({
+                categories: [
+                    { name: "Clients", color: "preset7" },
+                    { name: "Red category", color: "preset0" },
+                    { name: "Plain", color: "none" },
+                ],
+            }),
+            "mail.messages.set_categories": (args) =>
+                acted(args.message_ids, (m) => {
+                    const was = tags.get(m.id) ?? [];
+                    tags.set(m.id, args.categories as string[]);
+                    return () => tags.set(m.id, was);
                 }),
             "mail.messages.move": (args) => {
                 const named: Record<string, string> = { deleteditems: "deleted", sentitems: "sent", junkemail: "junk" };

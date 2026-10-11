@@ -32,6 +32,7 @@ pub struct FakeMessage {
     /// `notFlagged`, `flagged` or `complete`.
     pub flag: String,
     pub is_draft: bool,
+    pub categories: Vec<String>,
     /// `(name, address)`. Left empty, the message is to the mailbox's owner.
     pub to: Vec<(String, String)>,
     pub cc: Vec<(String, String)>,
@@ -64,6 +65,7 @@ impl FakeMessage {
             conversation: None,
             flag: "notFlagged".to_owned(),
             is_draft: false,
+            categories: Vec::new(),
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -440,7 +442,7 @@ impl Mailbox {
             "hasAttachments": m.has_attachments,
             "importance": "normal",
             "flag": { "flagStatus": m.flag },
-            "categories": [],
+            "categories": m.categories,
             "inferenceClassification": "focused",
         });
         if with_body {

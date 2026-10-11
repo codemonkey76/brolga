@@ -225,6 +225,13 @@ impl Outbox {
                 let changes = json!({ "flag": { "flagStatus": op.value } });
                 self.graph.update_message(&op.message_id, &changes).await
             }
+            "categories" => {
+                let names: serde_json::Value =
+                    serde_json::from_str(&op.value).unwrap_or_else(|_| json!([]));
+                self.graph
+                    .update_message(&op.message_id, &json!({ "categories": names }))
+                    .await
+            }
             "folder_id" => self.move_message(op).await,
             other => Err(GraphError::Decode(format!(
                 "a queued change of a kind this version does not know: {other}"

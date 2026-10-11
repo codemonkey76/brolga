@@ -1375,3 +1375,46 @@ async fn deleting_permanently_takes_a_message_from_the_server_and_from_here() {
         1
     );
 }
+
+#[tokio::test]
+async fn categories_are_listed_set_and_undone() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Quote", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+    let here = || async {
+        f.run("mail.messages.list", json!({ "folder_id": f.inbox }))
+            .await["messages"][0]["categories"]
+            .clone()
+    };
+
+    let known = f.run("mail.categories.list", json!({})).await;
+    assert_eq!(
+        known["categories"][1],
+        json!({ "name": "Clients", "color": "preset7" })
+    );
+
+    let set = f
+        .run(
+            "mail.messages.set_categories",
+            json!({ "message_ids": [id], "categories": ["Clients", "Red category"] }),
+        )
+        .await;
+    assert_eq!(here().await, json!(["Clients", "Red category"]));
+    f.sync().await;
+    assert_eq!(f.graph.categories(&id), ["Clients", "Red category"]);
+    assert_eq!(here().await, json!(["Clients", "Red category"]));
+
+    f.run("mail.undo", json!({ "undo_id": set["undo_id"] }))
+        .await;
+    assert_eq!(here().await, json!([]));
+    f.sync().await;
+    assert!(f.graph.categories(&id).is_empty());
+
+    // Out of reach, the list is as it was when last read.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    assert_eq!(f.run("mail.categories.list", json!({})).await, known);
+}
