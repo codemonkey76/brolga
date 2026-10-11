@@ -941,3 +941,51 @@ async fn a_change_the_server_refuses_is_taken_back_and_can_be_read_about() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn deleting_is_a_move_that_shows_at_once_and_can_be_undone() {
+    let f = Fixture::signed_in().await;
+    let deleted = f.graph.folder_id("deleteditems");
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Hello", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+    let f = &f;
+    let total = |folder: String| async move {
+        f.run("mail.messages.list", json!({ "folder_id": folder }))
+            .await["total"]
+            .clone()
+    };
+
+    let moved = f
+        .run(
+            "mail.messages.move",
+            json!({ "message_ids": [id], "folder_id": "deleteditems" }),
+        )
+        .await;
+    assert_eq!(moved["changed"], 1);
+    assert_eq!(total(f.inbox.clone()).await, 0);
+    assert_eq!(total(deleted.clone()).await, 1);
+
+    f.sync().await;
+    assert_eq!(f.graph.messages()[&id].0, deleted);
+    assert_eq!(total(deleted.clone()).await, 1);
+
+    f.run("mail.undo", json!({ "undo_id": moved["undo_id"] }))
+        .await;
+    assert_eq!(total(f.inbox.clone()).await, 1);
+    f.sync().await;
+    assert_eq!(f.graph.messages()[&id].0, f.inbox);
+    assert_eq!(total(f.inbox.clone()).await, 1);
+    assert_eq!(total(deleted).await, 0);
+
+    let nowhere = f
+        .registry
+        .execute(
+            "mail.messages.move",
+            json!({ "message_ids": [id], "folder_id": "no-such-folder" }),
+        )
+        .await;
+    assert!(nowhere.is_err());
+}

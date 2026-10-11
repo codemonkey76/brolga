@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use brolga_graph::{GraphClient, GraphError};
 use brolga_store::{AccountDb, Op, StoreError};
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::sync::Mutex;
 
 /// What became of the queue in one pass over it.
@@ -83,23 +83,35 @@ impl Outbox {
     }
 
     async fn send(&self, op: &Op) -> Result<(), GraphError> {
-        let Some(changes) = changes(op) else {
-            return Err(GraphError::Decode(format!(
-                "a queued change of a kind this version does not know: {}",
-                op.kind
-            )));
-        };
-
-        self.graph.update_message(&op.message_id, &changes).await
+        match op.kind.as_str() {
+            // Setting a property twice leaves it as setting it once does.
+            "is_read" => {
+                let changes = json!({ "isRead": op.value == "1" });
+                self.graph.update_message(&op.message_id, &changes).await
+            }
+            "flag_status" => {
+                let changes = json!({ "flag": { "flagStatus": op.value } });
+                self.graph.update_message(&op.message_id, &changes).await
+            }
+            "folder_id" => self.move_message(op).await,
+            other => Err(GraphError::Decode(format!(
+                "a queued change of a kind this version does not know: {other}"
+            ))),
+        }
     }
-}
 
-/// The body of the request that makes a queued change.
-fn changes(op: &Op) -> Option<Value> {
-    match op.kind.as_str() {
-        "is_read" => Some(json!({ "isRead": op.value == "1" })),
-        "flag_status" => Some(json!({ "flag": { "flagStatus": op.value } })),
-        _ => None,
+    /// A move is not safe to send twice blindly. When an earlier try may
+    /// have reached the server, the message's folder is looked at first,
+    /// and the move is sent only if it has not already been made.
+    async fn move_message(&self, op: &Op) -> Result<(), GraphError> {
+        if op.attempts > 0
+            && self.graph.message_folder(&op.message_id).await?.as_deref()
+                == Some(op.value.as_str())
+        {
+            return Ok(());
+        }
+
+        self.graph.move_message(&op.message_id, &op.value).await
     }
 }
 

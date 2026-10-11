@@ -498,9 +498,13 @@ impl AccountDb {
         }
 
         if round == Round::Finished && state.reconciling {
+            // A full pass is over: a message it did not mention is gone.
+            // One moved here on this computer, whose move the server has
+            // not had yet, was never going to be mentioned, and stays.
             delete_messages(
                 &transaction,
-                "folder_id = ?1 AND generation < ?2",
+                "folder_id = ?1 AND generation < ?2 AND id NOT IN (
+                     SELECT message_id FROM ops WHERE state = 'queued' AND kind = 'folder_id')",
                 params![folder_id, state.generation],
             )?;
         }
@@ -544,6 +548,19 @@ impl AccountDb {
             .collect::<Result<_, _>>()?;
 
         Ok(as_tree(folders))
+    }
+
+    /// A folder's id, given its id or, for a standard folder, its
+    /// well-known name.
+    pub fn folder_id(&self, folder: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .connection()
+            .query_row(
+                "SELECT id FROM folders WHERE id = ?1 OR well_known = ?1",
+                [folder],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// Pin a folder to the top of the list, or unpin it. The folder may be

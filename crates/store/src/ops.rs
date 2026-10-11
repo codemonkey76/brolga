@@ -16,6 +16,8 @@ pub enum MessageEdit {
     Read(bool),
     /// `notFlagged`, `flagged` or `complete`.
     Flag(String),
+    /// To the folder with this id.
+    Move(String),
 }
 
 impl MessageEdit {
@@ -24,6 +26,7 @@ impl MessageEdit {
         match self {
             Self::Read(_) => "is_read",
             Self::Flag(_) => "flag_status",
+            Self::Move(_) => "folder_id",
         }
     }
 
@@ -31,6 +34,7 @@ impl MessageEdit {
         match self {
             Self::Read(read) => i64::from(*read).to_string(),
             Self::Flag(status) => status.clone(),
+            Self::Move(folder) => folder.clone(),
         }
     }
 }
@@ -43,9 +47,11 @@ pub struct Op {
     /// use it to recognise a repeat.
     pub key: String,
     pub message_id: String,
-    /// `is_read` or `flag_status`.
+    /// `is_read`, `flag_status` or `folder_id`.
     pub kind: String,
     pub value: String,
+    /// How many times it has been tried. After the first, a change that is
+    /// not safe to repeat blindly is checked for before it is sent again.
     pub attempts: u32,
 }
 
@@ -65,6 +71,7 @@ fn column(kind: &str) -> Option<&'static str> {
     match kind {
         "is_read" => Some("is_read"),
         "flag_status" => Some("flag_status"),
+        "folder_id" => Some("folder_id"),
         _ => None,
     }
 }
@@ -304,6 +311,23 @@ fn set(
     message_id: &str,
     value: &str,
 ) -> Result<(), StoreError> {
+    if column == "folder_id" {
+        // The message leaves one folder's counts and joins the other's.
+        for (folder, by) in [
+            ("(SELECT folder_id FROM messages WHERE id = ?1)", -1),
+            ("?2", 1),
+        ] {
+            transaction.execute(
+                &format!(
+                    "UPDATE folders SET
+                         total = max(0, total + {by}),
+                         unread = max(0, unread + {by} * (SELECT NOT is_read FROM messages WHERE id = ?1))
+                     WHERE id = {folder} AND EXISTS (SELECT 1 FROM messages WHERE id = ?1 AND folder_id <> ?2)"
+                ),
+                params![message_id, value],
+            )?;
+        }
+    }
     if column == "is_read" {
         transaction.execute(
             "UPDATE folders SET unread = max(0, unread + CASE WHEN ?2 = '1' THEN -1 ELSE 1 END)
@@ -335,7 +359,7 @@ pub(crate) fn keep_queued_edits(
         return Ok(());
     }
 
-    for kind in ["is_read", "flag_status"] {
+    for kind in ["is_read", "flag_status", "folder_id"] {
         let Some(column) = column(kind) else {
             continue;
         };
@@ -437,6 +461,56 @@ mod tests {
 
         db.undo("a", "b").unwrap();
         assert_eq!(unread(), 2);
+    }
+
+    #[test]
+    fn a_move_changes_both_folders_counts_and_is_not_lost_to_a_sync_of_either() {
+        let db = db();
+        let folder = |id: &str, total: i64| crate::FolderChange {
+            id: id.to_owned(),
+            name: Some(id.to_owned()),
+            unread: Some(total),
+            total: Some(total),
+            ..crate::FolderChange::default()
+        };
+        db.apply_folders(
+            &[folder("archive", 0), folder("inbox", 2)],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        let counts = || -> Vec<(String, i64, i64)> {
+            db.folders()
+                .unwrap()
+                .into_iter()
+                .map(|f| (f.id, f.total, f.unread))
+                .collect()
+        };
+
+        db.queue_edit("a", &ids(&["1"]), &MessageEdit::Move("archive".to_owned()))
+            .unwrap();
+        assert_eq!(db.message("1").unwrap().unwrap().folder_id, "archive");
+        assert_eq!(
+            counts(),
+            [("archive".to_owned(), 1, 1), ("inbox".to_owned(), 1, 1)]
+        );
+
+        // The server still has it in the inbox, and a full pass over the
+        // archive has never heard of it. Neither may lose it.
+        db.apply_messages("inbox", &[server("1", false)], &[], "next", Round::Finished)
+            .unwrap();
+        db.restart_messages_sync("archive").unwrap();
+        db.apply_messages("archive", &[], &[], "next", Round::Finished)
+            .unwrap();
+        assert_eq!(db.message("1").unwrap().unwrap().folder_id, "archive");
+
+        db.undo("a", "b").unwrap();
+        assert_eq!(db.message("1").unwrap().unwrap().folder_id, "inbox");
+        assert_eq!(
+            counts(),
+            [("archive".to_owned(), 0, 0), ("inbox".to_owned(), 2, 2)]
+        );
     }
 
     #[test]

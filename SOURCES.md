@@ -27,6 +27,7 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Get attachment | https://learn.microsoft.com/graph/api/attachment-get | `…/attachments/{id}` for a picture within a body, with its `contentId` and `contentBytes`; `…/attachments/{id}/$value` for the raw contents; MIME for an attached message, event or contact; 405 for a reference attachment |
 | fileAttachment resource type | https://learn.microsoft.com/graph/api/resources/fileattachment | Attachment properties, and `size` being in bytes |
 | Update message | https://learn.microsoft.com/graph/api/message-update | `PATCH /me/messages/{id}` needs `Mail.ReadWrite`; `isRead`, `flag` and `categories` may be changed on any message |
+| message: move | https://learn.microsoft.com/graph/api/message-move | `POST /me/messages/{id}/move` with `destinationId` as a folder id or well-known name; 201 and the message. Deleting and archiving are moves |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
 
 ## Microsoft identity platform (Microsoft Learn)

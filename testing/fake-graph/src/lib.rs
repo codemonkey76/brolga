@@ -46,6 +46,10 @@ struct Inner {
     /// state of the generator that decides which.
     chaos: Option<(u32, u64)>,
     mailbox: mailbox::Mailbox,
+    /// How many moves have been made.
+    moves: u32,
+    /// Make the next move and then answer as if it had failed.
+    lose_next_move_answer: bool,
     /// Messages every change to which is refused.
     refused_updates: std::collections::HashSet<String>,
     /// Where this server is, to write links to itself.
@@ -75,6 +79,10 @@ impl FakeGraph {
             .route(
                 "/v1.0/me/messages/{message}",
                 get(message).patch(update_message),
+            )
+            .route(
+                "/v1.0/me/messages/{message}/move",
+                axum::routing::post(move_message),
             )
             .route("/v1.0/me/messages/{message}/attachments", get(attachments))
             .route(
@@ -147,6 +155,17 @@ impl FakeGraph {
 
     pub fn remove_folder(&self, id: &str) {
         lock(&self.shared).mailbox.remove_folder(id);
+    }
+
+    /// The next move is made, but the answer to it is an error: the case
+    /// of a request that reached the server and an answer that did not come back.
+    pub fn lose_next_move_answer(&self) {
+        lock(&self.shared).lose_next_move_answer = true;
+    }
+
+    /// How many moves the server has made.
+    pub fn moves(&self) -> u32 {
+        lock(&self.shared).moves
     }
 
     /// From now on refuse, for good, every change to this message.
@@ -494,6 +513,49 @@ async fn update_message(
 
     match inner.mailbox.message(&message) {
         Some(updated) => axum::Json(updated).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// "message: move" (SOURCES.md): to a folder by id or well-known name,
+/// answered with 201 and the message. The id does not change, as with
+/// immutable ids it does not.
+async fn move_message(
+    State(shared): State<Shared>,
+    Path(message): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    if inner.mailbox.message(&message).is_none() {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        );
+    }
+    if inner.refused_updates.contains(&message) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "fakeGraphRefused",
+            "This message cannot be changed.",
+        );
+    }
+    let destination = body["destinationId"].as_str().unwrap_or_default();
+    let Some(folder) = inner.mailbox.folder_id(destination) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such folder.",
+        );
+    };
+    inner.mailbox.move_message(&message, &folder);
+    inner.moves += 1;
+    let lose_answer = std::mem::take(&mut inner.lose_next_move_answer);
+
+    match inner.mailbox.message(&message) {
+        // The move is made, and the caller never hears of it.
+        Some(_) if lose_answer => StatusCode::BAD_GATEWAY.into_response(),
+        Some(moved) => (StatusCode::CREATED, axum::Json(moved)).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

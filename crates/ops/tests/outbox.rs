@@ -220,3 +220,40 @@ async fn a_change_to_a_message_since_deleted_is_let_go() {
     );
     assert!(f.db.outbox().unwrap().1.is_empty());
 }
+
+#[tokio::test]
+async fn a_move_reaches_the_server() {
+    let f = fixture().await;
+    let archive = f.graph.folder_id("archive");
+    f.db.queue_edit("a", &f.ids[..1], &MessageEdit::Move(archive.clone()))
+        .unwrap();
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!(drained.sent, 1);
+    assert_eq!(f.graph.messages()[&f.ids[0]].0, archive);
+}
+
+#[tokio::test]
+async fn a_move_whose_answer_was_lost_is_not_made_twice() {
+    let f = fixture().await;
+    let archive = f.graph.folder_id("archive");
+    f.db.queue_edit("a", &f.ids[..1], &MessageEdit::Move(archive.clone()))
+        .unwrap();
+    f.graph.lose_next_move_answer();
+
+    let first = f.outbox.drain().await.unwrap();
+    assert_eq!(
+        first,
+        Drained {
+            sent: 0,
+            waiting: 1,
+            refused: 0
+        }
+    );
+
+    let second = f.outbox.drain().await.unwrap();
+    assert_eq!(second.sent, 1);
+    assert_eq!(f.graph.moves(), 1, "the move was sent again");
+    assert_eq!(f.graph.messages()[&f.ids[0]].0, archive);
+}

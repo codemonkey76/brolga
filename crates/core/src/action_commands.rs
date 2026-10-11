@@ -32,6 +32,13 @@ struct SetFlag {
 }
 
 #[derive(Deserialize)]
+struct Move {
+    account_id: Option<String>,
+    message_ids: Vec<String>,
+    folder_id: String,
+}
+
+#[derive(Deserialize)]
 struct Undo {
     account_id: Option<String>,
     undo_id: String,
@@ -83,6 +90,28 @@ async fn edit(
     Ok(json!({ "changed": changed, "undo_id": action }))
 }
 
+async fn move_messages(mailboxes: Arc<Mailboxes>, args: Move) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let folder = mailbox
+        .db
+        .folder_id(&args.folder_id)
+        .map_err(failed)?
+        .ok_or_else(|| {
+            failed(format!(
+                "There is no folder `{}` in this account.",
+                args.folder_id
+            ))
+        })?;
+
+    edit(
+        mailboxes,
+        args.account_id,
+        args.message_ids,
+        MessageEdit::Move(folder),
+    )
+    .await
+}
+
 async fn undo(mailboxes: Arc<Mailboxes>, args: Undo) -> Result<Value, CommandError> {
     let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
     let action = mailbox.db.new_action().map_err(failed)?;
@@ -108,6 +137,7 @@ async fn outbox(mailboxes: Arc<Mailboxes>) -> Result<Value, CommandError> {
                     "change": match op.kind.as_str() {
                         "is_read" => "read or unread",
                         "flag_status" => "flag",
+                        "folder_id" => "folder",
                         other => other,
                     },
                     "error": op.error,
@@ -236,6 +266,34 @@ pub(crate) fn register(
         handler(&mailboxes, |mailboxes, args: SetFlag| {
             edit(mailboxes, args.account_id, args.message_ids, MessageEdit::Flag(args.flag))
         }),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.messages.move".to_owned(),
+            title: "Move to a folder".to_owned(),
+            description: format!(
+                "Move messages to another folder, named by its id from mail.folders.list or, for a standard folder, by its well-known name. \
+                 Deleting is a move to `deleteditems`, archiving a move to `archive`, and marking as junk a move to `junkemail`; \
+                 nothing is destroyed, and mail.undo moves the messages back. {HOW}"
+            ),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "message_ids": message_ids(),
+                    "folder_id": { "type": "string", "description": "A folder's id, or inbox, deleteditems, archive, junkemail and so on." }
+                },
+                "required": ["message_ids", "folder_id"],
+                "additionalProperties": false
+            }),
+            result_schema: edited(),
+            examples: vec![json!({ "message_ids": ["message-000008"], "folder_id": "archive" })],
+        },
+        handler(&mailboxes, move_messages),
     )?;
 
     registry.register(

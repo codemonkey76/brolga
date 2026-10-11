@@ -183,25 +183,59 @@ impl GraphClient {
         changes: &serde_json::Value,
     ) -> Result<(), GraphError> {
         let url = format!("{}/me/messages/{message_id}", self.base);
-        self.send(reqwest::Method::PATCH, &url, None, Some(changes))
+        self.send(reqwest::Method::PATCH, &url, None, Some(changes), true)
             .await?;
 
         Ok(())
     }
 
-    /// GET a URL. A GET changes nothing, so it is always safe to send again.
-    async fn get(&self, url: &str, page_size: Option<u32>) -> Result<Vec<u8>, GraphError> {
-        self.send(reqwest::Method::GET, url, page_size, None).await
+    /// Move a message to another folder, named by its id or by a well-known
+    /// name such as `deleteditems` ("message: move", SOURCES.md).
+    ///
+    /// A move is not safe to repeat blindly: if the answer is lost, the move
+    /// may or may not have happened. So a request that gets no answer is not
+    /// sent again here; the caller finds out with `message_folder` first.
+    pub async fn move_message(
+        &self,
+        message_id: &str,
+        destination: &str,
+    ) -> Result<(), GraphError> {
+        let url = format!("{}/me/messages/{message_id}/move", self.base);
+        let body = serde_json::json!({ "destinationId": destination });
+        self.send(reqwest::Method::POST, &url, None, Some(&body), false)
+            .await?;
+
+        Ok(())
     }
 
-    /// Send a request, waiting and trying again while Graph says to. Only
-    /// for requests that are safe to repeat.
+    /// The id of the folder a message is in now.
+    pub async fn message_folder(&self, message_id: &str) -> Result<Option<String>, GraphError> {
+        let url = format!(
+            "{}/me/messages/{message_id}?$select=id,parentFolderId",
+            self.base
+        );
+        let message: Message = decode(&self.get(&url, None).await?)?;
+
+        Ok(message.parent_folder_id)
+    }
+
+    /// GET a URL. A GET changes nothing, so it is always safe to send again.
+    async fn get(&self, url: &str, page_size: Option<u32>) -> Result<Vec<u8>, GraphError> {
+        self.send(reqwest::Method::GET, url, page_size, None, true)
+            .await
+    }
+
+    /// Send a request, waiting and trying again while Graph says to wait.
+    /// `repeatable` says whether it may also be sent again when no answer
+    /// came at all, which is only so for a request that leaves things the
+    /// same however many times it arrives.
     async fn send(
         &self,
         method: reqwest::Method,
         url: &str,
         page_size: Option<u32>,
         body: Option<&serde_json::Value>,
+        repeatable: bool,
     ) -> Result<Vec<u8>, GraphError> {
         let url = Url::parse(url).map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
         // Closing the semaphore is not something this client ever does.
@@ -234,7 +268,7 @@ impl GraphClient {
             let last_try = attempt + 1 >= self.retry.attempts;
             let response = match sent {
                 Ok(response) => response,
-                Err(error) if last_try => return Err(GraphError::Network(error)),
+                Err(error) if last_try || !repeatable => return Err(GraphError::Network(error)),
                 Err(_) => {
                     tokio::time::sleep(self.retry.wait(attempt, None)).await;
                     attempt += 1;
@@ -251,17 +285,17 @@ impl GraphClient {
                     .map_err(GraphError::Network);
             }
 
-            if matches!(
-                status,
-                StatusCode::TOO_MANY_REQUESTS
-                    | StatusCode::SERVICE_UNAVAILABLE
-                    | StatusCode::GATEWAY_TIMEOUT
-            ) {
-                if last_try {
-                    return Err(GraphError::Busy {
-                        status: status.as_u16(),
-                    });
-                }
+            // Throttled: the request was turned away before anything was
+            // done, so any request may be sent again. Unavailable or timed
+            // out at a gateway: probably not done, but not certainly, so
+            // only a repeatable request is sent again.
+            let wait = status == StatusCode::TOO_MANY_REQUESTS
+                || (repeatable
+                    && matches!(
+                        status,
+                        StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+                    ));
+            if wait && !last_try {
                 let retry_after = response
                     .headers()
                     .get(RETRY_AFTER)
@@ -270,6 +304,14 @@ impl GraphClient {
                 tokio::time::sleep(self.retry.wait(attempt, retry_after)).await;
                 attempt += 1;
                 continue;
+            }
+            // Any failure on the server's side is one that may pass, and
+            // says nothing certain about whether the request was carried
+            // out. Only a 4xx is the server's considered no.
+            if wait || status.is_server_error() {
+                return Err(GraphError::Busy {
+                    status: status.as_u16(),
+                });
             }
 
             return Err(refusal(response).await);
