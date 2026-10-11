@@ -101,7 +101,7 @@ export interface Meeting {
 export interface Opened {
     message: Message;
     meeting?: Meeting | null;
-    body: { format: "html" | "text"; content: string; blocked_remote_content: number };
+    body: { format: "html" | "text"; content: string; /** The message's own style sheets, made safe. */ styles?: string; blocked_remote_content: number };
     /** The sender's remote pictures are shown without asking. */
     sender_trusted: boolean;
     /** Remote pictures were fetched for this. */

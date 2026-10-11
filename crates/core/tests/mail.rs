@@ -1502,7 +1502,8 @@ async fn a_draft_written_in_another_mail_program_is_taken_up_changed_and_sent() 
     assert_eq!(draft["format"], "html");
     let body = draft["body"].as_str().unwrap();
     assert!(
-        body.contains("<b>Jo</b>") && !body.contains("script") && !body.contains("style"),
+        // How it looked is kept; what could run is not.
+        body.contains("<b>Jo</b>") && body.contains("color:red") && !body.contains("script"),
         "{body}"
     );
 

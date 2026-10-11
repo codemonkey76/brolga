@@ -55,8 +55,12 @@ On macOS, Cmd takes the place of Ctrl.
 ## What Brolga does to keep you safe
 
 - **Remote pictures stay out** until you ask for them, so a sender cannot
-  tell that you opened their message. You can let a sender's pictures load
-  every time.
+  tell that you opened their message. **Show blocked content** downloads
+  them for that message once; **Trust sender** downloads them for every
+  message from that address.
+- **A message looks as it was laid out**, with its own colours, type and
+  tables, on a white page. What is taken out is anything that could fetch
+  from the internet or place one thing over another.
 - **Nothing in a message runs.** Scripts, forms and frames are taken out, and
   a message's own styling cannot draw over the window.
 - **Links open in your browser**, never inside Brolga, and a link that says

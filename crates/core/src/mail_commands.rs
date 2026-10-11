@@ -649,7 +649,7 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
             } else {
                 content
             };
-            json!({ "format": "html", "content": content, "blocked_remote_content": clean.blocked_remote + missing })
+            json!({ "format": "html", "content": content, "styles": clean.styles, "blocked_remote_content": clean.blocked_remote + missing })
         }
         _ => json!({ "format": "text", "content": as_text(&body), "blocked_remote_content": 0 }),
     };
@@ -1335,6 +1335,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                         "properties": {
                             "format": { "type": "string", "enum": ["text", "html"] },
                             "content": { "type": "string" },
+                            "styles": { "type": "string", "description": "The message's own style sheets, made safe, as CSS. For showing the message in a frame of its own: put anywhere else it would style more than the message." },
                             "blocked_remote_content": { "type": "integer" }
                         },
                         "required": ["format", "content", "blocked_remote_content"]

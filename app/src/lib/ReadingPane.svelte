@@ -116,14 +116,19 @@
             return address;
         });
 
+        // A message that says how it looks was written to be read on a
+        // white page, and is given one. One that says nothing is shown in
+        // the window's own colours, light or dark.
+        const styles = (opened.body.styles ?? "").replace(/</g, "");
+        const styled = styles !== "" || body.querySelector("[style], [bgcolor], font[color]") !== null;
         return `<!doctype html><html><head><meta charset="utf-8"><style>
-            :root { color-scheme: light dark; }
-            body { margin: 16px; font: 14px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; }
+            :root { color-scheme: ${styled ? "light" : "light dark"}; }
+            body { margin: 16px; font: 14px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; ${styled ? "background: #fff; color: #000;" : ""} }
             img { max-width: 100%; height: auto; }
             table { max-width: 100%; }
             pre { white-space: pre-wrap; font: inherit; }
             blockquote { margin: 0 0 0 4px; padding-left: 12px; border-left: 3px solid #8886; }
-            </style></head><body>${body.innerHTML}</body></html>`;
+            </style><style>${styles}</style></head><body>${body.innerHTML}</body></html>`;
     });
 
     // A question about one message is not carried over to the next.
@@ -366,12 +371,14 @@
                 {#if imagesShown}
                     {opened.body.blocked_remote_content === 1 ? "1 picture" : `${opened.body.blocked_remote_content} pictures`} could not be fetched.
                 {:else}
-                    {opened.body.blocked_remote_content === 1 ? "1 remote picture was" : `${opened.body.blocked_remote_content} remote pictures were`}
-                    not loaded, so the sender cannot tell you opened this.
-                    <button type="button" onclick={onShowImages}>Show pictures</button>
+                    <span>
+                        To protect your privacy, {opened.body.blocked_remote_content === 1 ? "1 picture" : `${opened.body.blocked_remote_content} pictures`} in this message
+                        {opened.body.blocked_remote_content === 1 ? "was" : "were"} not downloaded.
+                    </span>
+                    <button type="button" title="Download this message's pictures, this once" onclick={onShowImages}>Show blocked content</button>
                     {#if opened.message.from.address}
                         {@const address = opened.message.from.address}
-                        <button type="button" onclick={() => onTrust(address, true)}>Always show from {address}</button>
+                        <button type="button" title="Always download pictures in messages from {address}" onclick={() => onTrust(address, true)}>Trust sender</button>
                     {/if}
                 {/if}
             </p>
@@ -379,8 +386,8 @@
         {#if opened.sender_trusted && opened.message.from.address}
             {@const address = opened.message.from.address}
             <p class="trusted muted">
-                Pictures from {address} are always shown.
-                <button type="button" onclick={() => onTrust(address, false)}>Stop</button>
+                {address} is a trusted sender: pictures in their messages are always downloaded.
+                <button type="button" onclick={() => onTrust(address, false)}>Stop trusting</button>
             </p>
         {/if}
 

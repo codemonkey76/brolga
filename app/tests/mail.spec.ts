@@ -50,11 +50,11 @@ test("remote pictures stay out until asked for, and then come from the core", as
     await messages(page).getByRole("option").nth(1).click();
     const pane = page.getByRole("region", { name: "Message" });
 
-    await expect(pane.getByRole("status")).toContainText("3 remote pictures were not loaded");
+    await expect(pane.getByRole("status")).toContainText("To protect your privacy, 3 pictures in this message were not downloaded.");
     await expect(body(page).locator("img")).toHaveCount(0);
     await picture(page, "remote-pictures-blocked");
 
-    await pane.getByRole("button", { name: "Show pictures" }).click();
+    await pane.getByRole("button", { name: "Show blocked content" }).click();
 
     await expect(body(page).locator("img")).toHaveCount(1);
     // What is shown is the picture itself, not an address for the view to fetch.
@@ -279,6 +279,32 @@ test("a file that can run is asked about before it is saved, and its ending is a
     await expect.poll(saves).toBe(1);
 });
 
+test("a message is shown as it was laid out, on a white page, and a plain one in the window's colours", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    const report = {
+        ...inbox[0],
+        id: "report",
+        subject: "Customer Balances",
+        styles: ".wrapper{max-width:900px;margin:32px auto;background:#fff}\n.header{background:#1e1b4b;padding:24px 40px}\n.header h1{color:#fff}\nthead th.r{text-align:right}\ntbody td.r{text-align:right}\n",
+        body: '<div class="wrapper"><div class="header"><h1>Customer Balances</h1></div><table><thead><tr><th>Customer</th><th class="r">Total</th></tr></thead><tbody><tr><td>CarCoop Pty Ltd</td><td class="r" style="font-weight:700">$6,225.08</td></tr></tbody></table></div>',
+    };
+    await withCore(page, { accounts: [robin], mail: [report, inbox[2]] });
+
+    await messages(page).getByRole("option").first().click();
+    const look = (selector: string, what: string) => body(page).locator(selector).first().evaluate((node, what) => getComputedStyle(node).getPropertyValue(what), what);
+    await expect(body(page).getByRole("heading", { name: "Customer Balances" })).toBeVisible();
+    expect(await look(".header", "background-color")).toBe("rgb(30, 27, 75)");
+    expect(await look("h1", "color")).toBe("rgb(255, 255, 255)");
+    expect(await look("td.r", "text-align")).toBe("right");
+    expect(await look("td.r", "font-weight")).toBe("700");
+    expect(await look("body", "background-color")).toBe("rgb(255, 255, 255)");
+    await picture(page, "styled-message");
+
+    // One that says nothing of how it looks is dark where the desktop is.
+    await messages(page).getByRole("option").nth(1).click();
+    await expect(body(page).locator("body")).not.toHaveCSS("background-color", "rgb(255, 255, 255)");
+});
+
 test("a sync that fails says why and leaves the mail on screen", async ({ page }) => {
     const why = "robin@example.test needs to sign in again. Your sign-in has expired or was revoked.";
     await withCore(page, { accounts: [robin], mail: inbox, syncFails: why });
@@ -422,10 +448,10 @@ test("a sender can be trusted for pictures, and untrusted again", async ({ page 
 
     await messages(page).getByRole("option").nth(1).click();
     await expect(body(page).locator("img")).toHaveCount(0);
-    await pane.getByRole("button", { name: "Always show from northwind.news@example.test" }).click();
+    await pane.getByRole("button", { name: "Trust sender" }).click();
 
     await expect(body(page).locator("img")).toHaveCount(1);
-    await expect(pane.getByText("are always shown")).toBeVisible();
+    await expect(pane.getByText("is a trusted sender")).toBeVisible();
 
     // It holds the next time the message is opened, with nothing to click.
     await messages(page).getByRole("option").first().click();
@@ -433,9 +459,9 @@ test("a sender can be trusted for pictures, and untrusted again", async ({ page 
     await messages(page).getByRole("option").nth(1).click();
     await expect(body(page).locator("img")).toHaveCount(1);
 
-    await pane.getByRole("button", { name: "Stop" }).click();
+    await pane.getByRole("button", { name: "Stop trusting" }).click();
     await expect(body(page).locator("img")).toHaveCount(0);
-    await expect(pane.getByRole("button", { name: "Show pictures" })).toBeVisible();
+    await expect(pane.getByRole("button", { name: "Show blocked content" })).toBeVisible();
 });
 
 test("a message can be read as plain text, with no frame at all", async ({ page }) => {

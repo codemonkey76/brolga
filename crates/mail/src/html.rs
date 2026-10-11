@@ -27,6 +27,10 @@ pub struct Sanitised {
     /// How many remote images were taken out. More than none means the
     /// message has something to offer to show.
     pub blocked_remote: u32,
+    /// The message's own style sheets, made safe: for the frame a message
+    /// is read in and nowhere else. It is CSS, never HTML, and must not be
+    /// put anywhere it would style more than the message.
+    pub styles: String,
 }
 
 /// Make a message's HTML safe to show.
@@ -34,9 +38,11 @@ pub struct Sanitised {
 /// This is an allowlist: only the tags and attributes named here survive,
 /// so anything not thought of is removed, not let through. Scripts, event
 /// handlers, forms, frames, objects, embeds and meta refreshes all go, with
-/// their contents where the contents are code. Styling goes too, both
-/// `<style>` and `style=`, because CSS can fetch from the internet and can
-/// draw over the rest of the window; messages are shown plainer for it.
+/// their contents where the contents are code. A message keeps how it
+/// looks where that is said on the element itself, in `style=`, and is
+/// about that element alone: colours, type, edges and size. `<style>`
+/// sheets go, and so does anything in a `style=` that could fetch from the
+/// internet or put one thing over another.
 /// Links keep only web and mail addresses.
 pub fn sanitise_html(html: &str, remote: RemoteContent) -> Sanitised {
     if html.len() > MAX_HTML_BYTES {
@@ -45,6 +51,7 @@ pub fn sanitise_html(html: &str, remote: RemoteContent) -> Sanitised {
                 &html[..floor_boundary(html, MAX_HTML_BYTES)],
             )),
             blocked_remote: 0,
+            styles: String::new(),
         };
     }
 
@@ -54,6 +61,7 @@ pub fn sanitise_html(html: &str, remote: RemoteContent) -> Sanitised {
         .attribute_filter(move |element, attribute, value| {
             match (element, attribute) {
                 ("img", "src") => image_source(value, remote, &counter),
+                (_, "style") => safe_style(value).map(Cow::Owned),
                 // Anything else that holds an address may hold a web or mail
                 // address and nothing more: no `data:`, nothing relative.
                 (_, "href" | "src" | "cite") => {
@@ -72,6 +80,7 @@ pub fn sanitise_html(html: &str, remote: RemoteContent) -> Sanitised {
     Sanitised {
         html: clean,
         blocked_remote: blocked.load(Ordering::Relaxed),
+        styles: safe_sheets(html),
     }
 }
 
@@ -118,6 +127,302 @@ fn image_source<'a>(
     }
 
     None
+}
+
+/// What a message may say about how it looks. Each is about the element it
+/// is on: its colours, its type, its edges and its size. Nothing here places
+/// an element somewhere else on the page (`position`, `float`, `transform`,
+/// `z-index`), hides it from view while leaving it there, or fetches
+/// anything.
+const STYLE_PROPERTIES: &[&str] = &[
+    "background",
+    "background-color",
+    "border",
+    "border-bottom",
+    "border-bottom-color",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
+    "border-bottom-style",
+    "border-bottom-width",
+    "border-collapse",
+    "border-color",
+    "border-left",
+    "border-left-color",
+    "border-left-style",
+    "border-left-width",
+    "border-radius",
+    "border-right",
+    "border-right-color",
+    "border-right-style",
+    "border-right-width",
+    "border-spacing",
+    "border-style",
+    "border-top",
+    "border-top-color",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-top-style",
+    "border-top-width",
+    "border-width",
+    "box-shadow",
+    "box-sizing",
+    "color",
+    "direction",
+    "display",
+    "font",
+    "font-family",
+    "font-size",
+    "font-style",
+    "font-variant",
+    "font-variant-numeric",
+    "font-weight",
+    "height",
+    "letter-spacing",
+    "line-height",
+    "list-style",
+    "list-style-type",
+    "margin",
+    "margin-bottom",
+    "margin-left",
+    "margin-right",
+    "margin-top",
+    "max-height",
+    "max-width",
+    "min-height",
+    "min-width",
+    "opacity",
+    "overflow",
+    "padding",
+    "padding-bottom",
+    "padding-left",
+    "padding-right",
+    "padding-top",
+    "table-layout",
+    "text-align",
+    "text-decoration",
+    "text-indent",
+    "text-transform",
+    "vertical-align",
+    "white-space",
+    "width",
+    "word-break",
+    "word-spacing",
+    "overflow-wrap",
+    "word-wrap",
+];
+
+/// The most of a `style` that is read, and the most declarations kept.
+const MAX_STYLE_BYTES: usize = 4096;
+const MAX_DECLARATIONS: usize = 60;
+
+/// The declarations of a `style` attribute that are safe to keep, or
+/// nothing if none are.
+///
+/// A declaration stays only if its property is one of [`STYLE_PROPERTIES`]
+/// and its value is plain: the only functions are colours, so there is no
+/// `url()` to fetch with and no `expression()` or `var()` to hide one in;
+/// there are no escapes, which is how a banned word is spelt past a filter;
+/// and nothing is pulled off the page with a negative margin or indent.
+fn safe_style(style: &str) -> Option<String> {
+    let style = &style[..floor_boundary(style, MAX_STYLE_BYTES)];
+    let kept: Vec<String> = style
+        .split(';')
+        .filter_map(|declaration| {
+            let (property, value) = declaration.split_once(':')?;
+            let property = property.trim().to_ascii_lowercase();
+            let value = value.trim().trim_end_matches("!important").trim();
+            (STYLE_PROPERTIES.contains(&property.as_str()) && plain_value(&property, value))
+                .then(|| format!("{property}:{value}"))
+        })
+        .take(MAX_DECLARATIONS)
+        .collect();
+
+    (!kept.is_empty()).then(|| kept.join(";"))
+}
+
+fn plain_value(property: &str, value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if value.is_empty()
+        || value.len() > 300
+        || lower
+            .chars()
+            .any(|c| c.is_control() || "\\<>{}@!".contains(c))
+        || lower.contains("/*")
+    {
+        return false;
+    }
+    // Every function named is a colour, and is closed.
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find('(') {
+        let name = rest[..at]
+            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .next()
+            .unwrap_or_default();
+        let Some(close) = rest[at..].find(')') else {
+            return false;
+        };
+        let inside = &rest[at + 1..at + close];
+        if !["rgb", "rgba", "hsl", "hsla"].contains(&name)
+            || !inside
+                .chars()
+                .all(|c| c.is_ascii_digit() || " ,.%/".contains(c))
+        {
+            return false;
+        }
+        rest = &rest[at + close + 1..];
+    }
+    if rest.contains(')') {
+        return false;
+    }
+    // Quotes are for the names of typefaces and nowhere else.
+    if (lower.contains('"') || lower.contains('\'')) && !property.starts_with("font") {
+        return false;
+    }
+    // Nothing is moved off the page, or shown and yet not there to see.
+    if (property.starts_with("margin") || property == "text-indent") && lower.contains('-') {
+        return false;
+    }
+    if property == "overflow" && !["visible", "hidden", "auto"].contains(&lower.as_str()) {
+        return false;
+    }
+    if property == "display"
+        && ![
+            "block",
+            "inline",
+            "inline-block",
+            "table",
+            "table-row",
+            "table-cell",
+            "none",
+        ]
+        .contains(&lower.as_str())
+    {
+        return false;
+    }
+
+    true
+}
+
+/// The most style sheet read from one message, and the most rules kept.
+const MAX_SHEET_BYTES: usize = 256 * 1024;
+const MAX_RULES: usize = 2000;
+
+/// The rules of a message's `<style>` sheets that are safe to keep, written
+/// out afresh. A rule keeps the declarations [`safe_style`] would keep on an
+/// element. `@media` blocks are read into; every other `@` rule goes, which
+/// is `@import` and `@font-face` and whatever else can fetch.
+fn safe_sheets(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut css = String::new();
+    let mut from = 0;
+    while let Some(open) = lower[from..].find("<style") {
+        let Some(starts) = lower[from + open..].find('>') else {
+            break;
+        };
+        let start = from + open + starts + 1;
+        let end = lower[start..]
+            .find("</style")
+            .map_or(html.len(), |at| start + at);
+        if css.len() + (end - start) > MAX_SHEET_BYTES {
+            break;
+        }
+        css.push_str(&html[start..end]);
+        css.push('\n');
+        from = end;
+    }
+
+    let mut out = String::new();
+    let mut rules = 0;
+    rules_of(&without_comments(&css), &mut out, &mut rules, 0);
+
+    out
+}
+
+fn without_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(at) = rest.find("/*") {
+        out.push_str(&rest[..at]);
+        out.push(' ');
+        rest = rest[at + 2..]
+            .find("*/")
+            .map_or("", |end| &rest[at + 2 + end + 2..]);
+    }
+    out.push_str(rest);
+    // Sheets were once wrapped in an HTML comment, for browsers long gone.
+    out.replace("<!--", " ").replace("-->", " ")
+}
+
+/// The end of the block opening at `open`, which is a `{`.
+fn block_end(css: &str, open: usize) -> usize {
+    let mut depth = 0usize;
+    for (at, c) in css[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return open + at;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    css.len()
+}
+
+fn plain_selector(selector: &str) -> bool {
+    !selector.is_empty()
+        && selector.len() <= 500
+        && selector.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || c.is_ascii_whitespace()
+                || "_-.,#>+~*:()[]=\"'^$|".contains(c)
+        })
+}
+
+fn rules_of(css: &str, out: &mut String, rules: &mut usize, depth: usize) {
+    let mut at = 0;
+    while at < css.len() && *rules < MAX_RULES {
+        let rest = &css[at..];
+        let Some(open) = rest.find('{') else {
+            break;
+        };
+        // `@import "x";` and the like: a statement with no block.
+        if let Some(stop) = rest.find(';').filter(|stop| *stop < open)
+            && rest.trim_start().starts_with('@')
+        {
+            at += stop + 1;
+            continue;
+        }
+        let prelude = rest[..open].trim();
+        let prelude = prelude.rsplit(['}', ';']).next().unwrap_or(prelude).trim();
+        let end = block_end(css, at + open);
+        let inside = &css[(at + open + 1).min(end)..end];
+        at = (end + 1).min(css.len());
+
+        if let Some(query) = prelude.strip_prefix("@media") {
+            let plain = query.len() <= 300
+                && query.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || c.is_ascii_whitespace() || "-:(),.".contains(c)
+                });
+            if plain && depth < 2 {
+                let mut within = String::new();
+                rules_of(inside, &mut within, rules, depth + 1);
+                if !within.is_empty() {
+                    out.push_str(&format!("@media {}{{{within}}}\n", query.trim()));
+                }
+            }
+        } else if !prelude.starts_with('@')
+            && !inside.contains('{')
+            && plain_selector(prelude)
+            && let Some(kept) = safe_style(inside)
+        {
+            *rules += 1;
+            out.push_str(&format!("{prelude}{{{kept}}}\n"));
+        }
+    }
 }
 
 fn builder() -> Builder<'static> {
@@ -185,7 +490,7 @@ fn builder() -> Builder<'static> {
             ]
             .into(),
         )
-        .generic_attributes(["dir", "lang", "title"].into())
+        .generic_attributes(["dir", "lang", "title", "style", "class"].into())
         .tag_attributes(
             [
                 ("a", ["href"].into()),
@@ -356,6 +661,147 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_message_keeps_how_it_looks_and_nothing_that_fetches_or_moves() {
+        let shown = |style: &str| {
+            let html = format!(r#"<td style="{style}">x</td>"#);
+            sanitise_html(
+                &format!("<table><tr>{html}</tr></table>"),
+                RemoteContent::Blocked,
+            )
+            .html
+        };
+
+        let kept = shown(
+            "padding: 12px 10px; text-align:right; color:#e5e7eb; border-bottom:1px solid #374151; font-family:'Segoe UI', Arial, sans-serif; background-color: rgb(55, 48, 107) !important",
+        );
+        for each in [
+            "padding:12px 10px",
+            "text-align:right",
+            "color:#e5e7eb",
+            "border-bottom:1px solid #374151",
+            "font-family:'Segoe UI', Arial, sans-serif",
+            "background-color:rgb(55, 48, 107)",
+        ] {
+            assert!(kept.contains(each), "{each} is missing from {kept}");
+        }
+
+        for gone in [
+            "background:url(https://tracker.test/a.png)",
+            "background-image:url('https://tracker.test/a.png')",
+            "background:u\\72l(https://tracker.test/a.png)",
+            "position:fixed;top:0;left:0",
+            "z-index:9999",
+            "width:expression(alert(1))",
+            "color:var(--x)",
+            "margin-left:-9999px",
+            "text-indent:-9999px",
+            "transform:translate(10px)",
+            "display:flex",
+            "color:red} body{color:blue",
+            "color:red/* x */",
+            "behavior:url(x.htc)",
+            "-moz-binding:url(x)",
+            "float:left",
+        ] {
+            let html = shown(gone);
+            assert!(!html.contains("style="), "{gone} survived as {html}");
+        }
+        // The safe part of a mixed one is kept without the rest.
+        let mixed = shown("color:red;position:absolute;background:url(x)");
+        assert!(mixed.contains(r#"style="color:red""#), "{mixed}");
+    }
+
+    #[test]
+    fn a_messages_style_sheet_is_kept_rule_by_rule_and_only_what_is_safe() {
+        let html = r#"<html><head><style>
+            @import url("https://tracker.test/a.css");
+            @font-face { font-family: x; src: url(https://tracker.test/f.woff) }
+            /* a comment with } and { in it */
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { font-family: -apple-system, 'Segoe UI', Arial, sans-serif; background: #f3f4f6; color: #374151; }
+            .wrapper { max-width: 900px; margin: 32px auto; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.10); }
+            .header h1 { color: #fff; letter-spacing: -.3px; }
+            thead th.r { text-align: right; }
+            tbody tr:last-child td { border-bottom: none; }
+            .cover { position: fixed; top: 0; left: 0; z-index: 99; background: url(https://tracker.test/b.png) }
+            .bait:hover { background-image: url(https://tracker.test/hover.png); color: red }
+            @media (max-width: 600px) { .wrapper { margin: 0 } .cover { position: fixed } }
+            a[href^="x"]{color:blue}
+            </style><style>.second{color:green}</style></head>
+            <body><div class="wrapper"><h1 id="top">Hi</h1><script>alert(1)</script></div></body></html>"#;
+
+        let clean = sanitise_html(html, RemoteContent::Blocked);
+
+        for kept in [
+            "*{box-sizing:border-box;margin:0;padding:0}",
+            "body{font-family:-apple-system, 'Segoe UI', Arial, sans-serif;background:#f3f4f6;color:#374151}",
+            ".wrapper{max-width:900px;margin:32px auto;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.10)}",
+            ".header h1{color:#fff;letter-spacing:-.3px}",
+            "thead th.r{text-align:right}",
+            "tbody tr:last-child td{border-bottom:none}",
+            ".bait:hover{color:red}",
+            "@media (max-width: 600px){.wrapper{margin:0}\n}",
+            "a[href^=\"x\"]{color:blue}",
+            ".second{color:green}",
+        ] {
+            assert!(
+                clean.styles.contains(kept),
+                "{kept} is missing from:\n{}",
+                clean.styles
+            );
+        }
+        for gone in [
+            "tracker.test",
+            "url",
+            "@import",
+            "@font-face",
+            "position",
+            "z-index",
+            ".cover",
+            "<",
+            "comment",
+        ] {
+            assert!(
+                !clean.styles.contains(gone),
+                "{gone} survived in:\n{}",
+                clean.styles
+            );
+        }
+        // The sheet is apart from the HTML, which has none of it; classes stay to hang it on.
+        assert!(!clean.html.contains("style"), "{}", clean.html);
+        assert!(
+            clean
+                .html
+                .contains(r#"<div class="wrapper"><h1>Hi</h1></div>"#),
+            "{}",
+            clean.html
+        );
+    }
+
+    #[test]
+    fn a_style_sheet_cannot_close_itself_or_run_away() {
+        for sheet in [
+            "</style><script>alert(1)</script>",
+            "a{color:red}</style><img src=x onerror=alert(1)>",
+            "a{color:red;}} b{{{{",
+            "@media screen{@media screen{@media screen{@media screen{a{color:red}}}}}",
+            "a{color:red",
+            "{}{}{};;;@;@{",
+            "a<b{color:red}",
+        ] {
+            let styles = sanitise_html(
+                &format!("<style>{sheet}</style><p>x</p>"),
+                RemoteContent::Blocked,
+            )
+            .styles;
+            assert!(
+                !styles.contains('<') && !styles.contains("script"),
+                "{sheet} gave {styles}"
+            );
+        }
+    }
+
+    #[test]
     fn a_remote_picture_is_written_one_way_however_it_was_spelt() {
         for spelt in [
             r#"<img src="HTTPS://tracker.test/a.png">"#,
@@ -455,13 +901,15 @@ mod tests {
     }
 
     #[test]
-    fn styling_is_removed_because_css_can_fetch_and_can_cover_the_window() {
+    fn styling_that_can_fetch_or_cover_the_window_is_removed() {
         let html = "<style>body{background:url(https://evil.test/track)}</style>\
                     <div style=\"position:fixed;top:0;left:0;width:100%;height:100%\">Your session expired</div>";
 
         let cleaned = clean(html);
 
-        assert!(!cleaned.contains("style"), "{cleaned}");
+        assert!(!cleaned.contains("<style"), "{cleaned}");
+        assert!(!cleaned.contains("position"), "{cleaned}");
+        assert!(!cleaned.contains("top:"), "{cleaned}");
         assert!(!cleaned.contains("evil.test"), "{cleaned}");
         assert!(cleaned.contains("Your session expired"));
     }

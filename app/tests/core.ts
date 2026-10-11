@@ -51,6 +51,8 @@ export interface FakeMail {
     blocked?: number;
     /** The body once the pictures have been asked for. */
     bodyWithPictures?: string;
+    /** The message's own style sheet, as the core would hand it over: already made safe. */
+    styles?: string;
     /** Whether the mailbox thinks it matters. Left out, it does. */
     focused?: boolean;
 }
@@ -484,7 +486,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 const pictures = allowed && m.bodyWithPictures !== undefined;
                 const body =
                     args.format === "html"
-                        ? { format: "html", content: pictures ? m.bodyWithPictures : m.body, blocked_remote_content: pictures ? 0 : (m.blocked ?? 0) }
+                        ? { format: "html", content: pictures ? m.bodyWithPictures : m.body, styles: m.styles ?? "", blocked_remote_content: pictures ? 0 : (m.blocked ?? 0) }
                         : { format: "text", content: m.preview, blocked_remote_content: 0 };
                 return { message: shown(m), meeting: m.meeting ?? null, body, sender_trusted, remote_content_allowed: allowed, note: "" };
             },
