@@ -7,13 +7,28 @@
     interface Props {
         accountId: string;
         draft: Draft;
+        /** The addresses it may go out under: the mailbox's own first, then any it may send as. One alone is not offered. */
+        fromChoices?: string[];
         /** The draft was sent, thrown away, or put aside to come back to. */
         onDone: (how: "sent" | "discarded" | "closed") => void;
         /** What is written has just been kept, so a list of drafts can show it. */
         onKept: () => void;
     }
 
-    let { accountId, draft, onDone, onKept }: Props = $props();
+    let { accountId, draft, fromChoices = [], onDone, onKept }: Props = $props();
+
+    // svelte-ignore state_referenced_locally
+    let from = $state(draft.from ?? fromChoices[0] ?? "");
+
+    /** Kept at once: who it is from is not something to lose to a slow save. */
+    async function chooseFrom(address: string) {
+        from = address;
+        try {
+            await editDraft(accountId, draft.id, { from: address === fromChoices[0] ? "" : address });
+        } catch (failure) {
+            problem = failure && typeof failure === "object" && "message" in failure ? String(failure.message) : String(failure);
+        }
+    }
 
     /** People as they are typed: `Sam Taylor <sam@example.test>, jo@example.test`. */
     const typed = (people: Person[]) => people.map((p) => (p.name && p.name !== p.address ? `${p.name} <${p.address}>` : p.address)).join(", ");
@@ -366,6 +381,16 @@
         <p class="problem" role="alert">{problem}</p>
     {/if}
 
+    {#if fromChoices.length > 1}
+        <label>
+            <span>From</span>
+            <select aria-label="From" value={from} onchange={(event) => chooseFrom(event.currentTarget.value)}>
+                {#each fromChoices as each (each)}
+                    <option value={each}>{each}</option>
+                {/each}
+            </select>
+        </label>
+    {/if}
     <label>
         <span>To</span>
         <Recipients {accountId} label="To" bind:value={to} bind:input={first} placeholder="name@example.com, another@example.com" />

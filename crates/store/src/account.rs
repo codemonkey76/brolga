@@ -317,6 +317,11 @@ const STEPS: &[&str] = &[
 
     CREATE INDEX contacts_by_folder ON contacts (folder_id, display_name);
 ",
+    "
+    -- Whose name a message is to go out under, where it is not the
+    -- mailbox's own: a mailbox the writer may send as or on behalf of.
+    ALTER TABLE drafts ADD COLUMN from_address TEXT NOT NULL DEFAULT '';
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

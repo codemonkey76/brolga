@@ -678,6 +678,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 if (!found) throw { code: "failed", message: "There is no such draft." };
                 for (const line of ["to", "cc", "bcc"]) if (args[line] !== undefined) found[line] = checked(args[line]);
                 for (const part of ["subject", "body", "format"]) if (args[part] !== undefined) found[part] = args[part];
+                if (args.from !== undefined) found.from = args.from || null;
                 found.state = "editing";
                 found.error = null;
                 return { draft: found };

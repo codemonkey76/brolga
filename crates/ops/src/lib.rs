@@ -182,13 +182,19 @@ impl Outbox {
             }
         };
 
-        let content = json!({
+        let mut content = json!({
             "subject": draft.subject,
             "body": { "contentType": "html", "content": html(&draft.body, &draft.format, quoted.as_deref()) },
             "toRecipients": recipients(&draft.to_recipients),
             "ccRecipients": recipients(&draft.cc_recipients),
             "bccRecipients": recipients(&draft.bcc_recipients),
         });
+        // Under another name, where one was chosen ("Update message",
+        // SOURCES.md: `from` may be set on a draft). Whether it goes as that
+        // mailbox or on its behalf is for the server, by what was granted.
+        if !draft.from_address.is_empty() {
+            content["from"] = json!({ "emailAddress": { "address": draft.from_address } });
+        }
         self.graph.update_message(&server_id, &content).await?;
 
         Ok(server_id)

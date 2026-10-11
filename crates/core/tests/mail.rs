@@ -3471,3 +3471,76 @@ async fn a_shared_mailbox_is_added_by_address_and_read_changed_and_sent_from() {
     );
     assert_eq!(f.graph.in_shared("support@example.test", in_sent), Some(1));
 }
+
+#[tokio::test]
+async fn a_message_goes_out_under_a_shared_mailbox_s_name_only_with_leave_to() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_shared_mailbox("support@example.test", true);
+    f.graph.add_shared_mailbox("payroll@example.test", false);
+    f.sync().await;
+    let f = &f;
+    let write = |from: &'static str| async move {
+        let draft = f
+            .run("mail.drafts.create", json!({ "to": [{ "address": "sam@example.test" }], "subject": "Hello", "body": "Hi." }))
+            .await["draft"]["id"]
+            .clone();
+        let edited = f
+            .run(
+                "mail.drafts.edit",
+                json!({ "draft_id": draft, "from": from }),
+            )
+            .await;
+        assert_eq!(edited["draft"]["from"], from);
+        f.run("mail.drafts.send", json!({ "draft_id": draft }))
+            .await;
+        for _ in 0..10 {
+            f.sync().await;
+        }
+        draft
+    };
+
+    // With leave, it goes, under that name.
+    write("support@example.test").await;
+    let sent = f.graph.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].from_address, "support@example.test");
+
+    // Without, it does not, and the server's own words say why; the draft is kept to put right.
+    let refused = write("payroll@example.test").await;
+    assert_eq!(f.graph.sent().len(), 1);
+    let kept = f
+        .run("mail.drafts.get", json!({ "draft_id": refused }))
+        .await["draft"]
+        .clone();
+    assert_eq!(kept["state"], "failed");
+    assert!(
+        kept["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not have the right to send mail on behalf"),
+        "{kept}"
+    );
+
+    // Put back to one's own name, it goes.
+    f.run(
+        "mail.drafts.edit",
+        json!({ "draft_id": refused, "from": "" }),
+    )
+    .await;
+    f.run("mail.drafts.send", json!({ "draft_id": refused }))
+        .await;
+    for _ in 0..10 {
+        f.sync().await;
+    }
+    assert_eq!(f.graph.sent().len(), 2);
+    assert_eq!(f.graph.sent()[1].from_address, "robin@example.test");
+    assert!(
+        f.registry
+            .execute(
+                "mail.drafts.edit",
+                json!({ "draft_id": refused, "from": "not an address" })
+            )
+            .await
+            .is_err()
+    );
+}

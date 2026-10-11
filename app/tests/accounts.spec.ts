@@ -247,3 +247,25 @@ test("a shared mailbox is added by its address, read in Mail, and removed", asyn
     await page.getByRole("button", { name: "Mail", exact: true }).click();
     await expect(page.getByRole("combobox", { name: "Account" })).toHaveCount(0);
 });
+
+test("a message can be sent under a shared mailbox's name, chosen where it is written", async ({ page }) => {
+    const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
+    await withCore(page, { accounts: [robin], mail: inbox, shared });
+    await page.getByRole("button", { name: "New message" }).click();
+    const from = page.getByRole("combobox", { name: "From" });
+
+    await expect(from.getByRole("option")).toHaveText(["robin@example.test", "support@example.test"]);
+    await expect(from).toHaveValue("robin@example.test");
+    await from.selectOption("support@example.test");
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.drafts.edit").at(-1)?.args).toMatchObject({ from: "support@example.test" });
+    // Put back to one's own, it is said as no choice at all.
+    await from.selectOption("robin@example.test");
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.drafts.edit").at(-1)?.args).toMatchObject({ from: "" });
+});
+
+test("with no shared mailbox there is no choice of who a message is from", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    await expect(page.getByRole("textbox", { name: "Subject" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "From" })).toHaveCount(0);
+});

@@ -25,6 +25,9 @@ pub struct Draft {
     pub body: String,
     /// `text` or `html`.
     pub format: String,
+    /// The address it is to go out under, where that is not the
+    /// mailbox's own. Empty for the mailbox's own.
+    pub from_address: String,
     /// `editing`, `queued` (waiting to be sent) or `failed` (the server
     /// would not send it; it can be put right and sent again).
     pub state: String,
@@ -74,7 +77,7 @@ pub struct DraftEdit {
 }
 
 const COLUMNS: &str = "id, kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body, state, \
-                       error, updated_at, server_id, quoted, send_tried, format, rev, server_rev";
+                       error, updated_at, server_id, quoted, send_tried, format, rev, server_rev, from_address";
 
 fn read_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<DraftFile> {
     Ok(DraftFile {
@@ -107,6 +110,7 @@ fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
         format: row.get(14)?,
         rev: row.get(15)?,
         server_rev: row.get(16)?,
+        from_address: row.get(17)?,
     })
 }
 
@@ -174,6 +178,18 @@ impl AccountDb {
     /// Change a draft that is not on its way out. A draft that failed to
     /// send goes back to being edited. False if there is no such draft or
     /// it is queued.
+    /// Say whose name a draft is to go out under: an address, or empty
+    /// for the mailbox's own. False if there is no such draft, or it is queued.
+    pub fn set_draft_from(&self, id: &str, address: &str) -> Result<bool, StoreError> {
+        let changed = self.connection().execute(
+            "UPDATE drafts SET from_address = ?2, rev = rev + 1, state = 'editing', error = NULL, updated_at = unixepoch()
+             WHERE id = ?1 AND state <> 'queued'",
+            params![id, address],
+        )?;
+
+        Ok(changed > 0)
+    }
+
     pub fn edit_draft(&self, id: &str, edit: &DraftEdit) -> Result<bool, StoreError> {
         let changed = self.connection().execute(
             "UPDATE drafts SET

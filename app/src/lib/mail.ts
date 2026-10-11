@@ -175,6 +175,8 @@ export function size(bytes: number): string {
 }
 
 export interface Draft {
+    /** The address it is to go out under, where one was chosen. */
+    from?: string | null;
     id: string;
     kind: "new" | "reply" | "reply_all" | "forward";
     message_id: string | null;
@@ -229,7 +231,7 @@ export type Starting = Draft["kind"] | "forward_as_attachment";
 export const createDraft = async (account_id: string, kind: Starting, format: Draft["format"], message_id?: string) =>
     (await execute<{ draft: Draft }>("mail.drafts.create", { account_id, kind, format, ...(message_id ? { message_id } : {}) })).draft;
 
-export const editDraft = (account_id: string, draft_id: string, change: Partial<Pick<Draft, "to" | "cc" | "bcc" | "subject" | "body" | "format">>) =>
+export const editDraft = (account_id: string, draft_id: string, change: Partial<Pick<Draft, "to" | "cc" | "bcc" | "subject" | "body" | "format">> & { from?: string }) =>
     execute<{ draft: Draft }>("mail.drafts.edit", { account_id, draft_id, ...change });
 
 /** Carry on with a draft that is in the mailbox's Drafts folder. */

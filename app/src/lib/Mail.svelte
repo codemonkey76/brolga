@@ -866,7 +866,13 @@
 
     {#if writing && accountId}
         {#key writing.id}
-            <Compose {accountId} draft={writing} onDone={doneWriting} onKept={loadDrafts} />
+            <Compose
+                {accountId}
+                draft={writing}
+                fromChoices={account && !account.shared_with ? [account.username, ...accounts.filter((each) => each.shared_with === account.id).map((each) => each.username)] : []}
+                onDone={doneWriting}
+                onKept={loadDrafts}
+            />
         {/key}
     {:else}
         <ReadingPane

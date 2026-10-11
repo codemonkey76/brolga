@@ -46,6 +46,7 @@ struct Edit {
     subject: Option<String>,
     body: Option<String>,
     format: Option<String>,
+    from: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -284,6 +285,7 @@ fn shown(mailbox: &Mailbox, draft: &Draft) -> Value {
         "subject": draft.subject,
         "body": draft.body,
         "format": draft.format,
+        "from": Some(&draft.from_address).filter(|from| !from.is_empty()),
         "state": draft.state,
         "error": draft.error,
         "updated_at": draft.updated_at,
@@ -646,7 +648,7 @@ async fn forward_as_attachment(
 }
 
 async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandError> {
-    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let (mailbox, own_address) = open(&mailboxes, args.account_id.as_deref()).await?;
     // A body is cleaned as the format it is being saved in: the one given
     // with it, or else the draft's own.
     let format = match (&args.format, &args.body) {
@@ -679,6 +681,23 @@ async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandErr
                 None => format!("There is no draft `{}`.", args.draft_id),
             },
         ));
+    }
+    if let Some(from) = &args.from {
+        let from = from.trim();
+        if !from.is_empty() && (!from.contains('@') || from.contains(char::is_whitespace)) {
+            return Err(failed(format!("`{from}` is not an email address.")));
+        }
+        // Put back to the mailbox's own name, that name is said outright:
+        // the server's copy may still carry the other.
+        let from = if from.is_empty() {
+            own_address.as_str()
+        } else {
+            from
+        };
+        mailbox
+            .db
+            .set_draft_from(&args.draft_id, from)
+            .map_err(failed)?;
     }
     let draft = mailbox.db.draft(&args.draft_id).map_err(failed)?;
 
@@ -1068,7 +1087,8 @@ pub(crate) fn register(
                     "bcc": people(),
                     "subject": { "type": "string" },
                     "body": { "type": "string" },
-                    "format": { "enum": ["text", "html"] }
+                    "format": { "enum": ["text", "html"] },
+                    "from": { "type": "string", "description": "The address it is to go out under: a mailbox you may send as or on behalf of. Empty for your own. Microsoft 365 refuses the send if you may not." }
                 },
                 "required": ["draft_id"],
                 "additionalProperties": false

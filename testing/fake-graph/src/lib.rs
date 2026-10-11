@@ -41,6 +41,8 @@ pub enum Fault {
 
 #[derive(Default)]
 struct Inner {
+    /// The drafts whose sender was set by a request, and so is checked when one is sent.
+    from_chosen: std::collections::HashSet<String>,
     /// Other people's mailboxes the owner has been given: each by its
     /// address, with whether the owner may also send as it.
     others: HashMap<String, (mailbox::Mailbox, bool)>,
@@ -1486,6 +1488,21 @@ async fn update_message(
                 let content = body["content"].as_str().unwrap_or_default().to_owned();
                 inner.mailbox.edit(&message, |m| m.body_html = content);
             }
+            ("from", from) if from["emailAddress"]["address"].is_string() => {
+                if !is_draft {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "fakeGraphNotADraft",
+                        "`from` can be changed only on a draft.",
+                    );
+                }
+                let address = from["emailAddress"]["address"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                inner.mailbox.edit(&message, |m| m.from_address = address);
+                inner.from_chosen.insert(message.clone());
+            }
             ("toRecipients" | "ccRecipients" | "bccRecipients", list) if list.is_array() => {
                 let list = people(list);
                 inner.mailbox.edit(&message, |m| match property.as_str() {
@@ -1865,6 +1882,22 @@ async fn send_draft(State(shared): State<Shared>, Path(message): Path<String>) -
         );
     }
 
+    // "message: send": under another's name only with leave to send as
+    // them or on their behalf.
+    let from = draft.from_address.to_lowercase();
+    if inner.from_chosen.contains(&message)
+        && from != "robin@example.test"
+        && !inner
+            .others
+            .get(&from)
+            .is_some_and(|(_, may_send_as)| *may_send_as)
+    {
+        return error(
+            StatusCode::FORBIDDEN,
+            "ErrorSendAsDenied",
+            "The user account which was used to submit this request does not have the right to send mail on behalf of the specified sending account.",
+        );
+    }
     let sent = inner.mailbox.folder_id("sentitems").unwrap_or_default();
     inner.mailbox.edit(&message, |m| m.is_draft = false);
     inner.mailbox.move_message(&message, &sent);
