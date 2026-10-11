@@ -1,5 +1,6 @@
 <script lang="ts">
     import { chooseFiles, say } from "./commands";
+    import Recipients from "./Recipients.svelte";
     import { type Draft, type DraftFile, type Person, attachFile, discardDraft, editDraft, removeFile, sendDraft, size } from "./mail";
 
     interface Props {
@@ -252,14 +253,14 @@
 
     <label>
         <span>To</span>
-        <input bind:this={first} bind:value={to} type="text" autocomplete="off" spellcheck="false" placeholder="name@example.com, another@example.com" />
+        <Recipients {accountId} label="To" bind:value={to} bind:input={first} placeholder="name@example.com, another@example.com" />
         {#if !copies}
             <button type="button" class="link" onclick={() => (copies = true)}>Cc Bcc</button>
         {/if}
     </label>
     {#if copies}
-        <label><span>Cc</span><input bind:value={cc} type="text" autocomplete="off" spellcheck="false" /></label>
-        <label><span>Bcc</span><input bind:value={bcc} type="text" autocomplete="off" spellcheck="false" /></label>
+        <label><span>Cc</span><Recipients {accountId} label="Cc" bind:value={cc} /></label>
+        <label><span>Bcc</span><Recipients {accountId} label="Bcc" bind:value={bcc} /></label>
     {/if}
     <label><span>Subject</span><input bind:value={subject} type="text" autocomplete="off" /></label>
 

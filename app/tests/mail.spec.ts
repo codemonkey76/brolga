@@ -566,8 +566,8 @@ test("a new message is written, kept as it goes, and sent", async ({ page }) => 
     await page.getByRole("button", { name: "New message" }).click();
     const form = page.getByRole("form", { name: "New message" });
 
-    await expect(form.getByRole("textbox", { name: "To" })).toBeFocused();
-    await form.getByRole("textbox", { name: "To" }).fill("Jo Nguyen <jo.nguyen@example.test>, sam.taylor@example.test");
+    await expect(form.getByRole("combobox", { name: "To" })).toBeFocused();
+    await form.getByRole("combobox", { name: "To" }).fill("Jo Nguyen <jo.nguyen@example.test>, sam.taylor@example.test");
     await form.getByRole("textbox", { name: "Subject" }).fill("Lunch on Friday");
     await form.getByRole("textbox", { name: "Message" }).click();
     await page.keyboard.type("Are you ");
@@ -605,7 +605,7 @@ test("a reply is addressed and titled, and starts in the words", async ({ page }
     await page.getByRole("button", { name: "Reply", exact: true }).click();
     const form = page.getByRole("form", { name: "Reply" });
 
-    await expect(form.getByRole("textbox", { name: "To" })).toHaveValue("Sam Taylor <sam.taylor@example.test>");
+    await expect(form.getByRole("combobox", { name: "To" })).toHaveValue("Sam Taylor <sam.taylor@example.test>");
     await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("RE: Budget review moved to Thursday");
     await expect(form.getByRole("textbox", { name: "Message" })).toBeFocused();
     await expect(form.getByText("The original message is added underneath")).toBeVisible();
@@ -653,10 +653,10 @@ test("a slip in an address, or nobody to send to, is said and nothing is sent", 
     await form.getByRole("button", { name: "Send" }).click();
     await expect(form.getByRole("alert")).toContainText("at least one recipient");
 
-    await form.getByRole("textbox", { name: "To" }).fill("jo at example");
+    await form.getByRole("combobox", { name: "To" }).fill("jo at example");
     await form.getByRole("button", { name: "Send" }).click();
     await expect(form.getByRole("alert")).toContainText("`jo at example` is not an email address");
-    await expect(form.getByRole("textbox", { name: "To" })).toHaveValue("jo at example");
+    await expect(form.getByRole("combobox", { name: "To" })).toHaveValue("jo at example");
     expect(await sent(page)).toHaveLength(0);
 });
 
@@ -664,7 +664,7 @@ test("a message Microsoft 365 will not send comes back with the reason", async (
     await withCore(page, { accounts: [robin], mail: inbox, sendRefused: "The mailbox is over its sending limit." });
     await page.getByRole("button", { name: "New message" }).click();
     const form = page.getByRole("form", { name: "New message" });
-    await form.getByRole("textbox", { name: "To" }).fill("jo@example.test");
+    await form.getByRole("combobox", { name: "To" }).fill("jo@example.test");
     await form.getByRole("textbox", { name: "Subject" }).fill("Hello");
     await form.getByRole("textbox", { name: "Message" }).click();
     await page.keyboard.type("Nothing of this is lost.");
@@ -747,7 +747,7 @@ test("files are attached from the file dialog, can be removed, and go with the m
     });
     await page.getByRole("button", { name: "New message" }).click();
     const form = page.getByRole("form", { name: "New message" });
-    await form.getByRole("textbox", { name: "To" }).fill("jo@example.test");
+    await form.getByRole("combobox", { name: "To" }).fill("jo@example.test");
 
     await form.getByRole("button", { name: "Attach…" }).click();
 
@@ -776,7 +776,7 @@ test("a message can be formatted: lists, a link, and plain pasting", async ({ pa
     const form = page.getByRole("form", { name: "New message" });
     const words = form.getByRole("textbox", { name: "Message" });
     const tools = form.getByRole("toolbar", { name: "Formatting" });
-    await form.getByRole("textbox", { name: "To" }).fill("jo@example.test");
+    await form.getByRole("combobox", { name: "To" }).fill("jo@example.test");
 
     await words.click();
     await tools.getByRole("button", { name: "Bulleted list" }).click();
@@ -816,4 +816,33 @@ test("a message can be formatted: lists, a link, and plain pasting", async ({ pa
     expect(body).toContain("<li>Milk</li>");
     expect(body).toContain('href="https://example.test/list"');
     expect(body).not.toContain("tracker");
+});
+
+test("people are suggested as an address is typed, and chosen by key or click", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    const to = form.getByRole("combobox", { name: "To" });
+    const offered = form.getByRole("listbox", { name: "Suggested people" });
+
+    await to.pressSequentially("sa");
+    await expect(offered.getByRole("option")).toHaveCount(1);
+    await expect(offered).toContainText("sam.taylor@example.test");
+
+    // Enter takes the suggestion. It does not send the message.
+    await page.keyboard.press("Enter");
+    await expect(to).toHaveValue("Sam Taylor <sam.taylor@example.test>, ");
+    await expect(offered).toHaveCount(0);
+    await expect(form).toBeVisible();
+
+    // A second person goes after the first.
+    await to.pressSequentially("alex");
+    await offered.getByRole("option").first().click();
+    await expect(to).toHaveValue("Sam Taylor <sam.taylor@example.test>, Alex Chen <alex.chen@example.test>, ");
+    await picture(page, "compose-suggestions");
+
+    await form.getByRole("textbox", { name: "Subject" }).fill("Hello");
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form).toHaveCount(0);
+    expect(((await sent(page))[0].to as { address: string }[]).map((p) => p.address)).toEqual(["sam.taylor@example.test", "alex.chen@example.test"]);
 });

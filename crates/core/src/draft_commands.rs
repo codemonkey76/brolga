@@ -116,6 +116,13 @@ fn file_shown(file: &DraftFile) -> Value {
 }
 
 #[derive(Deserialize)]
+struct Suggest {
+    account_id: Option<String>,
+    typed: String,
+    limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
 struct SetSignature {
     account_id: Option<String>,
     text: String,
@@ -433,6 +440,22 @@ async fn remove_file(mailboxes: Arc<Mailboxes>, args: RemoveFile) -> Result<Valu
     )
 }
 
+async fn suggest(mailboxes: Arc<Mailboxes>, args: Suggest) -> Result<Value, CommandError> {
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let people = mailbox
+        .db
+        .suggest_people(&args.typed, args.limit.unwrap_or(6).min(20))
+        .map_err(failed)?;
+    let people: Vec<Value> = people
+        .into_iter()
+        .map(|(name, address)| json!({ "name": Some(name).filter(|n| !n.trim().is_empty()), "address": address }))
+        .collect();
+
+    Ok(
+        json!({ "people": people, "note": "Names are as they appeared in mail received, and were chosen by whoever sent it." }),
+    )
+}
+
 async fn get_signature(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
     let (text, on_replies) = signature(&mailbox)?;
@@ -689,6 +712,36 @@ pub(crate) fn register(
             ],
         },
         handler(&mailboxes, create),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.people.suggest".to_owned(),
+            title: "Suggest recipients".to_owned(),
+            description: "People to offer while an address is being typed: those in mail on this computer whose name or address has a word \
+                          starting with `typed`, the ones written to most first. It knows nothing of the organisation's directory or of contacts yet."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "typed": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Default 6." }
+                },
+                "required": ["typed"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "people": people(), "note": { "type": "string" } },
+                "required": ["people", "note"]
+            }),
+            examples: vec![json!({ "typed": "sam" })],
+        },
+        handler(&mailboxes, suggest),
     )?;
 
     let signature_result = json!({

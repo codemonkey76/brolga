@@ -589,6 +589,9 @@ async fn a_hundred_thousand_messages_sync_resumably_and_stay_fast() {
     time("as conversations, the end", 100, &|| {
         db.conversations(&inbox, 99_950, 50).unwrap().len()
     });
+    time("suggest people as an address is typed", 100, &|| {
+        db.suggest_people("sender4", 6).unwrap().len()
+    });
     time("open a message", 100, &|| {
         usize::from(db.message(&local[70_000].id).unwrap().is_some())
     });

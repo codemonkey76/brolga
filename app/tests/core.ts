@@ -397,6 +397,14 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 delete replies.account_id;
                 return replies;
             },
+            "mail.people.suggest": (args) => {
+                const typed = String(args.typed).toLowerCase();
+                const known = [...new Map(mail.map((m) => [m.from.address, m.from])).values()];
+                return {
+                    people: known.filter((p) => `${p.name} ${p.address}`.toLowerCase().split(/[\s.@]+/).some((word) => word.startsWith(typed))),
+                    note: "",
+                };
+            },
             "mail.signature.get": () => signature,
             "mail.signature.set": (args) => {
                 signature = { text: args.text as string, on_replies: (args.on_replies as boolean) ?? signature.on_replies };

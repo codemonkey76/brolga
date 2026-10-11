@@ -167,6 +167,9 @@ export const discardDraft = (account_id: string, draft_id: string) => execute("m
 
 export const sendDraft = (account_id: string, draft_id: string) => execute<{ queued: boolean }>("mail.drafts.send", { account_id, draft_id });
 
+export const suggestPeople = async (account_id: string, typed: string) =>
+    (await execute<{ people: Person[] }>("mail.people.suggest", { account_id, typed })).people;
+
 export interface Edited {
     changed: number;
     /** Give this to `undo` to take the action back. */

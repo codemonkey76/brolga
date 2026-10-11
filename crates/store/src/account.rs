@@ -600,6 +600,62 @@ impl AccountDb {
         Ok(as_tree(folders))
     }
 
+    /// People to offer while an address is being typed: those whose name or
+    /// address has a word starting with what was typed, the ones written to
+    /// most first, then the ones heard from most. Gives `(name, address)`.
+    pub fn suggest_people(
+        &self,
+        typed: &str,
+        limit: u32,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let typed = typed.trim().to_lowercase();
+        if typed.is_empty() {
+            return Ok(Vec::new());
+        }
+        // `%` and `_` typed by a person are letters, not wildcards.
+        let escaped = typed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let starts = format!("{escaped}%");
+        let within = format!("% {escaped}%");
+        let after_dot = format!("%.{escaped}%");
+
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "WITH seen (name, address, weight) AS (
+                 -- Written to: every recipient of what is in Sent Items.
+                 SELECT json_extract(r.value, '$.name'), json_extract(r.value, '$.address'), 5
+                 FROM messages m, json_each(m.to_recipients || '') r
+                 WHERE m.folder_id = (SELECT id FROM folders WHERE well_known = 'sentitems')
+                 UNION ALL
+                 SELECT json_extract(r.value, '$.name'), json_extract(r.value, '$.address'), 5
+                 FROM messages m, json_each(m.cc_recipients || '') r
+                 WHERE m.folder_id = (SELECT id FROM folders WHERE well_known = 'sentitems')
+                 UNION ALL
+                 -- Heard from.
+                 SELECT from_name, from_address, 1 FROM messages
+             )
+             SELECT max(coalesce(name, '')), lower(address), sum(weight) AS score
+             FROM seen
+             WHERE address IS NOT NULL AND address LIKE '%@%' AND (
+                 lower(address) LIKE ?1 ESCAPE '\\'
+                 OR lower(coalesce(name, '')) LIKE ?1 ESCAPE '\\'
+                 OR lower(coalesce(name, '')) LIKE ?2 ESCAPE '\\'
+                 OR lower(address) LIKE ?3 ESCAPE '\\')
+             GROUP BY lower(address)
+             ORDER BY score DESC, lower(address)
+             LIMIT ?4",
+        )?;
+        let people = statement
+            .query_map(params![starts, within, after_dot, limit], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(people)
+    }
+
     /// Something kept for the account on this computer, by its name.
     pub fn setting(&self, key: &str) -> Result<Option<String>, StoreError> {
         Ok(self
@@ -1431,6 +1487,76 @@ mod tests {
 
     fn ids(rows: &[MessageRow]) -> Vec<&str> {
         rows.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    #[test]
+    fn people_are_suggested_by_how_a_name_or_address_starts_and_those_written_to_first() {
+        let db = AccountDb::in_memory().unwrap();
+        db.apply_folders(
+            &[folder("sent", "root"), folder("inbox", "root")],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        db.set_well_known(&[("sentitems", "sent".to_owned())])
+            .unwrap();
+        let heard = |id: &str, name: &str, address: &str| MessageChange {
+            id: id.to_owned(),
+            from_name: Some(name.to_owned()),
+            from_address: Some(address.to_owned()),
+            ..MessageChange::default()
+        };
+        db.apply_messages(
+            "inbox",
+            &[
+                heard("1", "Sam Taylor", "sam.taylor@example.test"),
+                heard("2", "Sam Taylor", "Sam.Taylor@example.test"),
+                heard("3", "Samira Khan", "s.khan@example.test"),
+                heard("4", "Newsletter", "news@sample.test"),
+                heard("5", "100% Offers", "offers@example.test"),
+            ],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        db.apply_messages(
+            "sent",
+            &[MessageChange {
+                id: "6".to_owned(),
+                to_recipients: Some(
+                    r#"[{"name":"Samira Khan","address":"s.khan@example.test"}]"#.to_owned(),
+                ),
+                cc_recipients: Some(r#"[{"name":null,"address":"jo@example.test"}]"#.to_owned()),
+                ..MessageChange::default()
+            }],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        let suggest = |typed: &str| -> Vec<String> {
+            db.suggest_people(typed, 5)
+                .unwrap()
+                .into_iter()
+                .map(|(_, address)| address)
+                .collect()
+        };
+
+        // Samira was written to, so she is first though Sam wrote more often.
+        assert_eq!(
+            suggest("sam"),
+            ["s.khan@example.test", "sam.taylor@example.test"]
+        );
+        assert_eq!(suggest("TAY"), ["sam.taylor@example.test"]);
+        assert_eq!(suggest("khan"), ["s.khan@example.test"]);
+        assert_eq!(suggest("jo"), ["jo@example.test"]);
+        assert_eq!(db.suggest_people("sam.t", 5).unwrap()[0].0, "Sam Taylor");
+        // What is typed is letters, not a pattern.
+        assert_eq!(suggest("%"), Vec::<String>::new());
+        assert_eq!(suggest("100%"), ["offers@example.test"]);
+        assert!(suggest("  ").is_empty());
     }
 
     #[test]
