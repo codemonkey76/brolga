@@ -18,7 +18,7 @@ struct FixedToken;
 
 impl TokenSource for FixedToken {
     fn token(&self) -> BoxFuture<'_, Result<String, GraphError>> {
-        Box::pin(async { Ok("token".to_owned()) })
+        Box::pin(async { Ok("token.Mail.ReadWrite".to_owned()) })
     }
 }
 

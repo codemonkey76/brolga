@@ -281,21 +281,43 @@ async fn inject_fault(State(shared): State<Shared>, request: Request, next: Next
 }
 
 async fn require_token(request: Request, next: Next) -> Response {
-    let has_token = request
+    let token = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.starts_with("Bearer ") && v.len() > "Bearer ".len());
-
-    if has_token {
-        next.run(request).await
-    } else {
-        error(
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned);
+    let Some(token) = token else {
+        return error(
             StatusCode::UNAUTHORIZED,
             "unauthenticated",
             "A bearer token is required.",
-        )
+        );
+    };
+
+    // A token carries the permissions it was issued with after a dot (see
+    // the fake identity platform). Mail is read with Mail.Read or
+    // Mail.ReadWrite and changed only with Mail.ReadWrite, as the reference
+    // page of each request says.
+    let granted: Vec<&str> = token
+        .split_once('.')
+        .map(|(_, scopes)| scopes.split(',').collect())
+        .unwrap_or_default();
+    let path = request.uri().path();
+    let mail = path.contains("/me/mailFolders") || path.contains("/me/messages");
+    let reading = request.method() == axum::http::Method::GET;
+    let allowed =
+        !mail || granted.contains(&"Mail.ReadWrite") || (reading && granted.contains(&"Mail.Read"));
+    if !allowed {
+        return error(
+            StatusCode::FORBIDDEN,
+            "ErrorAccessDenied",
+            "Access is denied. Check credentials and try again.",
+        );
     }
+
+    next.run(request).await
 }
 
 /// The signed-in user, with the properties Graph returns by default. The

@@ -22,6 +22,10 @@ struct PendingCode {
     client_id: String,
 }
 
+/// The permissions a code, device code or refresh token was asked for
+/// with, so the access tokens that come of it carry those and no others.
+type Scopes = HashMap<String, String>;
+
 struct Refusal {
     error: String,
     codes: Vec<u32>,
@@ -33,6 +37,7 @@ struct Inner {
     issued: u32,
     codes: HashMap<String, PendingCode>,
     refresh_tokens: Vec<String>,
+    scopes: Scopes,
     /// Device codes, each with how many more polls to answer "pending".
     device_codes: HashMap<String, u32>,
     pending_polls: u32,
@@ -171,6 +176,7 @@ async fn authorize(
         None => {
             inner.issued += 1;
             let code = format!("code-{}", inner.issued);
+            inner.scopes.insert(code.clone(), get("scope").to_owned());
             inner.codes.insert(
                 code.clone(),
                 PendingCode {
@@ -221,7 +227,7 @@ async fn token(
                     "The code verifier, redirect URI or client does not match the request.",
                 );
             }
-            issue(&mut inner)
+            issue(&mut inner, get("code"))
         }
         "refresh_token" => {
             if !inner
@@ -235,7 +241,7 @@ async fn token(
                     "The provided grant has expired due to it being revoked.",
                 );
             }
-            issue(&mut inner)
+            issue(&mut inner, get("refresh_token"))
         }
         "urn:ietf:params:oauth:grant-type:device_code" => {
             match inner.device_codes.get_mut(get("device_code")) {
@@ -246,7 +252,7 @@ async fn token(
                 ),
                 Some(0) => {
                     inner.device_codes.remove(get("device_code"));
-                    issue(&mut inner)
+                    issue(&mut inner, get("device_code"))
                 }
                 Some(polls) => {
                     *polls -= 1;
@@ -280,6 +286,8 @@ async fn device_code(
     let device_code = format!("device-{}", inner.issued);
     let polls = inner.pending_polls;
     inner.device_codes.insert(device_code.clone(), polls);
+    let asked = form.get("scope").cloned().unwrap_or_default();
+    inner.scopes.insert(device_code.clone(), asked);
 
     Json(json!({
         "device_code": device_code,
@@ -292,10 +300,20 @@ async fn device_code(
     .into_response()
 }
 
-fn issue(inner: &mut Inner) -> Response {
+/// Issue tokens for what `from` (a code, device code or refresh token) was
+/// asked for with. The access token carries its permissions after a dot, as
+/// a real one carries them in its claims, and the fake Graph server holds
+/// each request to them.
+fn issue(inner: &mut Inner, from: &str) -> Response {
     inner.issued += 1;
     let refresh = format!("refresh-{}", inner.issued);
     inner.refresh_tokens.push(refresh.clone());
+    let scope = inner.scopes.get(from).cloned().unwrap_or_default();
+    inner.scopes.insert(refresh.clone(), scope.clone());
+    let granted: Vec<&str> = scope
+        .split_whitespace()
+        .filter(|s| !["openid", "profile", "offline_access"].contains(s))
+        .collect();
 
     let claims = json!({
         "tid": "00000000-0000-4000-8000-0000000000aa",
@@ -310,9 +328,9 @@ fn issue(inner: &mut Inner) -> Response {
 
     Json(json!({
         "token_type": "Bearer",
-        "scope": "User.Read",
+        "scope": granted.join(" "),
         "expires_in": inner.expires_in.unwrap_or(3600),
-        "access_token": format!("access-{}", inner.issued),
+        "access_token": format!("access-{}.{}", inner.issued, granted.join(",")),
         "refresh_token": refresh,
         "id_token": id_token
     }))

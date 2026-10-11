@@ -1,9 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-/// What is asked for at sign-in: who the person is, a refresh token, and their
-/// own profile. Each feature asks for its own scopes when it is built, so
-/// nobody is asked to consent to more than the client can yet do.
-pub const SIGN_IN_SCOPES: &[&str] = &["openid", "profile", "offline_access", "User.Read"];
+/// What is asked for at sign-in: who the person is, a refresh token, their
+/// own profile and their mail. A scope is added here when the feature that
+/// needs it is built, so nobody is asked to consent to more than the client
+/// can yet do.
+pub const SIGN_IN_SCOPES: &[&str] = &[
+    "openid",
+    "profile",
+    "offline_access",
+    "User.Read",
+    // Reading mail, and changing it: read state, flags, moves, drafts.
+    "Mail.ReadWrite",
+];
 
 /// The app registration a sign-in is made under.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

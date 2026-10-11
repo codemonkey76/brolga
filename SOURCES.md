@@ -26,6 +26,7 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | List attachments | https://learn.microsoft.com/graph/api/message-list-attachments | `GET /me/messages/{id}/attachments`, with `$select` so the list comes without the files' contents |
 | Get attachment | https://learn.microsoft.com/graph/api/attachment-get | `…/attachments/{id}` for a picture within a body, with its `contentId` and `contentBytes`; `…/attachments/{id}/$value` for the raw contents; MIME for an attached message, event or contact; 405 for a reference attachment |
 | fileAttachment resource type | https://learn.microsoft.com/graph/api/resources/fileattachment | Attachment properties, and `size` being in bytes |
+| Update message | https://learn.microsoft.com/graph/api/message-update | `PATCH /me/messages/{id}` needs `Mail.ReadWrite`; `isRead`, `flag` and `categories` may be changed on any message |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
 
 ## Microsoft identity platform (Microsoft Learn)

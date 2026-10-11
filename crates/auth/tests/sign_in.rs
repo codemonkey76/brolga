@@ -68,7 +68,10 @@ async fn the_browser_is_sent_what_the_documentation_asks_for() {
     assert_eq!(asked["client_id"], registration().client_id);
     assert_eq!(asked["response_type"], "code");
     assert_eq!(asked["response_mode"], "query");
-    assert_eq!(asked["scope"], "openid profile offline_access User.Read");
+    assert_eq!(
+        asked["scope"],
+        "openid profile offline_access User.Read Mail.ReadWrite"
+    );
     assert_eq!(asked["code_challenge_method"], "S256");
     assert_eq!(asked["login_hint"], "robin@example.test");
     assert_eq!(asked["claims"], "{\"a\":1}");
