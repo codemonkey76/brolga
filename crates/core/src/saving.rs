@@ -39,7 +39,8 @@ pub fn safe_name(name: &str) -> String {
     // Names Windows keeps for devices, whatever extension follows them.
     const DEVICES: &[&str] = &[
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "COM¹",
+        "COM²", "COM³", "LPT¹", "LPT²", "LPT³", "CONIN$", "CONOUT$",
     ];
     let first = stem.split('.').next().unwrap_or_default().trim();
     let stem = if DEVICES.iter().any(|d| d.eq_ignore_ascii_case(first)) {
@@ -87,6 +88,8 @@ pub fn save(folder: &Path, name: &str, content: &[u8]) -> std::io::Result<PathBu
             let _ = std::fs::remove_file(&path);
             return Err(error);
         }
+        drop(file);
+        from_the_internet(&path);
 
         return Ok(path);
     }
@@ -109,8 +112,41 @@ pub fn save_as(path: &Path, content: &[u8]) -> std::io::Result<PathBuf> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(content)?;
     file.sync_all()?;
+    drop(file);
+    from_the_internet(path);
 
     Ok(path.to_path_buf())
+}
+
+/// Mark a saved file as having come from the internet, the way a browser
+/// marks a download, so that Windows and macOS give their own warning
+/// before it is run and Office opens it protected. Linux has no such mark.
+/// A mark that cannot be made does not undo the save.
+#[allow(unused_variables)]
+fn from_the_internet(path: &Path) {
+    // "Zone.Identifier" beside the file's contents; zone 3 is the internet.
+    #[cfg(windows)]
+    {
+        let mut mark = path.as_os_str().to_owned();
+        mark.push(":Zone.Identifier");
+        let _ = std::fs::write(mark, "[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    // The quarantine attribute, as the system's own tool writes it.
+    #[cfg(target_os = "macos")]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let _ = std::process::Command::new("/usr/bin/xattr")
+            .arg("-w")
+            .arg("com.apple.quarantine")
+            .arg(format!("0081;{now:x};Brolga;"))
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 #[cfg(test)]

@@ -660,12 +660,22 @@ async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandErr
             .map(|d| d.format),
         (None, None) => None,
     };
+    // A change of format alone still has the words there already to clean
+    // as the new one: plain text is not HTML until it has been made safe.
+    let body = match (args.body, &args.format) {
+        (None, Some(_)) => mailbox
+            .db
+            .draft(&args.draft_id)
+            .map_err(failed)?
+            .map(|d| d.body),
+        (body, _) => body,
+    };
     let change = DraftEdit {
         to_recipients: kept(args.to)?,
         cc_recipients: kept(args.cc)?,
         bcc_recipients: kept(args.bcc)?,
         subject: args.subject,
-        body: body_kept(args.body, format.as_deref()),
+        body: body_kept(body, format.as_deref()),
         format: args.format,
     };
     if !mailbox

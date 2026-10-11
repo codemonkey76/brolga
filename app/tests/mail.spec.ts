@@ -86,7 +86,7 @@ test("a link that says one address and goes to another is called out", async ({ 
     await body(page).getByRole("link").hover();
 
     const pane = page.getByRole("region", { name: "Message" });
-    await expect(pane).toContainText("This link goes somewhere other than it says: https://account-security.example/login");
+    await expect(pane).toContainText("This link goes somewhere other than it says: account-security.example · https://account-security.example/login");
     await picture(page, "deceptive-link");
 });
 
@@ -236,6 +236,49 @@ test("the keys step through messages, and go to a new meeting and the address bo
     await expect(page.getByRole("button", { name: "People" })).toHaveAttribute("aria-current", "true");
 });
 
+test("a link that says one site and goes to another is asked about before it opens", async ({ page }) => {
+    const bait = { ...inbox[0], id: "bait", body: '<p><a href="https://login.evil.example/x">mybank.example/login</a> and <a href="https://docs.mybank.example/help">mybank.example</a></p>' };
+    await withCore(page, { accounts: [robin], mail: [bait] });
+    await messages(page).getByRole("option").first().click();
+    const pane = page.getByRole("region", { name: "Message" });
+    const opened = async () => (await ran(page)).filter((r) => r.command === "app.open_link").map((r) => r.args.url);
+
+    await body(page).getByRole("link", { name: "mybank.example/login" }).click();
+    await expect(pane.getByRole("alert")).toContainText("This link says mybank.example but goes to login.evil.example.");
+    expect(await opened()).toEqual([]);
+    await pane.getByRole("button", { name: "Don't open" }).click();
+    await expect(pane.getByRole("alert")).toHaveCount(0);
+    expect(await opened()).toEqual([]);
+
+    await body(page).getByRole("link", { name: "mybank.example/login" }).click();
+    await pane.getByRole("button", { name: "Open it anyway" }).click();
+    await expect.poll(opened).toEqual(["https://login.evil.example/x"]);
+
+    // A part of the site it names is the site it names.
+    await body(page).getByRole("link", { name: "mybank.example", exact: true }).click();
+    await expect.poll(opened).toEqual(["https://login.evil.example/x", "https://docs.mybank.example/help"]);
+});
+
+test("a file that can run is asked about before it is saved, and its ending is always in sight", async ({ page }) => {
+    const name = `invoice.pdf${" ".repeat(60)}.exe`;
+    const trap = { ...inbox[0], id: "trap", has_attachments: true, attachments: [{ id: "a1", name, content_type: "application/pdf", size: 2048, is_inline: false, kind: "file" }] };
+    await withCore(page, { accounts: [robin], mail: [trap] });
+    await messages(page).getByRole("option").first().click();
+    const pane = page.getByRole("region", { name: "Message" });
+    const saves = async () => (await ran(page)).filter((r) => r.command === "mail.attachments.save").length;
+
+    const chip = pane.getByRole("list", { name: "Attachments" }).getByRole("button").first();
+    await expect(chip.locator(".end")).toBeInViewport();
+    await expect(chip.locator(".end")).toContainText(".exe");
+    await chip.click();
+    await expect(pane.getByRole("alert")).toContainText("is a program, or a file that can run one");
+    expect(await saves()).toBe(0);
+    await picture(page, "risky-attachment");
+
+    await pane.getByRole("button", { name: "Save anyway" }).click();
+    await expect.poll(saves).toBe(1);
+});
+
 test("a sync that fails says why and leaves the mail on screen", async ({ page }) => {
     const why = "robin@example.test needs to sign in again. Your sign-in has expired or was revoked.";
     await withCore(page, { accounts: [robin], mail: inbox, syncFails: why });
@@ -358,12 +401,12 @@ test("attachments are listed on the message and saved when asked", async ({ page
 
     // The picture within the body is not offered as a file.
     await expect(attached.getByRole("listitem")).toHaveCount(2);
-    await expect(attached.getByRole("button", { name: /^📎 Invoice 2041\.pdf/ })).toContainText("180 KB");
+    await expect(attached.getByRole("button", { name: /^Invoice 2041\.pdf/ })).toContainText("180 KB");
     // A link to a file kept elsewhere has nothing to save.
     await expect(attached.getByRole("button", { name: /Statement/ })).toHaveCount(0);
     await expect(attached).toContainText("Statement.xlsx");
 
-    await attached.getByRole("button", { name: /^📎 Invoice 2041\.pdf/ }).click();
+    await attached.getByRole("button", { name: /^Invoice 2041\.pdf/ }).click();
     await expect(page.getByText("Saved to /home/robin/Downloads/Invoice 2041.pdf")).toBeVisible();
     await picture(page, "attachments");
 

@@ -102,8 +102,14 @@ fn image_source<'a>(
         return Some(Cow::Borrowed(value));
     }
     if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("//") {
+        // Written back in one plain form, `https://` and no space before it,
+        // so that whatever fetches it afterwards finds every one of them.
+        let address = value.trim();
+        let plain = !address.chars().any(|c| c.is_whitespace() || c.is_control());
         return match remote {
-            RemoteContent::Allowed if lower.starts_with("https://") => Some(Cow::Borrowed(value)),
+            RemoteContent::Allowed if lower.starts_with("https://") && plain => {
+                Some(Cow::Owned(format!("https://{}", &address[8..])))
+            }
             _ => {
                 blocked.fetch_add(1, Ordering::Relaxed);
                 None
@@ -348,6 +354,31 @@ fn floor_boundary(text: &str, at: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_picture_is_written_one_way_however_it_was_spelt() {
+        for spelt in [
+            r#"<img src="HTTPS://tracker.test/a.png">"#,
+            r#"<img src=" https://tracker.test/a.png">"#,
+            "<img src=\"\thttps://tracker.test/a.png \">",
+        ] {
+            let shown = sanitise_html(spelt, RemoteContent::Allowed);
+            assert!(
+                shown.html.contains(r#"src="https://tracker.test/a.png""#),
+                "{spelt} became {}",
+                shown.html
+            );
+            let blocked = sanitise_html(spelt, RemoteContent::Blocked);
+            assert!(!blocked.html.to_lowercase().contains("tracker.test"));
+            assert_eq!(blocked.blocked_remote, 1);
+        }
+        // An address with a gap in it is not one to go and fetch.
+        let odd = sanitise_html(
+            r#"<img src="https://a.test/x y.png">"#,
+            RemoteContent::Allowed,
+        );
+        assert!(!odd.html.contains("a.test"), "{}", odd.html);
+    }
 
     fn clean(html: &str) -> String {
         sanitise_html(html, RemoteContent::Blocked).html

@@ -108,7 +108,10 @@ fn archived(id: u32, message: brolga_pst::Message) -> (ArchivedMessage, usize) {
     let mut attachments = Vec::new();
     for (position, each) in message.attachments.into_iter().enumerate() {
         bytes += each.content.as_ref().map_or(0, Vec::len);
-        let picture = each.content_type.to_ascii_lowercase().starts_with("image/");
+        // A file says what type it is in its own words. Only the plain
+        // picture types are shown within a message; SVG is not one.
+        let picture = crate::mail_commands::PICTURE_TYPES
+            .contains(&each.content_type.to_ascii_lowercase().as_str());
         let shown_within = each.is_inline && picture && !each.content_id.is_empty();
         if let Some(content) = each
             .content

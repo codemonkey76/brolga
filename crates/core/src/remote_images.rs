@@ -17,6 +17,8 @@ use reqwest::header::CONTENT_TYPE;
 const MAX_IMAGES: usize = 40;
 /// The largest single image.
 const MAX_BYTES: usize = 3 * 1024 * 1024;
+/// How long all of one message's images are given between them.
+const ALL_WITHIN: Duration = Duration::from_secs(30);
 
 pub(crate) struct RemoteImages {
     http: Option<reqwest::Client>,
@@ -26,14 +28,7 @@ pub(crate) struct RemoteImages {
 
 impl RemoteImages {
     pub fn new(allow_private: bool) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            // A redirect could lead off https or onto a private address, and
-            // is not followed.
-            .redirect(reqwest::redirect::Policy::none())
-            .referer(false)
-            .build()
-            .ok();
+        let http = builder().build().ok();
 
         Self {
             http,
@@ -48,6 +43,7 @@ impl RemoteImages {
         let mut out = String::with_capacity(html.len());
         let mut rest = html;
         let (mut fetched, mut missing) = (0usize, 0u32);
+        let deadline = tokio::time::Instant::now() + ALL_WITHIN;
 
         while let Some(at) = rest.find(OPEN) {
             let start = at + "src=\"".len();
@@ -58,8 +54,13 @@ impl RemoteImages {
             let url = rest[start..start + length].replace("&amp;", "&");
             out.push_str(&rest[..at]);
 
+            // All of a message's pictures are had within the one stretch of
+            // time, so that slow ones cannot hold the message up for long.
             let image = if fetched < MAX_IMAGES {
-                self.fetch(&url).await
+                tokio::time::timeout_at(deadline, self.fetch(&url))
+                    .await
+                    .ok()
+                    .flatten()
             } else {
                 None
             };
@@ -81,16 +82,31 @@ impl RemoteImages {
     }
 
     async fn fetch(&self, url: &str) -> Option<String> {
-        let http = self.http.as_ref()?;
         let parsed = reqwest::Url::parse(url).ok()?;
         if parsed.scheme() != "https" && !(self.allow_private && parsed.scheme() == "http") {
             return None;
         }
-        if !self.allow_private && !self.is_public(&parsed).await {
-            return None;
-        }
+        // The name is looked up once, here, and the request is held to the
+        // addresses that were checked: a name that answers with a public
+        // address now and a private one a moment later gets nowhere.
+        let pinned;
+        let http = if self.allow_private {
+            self.http.as_ref()?
+        } else {
+            let host = parsed.host_str()?.trim_matches(['[', ']']).to_owned();
+            let port = parsed.port_or_known_default().unwrap_or(443);
+            let addresses: Vec<_> = tokio::net::lookup_host((host.as_str(), port))
+                .await
+                .ok()?
+                .collect();
+            if addresses.is_empty() || !addresses.iter().all(|a| is_public_address(a.ip())) {
+                return None;
+            }
+            pinned = builder().resolve_to_addrs(&host, &addresses).build().ok()?;
+            &pinned
+        };
 
-        let response = http.get(parsed).send().await.ok()?;
+        let mut response = http.get(parsed).send().await.ok()?;
         if !response.status().is_success() {
             return None;
         }
@@ -116,37 +132,34 @@ impl RemoteImages {
         {
             return None;
         }
-        let bytes = response.bytes().await.ok()?;
-        if bytes.len() > MAX_BYTES {
-            return None;
+        // Read a piece at a time, and given up on as soon as it is too big:
+        // a server need not say how much it is about to send.
+        let mut bytes = Vec::new();
+        while let Some(piece) = response.chunk().await.ok()? {
+            if bytes.len() + piece.len() > MAX_BYTES {
+                return None;
+            }
+            bytes.extend_from_slice(&piece);
         }
 
         Some(format!("data:{kind};base64,{}", STANDARD.encode(&bytes)))
     }
+}
 
-    /// True if every address the host resolves to is out on the internet.
-    /// A tracking image must not be a way to make this computer call itself,
-    /// its router, or a server on the office network.
-    async fn is_public(&self, url: &reqwest::Url) -> bool {
-        let Some(host) = url.host_str() else {
-            return false;
-        };
-        let port = url.port_or_known_default().unwrap_or(443);
-
-        match tokio::net::lookup_host((host.trim_matches(['[', ']']), port)).await {
-            Ok(addresses) => {
-                let addresses: Vec<_> = addresses.collect();
-                !addresses.is_empty() && addresses.iter().all(|a| is_public_address(a.ip()))
-            }
-            Err(_) => false,
-        }
-    }
+/// Requests that carry nothing and follow nothing.
+fn builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        // A redirect could lead off https or onto a private address, and
+        // is not followed.
+        .redirect(reqwest::redirect::Policy::none())
+        .referer(false)
 }
 
 fn is_public_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
+            let [a, b, c, _] = v4.octets();
             !(v4.is_private()
                 || v4.is_loopback()
                 || v4.is_link_local()
@@ -157,6 +170,8 @@ fn is_public_address(address: IpAddr) -> bool {
                 // Carrier-grade NAT, and the block reserved for benchmarking.
                 || (a == 100 && (64..128).contains(&b))
                 || (a == 198 && (18..20).contains(&b))
+                // Set aside for protocols' own use.
+                || (a == 192 && b == 0 && c == 0)
                 || a == 0
                 || a >= 240)
         }
@@ -169,7 +184,13 @@ fn is_public_address(address: IpAddr) -> bool {
                     || v6.is_multicast()
                     // Unique local fc00::/7 and link-local fe80::/10.
                     || (first & 0xfe00) == 0xfc00
-                    || (first & 0xffc0) == 0xfe80)
+                    || (first & 0xffc0) == 0xfe80
+                    // Site-local fec0::/10, long retired but still routed inside.
+                    || (first & 0xffc0) == 0xfec0
+                    // IPv4 carried inside IPv6, where the address within
+                    // could be any at all: NAT64 64:ff9b::/96 and 6to4 2002::/16.
+                    || (first == 0x0064 && v6.segments()[1] == 0xff9b)
+                    || first == 0x2002)
             }
         },
     }
@@ -302,5 +323,16 @@ mod tests {
 
         assert_eq!(missing as usize, MAX_IMAGES + 5);
         assert!(!out.contains("src="));
+    }
+
+    #[test]
+    fn an_ipv4_address_wrapped_in_ipv6_is_not_taken_for_public() {
+        for inside in ["64:ff9b::c0a8:1", "2002:c0a8:1::1", "fec0::1", "192.0.0.8"] {
+            assert!(
+                !is_public_address(inside.parse().unwrap()),
+                "{inside} was taken for public"
+            );
+        }
+        assert!(is_public_address("2606:4700::1111".parse().unwrap()));
     }
 }

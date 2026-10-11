@@ -80,6 +80,12 @@
 
     /** The message's links, in order. In the frame each is known only by its place in this list. */
     let links: string[] = [];
+    /** What each link says, in the same order. */
+    let said: string[] = [];
+    /** A link that was clicked and says another address than it goes to, until the person decides. */
+    let held = $state<{ address: string; says: string } | null>(null);
+    /** A file that can run, clicked to be saved, until the person decides. */
+    let risky = $state<{ attachment: Attachment; ask: boolean } | null>(null);
     /** Bumped to draw the message again after a link has been followed. */
     let drawn = $state(0);
     /** How far down the message was scrolled, to go back there after it is drawn again. */
@@ -101,6 +107,7 @@
     const page = $derived.by(() => {
         if (!opened) return "";
         const body = new DOMParser().parseFromString(opened.body.content, "text/html").body;
+        said = [...body.querySelectorAll("a[href]")].map((link) => link.textContent ?? "");
         links = [...body.querySelectorAll("a[href]")].map((link, place) => {
             const address = link.getAttribute("href") ?? "";
             link.setAttribute("href", `about:blank#${place}`);
@@ -119,16 +126,47 @@
             </style></head><body>${body.innerHTML}</body></html>`;
     });
 
-    /** True when a link's own words look like an address other than the one it goes to. */
-    function looksLikeAnotherAddress(words: string, address: string): boolean {
-        words = words.trim();
-        if (!/^(https?:\/\/|www\.)\S+$/i.test(words)) return false;
+    // A question about one message is not carried over to the next.
+    $effect(() => {
+        void opened?.message.id;
+        held = null;
+        risky = null;
+    });
+
+    /** The site an address is on, without a leading `www.`. Nothing if it is not an address. */
+    function siteOf(address: string): string | null {
         try {
-            const shown = new URL(words.startsWith("www.") ? `https://${words}` : words).hostname;
-            return shown.replace(/^www\./, "") !== new URL(address).hostname.replace(/^www\./, "");
+            return new URL(address).hostname.replace(/^www\./, "").toLowerCase() || null;
         } catch {
-            return true;
+            return null;
         }
+    }
+
+    /** The first site a link's own words name, if they name one: `https://a.example/x`, `www.a.example` or plain `a.example/login`. */
+    function siteNamed(words: string): string | null {
+        const named = /(?:https?:\/\/)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?=[\/:?#\s]|$)/i.exec(words.trim());
+        return named ? named[1].replace(/^www\./, "").toLowerCase() : null;
+    }
+
+    /** True when a link's own words name a site other than the one it goes to. */
+    function looksLikeAnotherAddress(words: string, address: string): boolean {
+        const shown = siteNamed(words);
+        if (!shown || !/^https?:/i.test(address)) return false;
+        const real = siteOf(address);
+        // Words that name the site, or the larger site it is part of, are honest.
+        return !real || (real !== shown && !real.endsWith(`.${shown}`));
+    }
+
+    /** Files that run, or can run something, when opened. */
+    const RUNS = new Set(
+        "exe msi msix bat cmd com scr pif cpl ps1 vbs vbe js jse wsf wsh hta lnk reg jar app command dmg pkg sh desktop appimage deb rpm run bin apk iso img docm xlsm pptm dotm xlam".split(" "),
+    );
+    /** A name's last extension, lower-cased and without the dot. */
+    const extension = (name: string) => (/\.([^.\s]{1,10})$/.exec(name.trim())?.[1] ?? "").toLowerCase();
+
+    function save(attachment: Attachment, ask = false) {
+        if (RUNS.has(extension(attachment.name))) risky = { attachment, ask };
+        else onSave(attachment, ask);
     }
 
     /** The frame has loaded something: the message, or the blank page a followed link leads to. */
@@ -145,7 +183,10 @@
 
         if (at.startsWith("about:blank#")) {
             const address = links[Number(at.slice("about:blank#".length))];
-            if (address) onOpenLink(address);
+            const place = Number(at.slice("about:blank#".length));
+            // One that says another address than it goes to is asked about first.
+            if (address && looksLikeAnotherAddress(said[place] ?? "", address)) held = { address, says: siteNamed(said[place] ?? "") ?? "" };
+            else if (address) onOpenLink(address);
         }
         if (at !== "about:srcdoc") {
             goBackTo = scrolled;
@@ -275,16 +316,46 @@
                                 🔗 {each.name || "Linked file"}
                             </span>
                         {:else}
-                            <button type="button" class="attachment" title="Save to your downloads folder" onclick={() => onSave(each)}>
-                                📎 {each.name || "Attachment"} <span class="muted">{size(each.size)}</span>
+                            <!-- The end of a name says what kind of file it is, so a long name is cut in the middle, never there. -->
+                            <button type="button" class="attachment" aria-label="{each.name || 'Attachment'}, {size(each.size)}" title="Save {each.name || 'attachment'} to your downloads folder" onclick={() => save(each)}>
+                                <span class="stem">📎 {(each.name || "Attachment").slice(0, -12) || (each.name || "Attachment")}</span><span class="end">{(each.name || "Attachment").length > 12 ? (each.name || "").slice(-12) : ""}</span>
+                                <span class="muted">{size(each.size)}</span>
                             </button>
-                            <button type="button" class="attachment as" aria-label="Save {each.name || 'attachment'} as…" title="Choose where to save it" onclick={() => onSave(each, true)}>
+                            <button type="button" class="attachment as" aria-label="Save {each.name || 'attachment'} as…" title="Choose where to save it" onclick={() => save(each, true)}>
                                 Save as…
                             </button>
                         {/if}
                     </li>
                 {/each}
             </ul>
+        {/if}
+        {#if risky}
+            <p class="note caution" role="alert">
+                <span><strong>{risky.attachment.name}</strong> is a program, or a file that can run one. Save it only if you were expecting it from this sender.</span>
+                <button
+                    type="button"
+                    onclick={() => {
+                        const { attachment, ask } = risky ?? {};
+                        risky = null;
+                        if (attachment) onSave(attachment, ask);
+                    }}>Save anyway</button
+                >
+                <button type="button" onclick={() => (risky = null)}>Don't save</button>
+            </p>
+        {/if}
+        {#if held}
+            <p class="note caution" role="alert">
+                <span>This link says <strong>{held.says}</strong> but goes to <strong>{siteOf(held.address) ?? held.address}</strong>.</span>
+                <button
+                    type="button"
+                    onclick={() => {
+                        const address = held?.address;
+                        held = null;
+                        if (address) onOpenLink(address);
+                    }}>Open it anyway</button
+                >
+                <button type="button" onclick={() => (held = null)}>Don't open</button>
+            </p>
         {/if}
         {#if saved}
             <p class="note" role="status">{saved}</p>
@@ -336,7 +407,7 @@
         {/if}
 
         <p class="status" class:warn={mismatch} aria-live="polite">
-            {#if hover}{mismatch ? "This link goes somewhere other than it says: " : ""}{hover}{/if}
+            {#if hover}{mismatch ? "This link goes somewhere other than it says: " : ""}{#if siteOf(hover)}<strong>{siteOf(hover)}</strong>{" · "}{/if}{hover}{/if}
         </p>
     {/if}
 </section>
@@ -472,8 +543,30 @@
         color: var(--muted);
     }
 
+    .attachment .stem {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: pre;
+    }
+
+    .attachment .end {
+        flex: none;
+        white-space: pre;
+        margin-right: 0.35em;
+    }
+
+    .note.caution {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        border-left: 3px solid var(--warn);
+    }
+
     .attachment {
-        display: inline-block;
+        display: inline-flex;
         max-width: 20rem;
         padding: 0.25rem 0.6rem;
         border: 1px solid var(--line);

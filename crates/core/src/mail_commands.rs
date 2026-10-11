@@ -416,7 +416,7 @@ const CID: &str = "src=\"cid:";
 const MAX_INLINE_IMAGES: usize = 40;
 const MAX_INLINE_BYTES: i64 = 3 * 1024 * 1024;
 /// Plain picture types only. SVG is not one: it can carry scripts.
-const PICTURE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+pub(crate) const PICTURE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// The pictures within a message's body: from this computer if they have
 /// been fetched before, otherwise from Graph, and then kept. If they cannot
@@ -474,9 +474,12 @@ fn with_inline_images(html: &str, images: &[InlineImage]) -> String {
         // The cleaner writes attribute values with `&` as `&amp;`.
         let name = rest[start..start + length].replace("&amp;", "&");
         out.push_str(&rest[..at]);
+        // The type goes into the page as it is, so it is one of the few
+        // plain ones or the picture is left out.
         if let Some(image) = images
             .iter()
             .find(|i| i.content_id.eq_ignore_ascii_case(name.trim()))
+            .filter(|i| PICTURE_TYPES.contains(&i.content_type.as_str()))
         {
             out.push_str(&format!(
                 "src=\"data:{};base64,{}\"",
@@ -1410,7 +1413,29 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::civil_date;
+    use super::{InlineImage, civil_date, with_inline_images};
+
+    #[test]
+    fn a_picture_whose_type_is_not_a_plain_one_is_left_out_of_the_page() {
+        let image = |content_type: &str| InlineImage {
+            content_id: "plan".to_owned(),
+            content_type: content_type.to_owned(),
+            data: "AAAA".to_owned(),
+        };
+        let html = r#"<p><img src="cid:plan"></p>"#;
+
+        assert_eq!(
+            with_inline_images(html, &[image("image/png")]),
+            r#"<p><img src="data:image/png;base64,AAAA"></p>"#
+        );
+        for not_plain in ["image/svg+xml", r#"image/x"><style>p{}</style><x y=""#] {
+            assert_eq!(
+                with_inline_images(html, &[image(not_plain)]),
+                "<p><img ></p>",
+                "{not_plain}"
+            );
+        }
+    }
 
     #[test]
     fn days_since_1970_are_calendar_dates() {
