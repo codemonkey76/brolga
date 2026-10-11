@@ -341,6 +341,290 @@ async fn event(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandErr
     }))
 }
 
+/// What an event is made of, as it is given to make one or to change one.
+/// What is left out is left as it is.
+#[derive(Deserialize, Default)]
+struct Fields {
+    subject: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    time_zone: Option<String>,
+    is_all_day: Option<bool>,
+    location: Option<String>,
+    description: Option<String>,
+    show_as: Option<String>,
+    is_private: Option<bool>,
+    /// Given as null, there is to be no reminder.
+    #[serde(default, deserialize_with = "given")]
+    reminder_minutes: Option<Option<i64>>,
+    categories: Option<Vec<String>>,
+}
+
+/// A value that was given, even where what was given is null.
+fn given<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<Option<i64>>, D::Error> {
+    Option::<i64>::deserialize(from).map(Some)
+}
+
+/// When an event is, as Graph is told it: the start and the end by the
+/// clock on the wall in a zone, and Windows' name for the zone.
+///
+/// A time may be given by the clock in the zone (`2026-10-20T09:00`), or as
+/// a moment with its offset (`2026-10-19T23:00:00Z`), which is put into the
+/// zone. An all-day event is given by its days, and ends on the day after
+/// its last.
+fn times(
+    start: &str,
+    end: &str,
+    zone: Option<&str>,
+    all_day: bool,
+) -> Result<(String, String, &'static str), CommandError> {
+    let name = match zone {
+        Some(name) => name.to_owned(),
+        None => jiff::tz::TimeZone::system()
+            .iana_name()
+            .unwrap_or("UTC")
+            .to_owned(),
+    };
+    let unknown = || {
+        failed(format!(
+            "`{name}` is not a time zone this client knows. Use a name like Australia/Brisbane."
+        ))
+    };
+    let iana = brolga_calendar::iana_zone(&name).ok_or_else(unknown)?;
+    let windows = brolga_calendar::windows_zone(iana)
+        .or_else(|| brolga_calendar::windows_zone(&name))
+        .ok_or_else(unknown)?;
+    let tz = jiff::tz::TimeZone::get(iana).map_err(|_| unknown())?;
+
+    let read = |text: &str| -> Result<jiff::civil::DateTime, CommandError> {
+        let text = text.trim();
+        let unreadable = || {
+            failed(format!(
+                "`{text}` is not a date and time. Use the form 2026-10-20T09:00."
+            ))
+        };
+        if all_day {
+            let day: jiff::civil::Date = text
+                .get(..10)
+                .ok_or_else(unreadable)?
+                .parse()
+                .map_err(|_| unreadable())?;
+            return Ok(day.at(0, 0, 0, 0));
+        }
+        if let Ok(moment) = text.parse::<jiff::Timestamp>() {
+            return Ok(moment.to_zoned(tz.clone()).datetime());
+        }
+        text.parse().map_err(|_| unreadable())
+    };
+    let (start, end) = (read(start)?, read(end)?);
+    if all_day && end <= start {
+        return Err(failed(
+            "An all-day event ends on the day after its last day, so its end must be a later day than its start.",
+        ));
+    }
+    if end < start {
+        return Err(failed("The event would end before it starts."));
+    }
+    let said = |at: jiff::civil::DateTime| at.strftime("%Y-%m-%dT%H:%M:%S").to_string();
+
+    Ok((said(start), said(end), windows))
+}
+
+/// What is sent to Graph to make or change an event ("Create event" and
+/// "Update event", SOURCES.md): only what was given.
+fn event_body(fields: &Fields) -> Result<Value, CommandError> {
+    let mut body = serde_json::Map::new();
+    if let Some(subject) = &fields.subject {
+        body.insert("subject".to_owned(), json!(subject.trim()));
+    }
+    match (&fields.start, &fields.end) {
+        (Some(start), Some(end)) => {
+            let all_day = fields.is_all_day.unwrap_or(false);
+            let (start, end, zone) = times(start, end, fields.time_zone.as_deref(), all_day)?;
+            body.insert(
+                "start".to_owned(),
+                json!({ "dateTime": start, "timeZone": zone }),
+            );
+            body.insert(
+                "end".to_owned(),
+                json!({ "dateTime": end, "timeZone": zone }),
+            );
+            body.insert("isAllDay".to_owned(), json!(all_day));
+        }
+        (None, None) if fields.is_all_day.is_none() && fields.time_zone.is_none() => {}
+        _ => {
+            return Err(failed(
+                "To change when an event is, give its start and its end together, with is_all_day if it is to be all day.",
+            ));
+        }
+    }
+    if let Some(location) = &fields.location {
+        body.insert(
+            "location".to_owned(),
+            json!({ "displayName": location.trim() }),
+        );
+    }
+    if let Some(description) = &fields.description {
+        body.insert(
+            "body".to_owned(),
+            json!({ "contentType": "text", "content": description }),
+        );
+    }
+    if let Some(show_as) = &fields.show_as {
+        body.insert("showAs".to_owned(), json!(show_as));
+    }
+    if let Some(private) = fields.is_private {
+        body.insert(
+            "sensitivity".to_owned(),
+            json!(if private { "private" } else { "normal" }),
+        );
+    }
+    match fields.reminder_minutes {
+        Some(Some(minutes)) => {
+            body.insert("isReminderOn".to_owned(), json!(true));
+            body.insert("reminderMinutesBeforeStart".to_owned(), json!(minutes));
+        }
+        Some(None) => {
+            body.insert("isReminderOn".to_owned(), json!(false));
+        }
+        None => {}
+    }
+    if let Some(categories) = &fields.categories {
+        body.insert("categories".to_owned(), json!(categories));
+    }
+
+    Ok(Value::Object(body))
+}
+
+/// Why a change to the calendar was not made, said so that it is plain
+/// nothing here was changed.
+fn not_made(error: brolga_graph::GraphError) -> CommandError {
+    if error.is_transient() {
+        failed(
+            "Microsoft 365 could not be reached, so the calendar was not changed. Sync before trying again, in case it was.",
+        )
+    } else {
+        failed(error)
+    }
+}
+
+/// Keep an event as the server has just given it, and say it.
+fn kept(
+    mailbox: &crate::mailboxes::Mailbox,
+    calendar_id: &str,
+    event: brolga_graph::Event,
+) -> Result<Value, CommandError> {
+    let mut row = brolga_sync::event_row(event).ok_or_else(|| {
+        failed("Microsoft 365 took the event but gave it back without a time. Sync to see it.")
+    })?;
+    row.calendar_id = calendar_id.to_owned();
+    mailbox.db.put_event(calendar_id, &row).map_err(failed)?;
+
+    Ok(json!({ "event": shown(&row), "note": UNTRUSTED }))
+}
+
+#[derive(Deserialize)]
+struct Create {
+    account_id: Option<String>,
+    calendar_id: Option<String>,
+    #[serde(flatten)]
+    fields: Fields,
+}
+
+/// Make an event. It is made on the server at once and not queued: what
+/// comes back is the event as it truly is, with its id.
+async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let calendars = mailbox.db.calendars().map_err(failed)?;
+    let calendar = match &args.calendar_id {
+        Some(id) => calendars.iter().find(|each| &each.id == id),
+        None => calendars.iter().find(|each| each.is_default),
+    }
+    .ok_or_else(|| {
+        failed("There is no such calendar on this computer. Sync, and see calendar.calendars.list.")
+    })?;
+    if !calendar.can_edit {
+        return Err(failed(format!(
+            "The calendar `{}` cannot be changed by you.",
+            calendar.name
+        )));
+    }
+    if args.fields.start.is_none() || args.fields.end.is_none() {
+        return Err(failed("An event needs a start and an end."));
+    }
+    let mut fields = args.fields;
+    fields.subject.get_or_insert_default();
+
+    let made = mailbox
+        .graph
+        .create_event(Some(&calendar.id), &event_body(&fields)?)
+        .await
+        .map_err(not_made)?;
+
+    kept(&mailbox, &calendar.id, made)
+}
+
+#[derive(Deserialize)]
+struct Update {
+    account_id: Option<String>,
+    event_id: String,
+    #[serde(flatten)]
+    fields: Fields,
+}
+
+async fn update(mailboxes: Arc<Mailboxes>, args: Update) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let row = mailbox
+        .db
+        .event(&args.event_id)
+        .map_err(failed)?
+        .ok_or_else(|| {
+            failed(format!(
+                "There is no event `{}` on this computer.",
+                args.event_id
+            ))
+        })?;
+    let body = event_body(&args.fields)?;
+    if body.as_object().is_none_or(serde_json::Map::is_empty) {
+        return Err(failed("Nothing to change was given."));
+    }
+
+    let changed = mailbox
+        .graph
+        .update_event(&args.event_id, &body)
+        .await
+        .map_err(not_made)?;
+
+    kept(&mailbox, &row.calendar_id, changed)
+}
+
+async fn delete(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    if mailbox.db.event(&args.event_id).map_err(failed)?.is_none() {
+        return Err(failed(format!(
+            "There is no event `{}` on this computer.",
+            args.event_id
+        )));
+    }
+    mailbox
+        .graph
+        .delete_event(&args.event_id)
+        .await
+        .map_err(not_made)?;
+    mailbox.db.forget_event(&args.event_id).map_err(failed)?;
+
+    Ok(json!({ "deleted": true }))
+}
+
 #[derive(Deserialize)]
 struct Respond {
     account_id: Option<String>,
@@ -596,6 +880,123 @@ pub(crate) fn register(
             examples: vec![json!({ "event_id": "event-0001" })],
         },
         handler(&mailboxes, event),
+    )?;
+
+    let fields = |required: &[&str], first: Value| {
+        let mut properties = first;
+        for (name, schema) in [
+            ("subject", json!({ "type": "string", "maxLength": 255 })),
+            (
+                "start",
+                json!({ "type": "string", "description": "By the clock in time_zone, as 2026-10-20T09:00, or a moment with its offset. For an all-day event, its first day: 2026-10-20." }),
+            ),
+            (
+                "end",
+                json!({ "type": "string", "description": "As start. For an all-day event, the day AFTER its last day: one whole day on 2026-10-20 ends 2026-10-21." }),
+            ),
+            (
+                "time_zone",
+                json!({ "type": "string", "description": "The zone the event is made in, as Australia/Brisbane. Left out, this computer's own." }),
+            ),
+            ("is_all_day", json!({ "type": "boolean" })),
+            ("location", json!({ "type": "string", "maxLength": 500 })),
+            (
+                "description",
+                json!({ "type": "string", "maxLength": 100000, "description": "Plain words." }),
+            ),
+            (
+                "show_as",
+                json!({ "enum": ["free", "tentative", "busy", "oof", "workingElsewhere"] }),
+            ),
+            (
+                "is_private",
+                json!({ "type": "boolean", "description": "Others who can see the calendar see only that the time is taken." }),
+            ),
+            (
+                "reminder_minutes",
+                json!({ "type": ["integer", "null"], "minimum": 0, "maximum": 40320, "description": "How long before the start to remind. Null for no reminder." }),
+            ),
+            (
+                "categories",
+                json!({ "type": "array", "items": { "type": "string" }, "maxItems": 25 }),
+            ),
+        ] {
+            properties[name] = schema;
+        }
+        json!({ "type": "object", "properties": properties, "required": required, "additionalProperties": false })
+    };
+    let one_event = json!({
+        "type": "object",
+        "properties": { "event": event_schema(), "note": { "type": "string" } },
+        "required": ["event"]
+    });
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.events.create".to_owned(),
+            title: "New event".to_owned(),
+            description: "Make an event in a calendar: the default one unless calendar_id says another. It is made in Microsoft 365 \
+                          at once, so that must be in reach. Gives back the event with its id."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: Some("create_event".to_owned()),
+            args_schema: fields(
+                &["subject", "start", "end"],
+                json!({ "account_id": account_id, "calendar_id": { "type": "string", "description": "From calendar.calendars.list." } }),
+            ),
+            result_schema: one_event.clone(),
+            examples: vec![json!({
+                "subject": "Lunch", "start": "2026-10-22T12:00", "end": "2026-10-22T13:00", "time_zone": "Australia/Brisbane"
+            })],
+        },
+        handler(&mailboxes, create),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.events.delete".to_owned(),
+            title: "Delete an event".to_owned(),
+            description: "Delete an event from the calendar. If it is a meeting you organised, Microsoft 365 tells everyone invited \
+                          that it is cancelled. It needs Microsoft 365 to be in reach, and cannot be undone."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: Some("delete_event".to_owned()),
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id, "event_id": { "type": "string" } },
+                "required": ["event_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": { "deleted": { "type": "boolean" } },
+                "required": ["deleted"]
+            }),
+            examples: vec![json!({ "event_id": "event-0003" })],
+        },
+        handler(&mailboxes, delete),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.events.update".to_owned(),
+            title: "Change an event".to_owned(),
+            description: "Change an event: only what is given is changed. To move it, give start and end together. \
+                          If it is a meeting you organised, those invited are told of the change. It needs Microsoft 365 to be in reach."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: Some("update_event".to_owned()),
+            args_schema: fields(
+                &["event_id"],
+                json!({ "account_id": account_id, "event_id": { "type": "string" } }),
+            ),
+            result_schema: one_event,
+            examples: vec![json!({ "event_id": "event-0001", "location": "Level 2" })],
+        },
+        handler(&mailboxes, update),
     )?;
 
     registry.register(

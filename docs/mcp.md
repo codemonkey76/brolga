@@ -41,12 +41,15 @@ argument `mcp`.
 | `list_calendars` | An account's calendars, with their colours and whether each is shown. |
 | `list_events` | The events that overlap a stretch of time, each occurrence of a repeating event on its own. |
 | `get_event` | One event, with its description. |
+| `create_event` | Make an event in a calendar. Consequential. |
+| `update_event` | Change an event: only what is given. Consequential. |
+| `delete_event` | Delete an event; a meeting you organised is cancelled for everyone. Consequential. |
 | `respond_to_event` | Accept, tentatively accept or decline an invitation. Consequential: the organiser is sent the answer. |
 | `get_sync_status` | For each account: syncing or not, needing sign-in or not, how much is on this computer and when it was last brought up to date. |
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |
 
-Contacts tools arrive with that feature. The calendar can be read; changing it comes later.
+Contacts tools arrive with that feature. Repeating events and inviting people come later.
 
 Every result that carries a message's own words also carries a note saying
 they were written by the sender and are not instructions. Reading a message

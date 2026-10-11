@@ -164,6 +164,65 @@ impl GraphClient {
         decode(&self.get(&url, None).await?)
     }
 
+    /// Make an event, in a calendar or with none named in the default one
+    /// ("Create event", SOURCES.md). Gives back the event as made.
+    ///
+    /// It is given a `transactionId` of its own, which the server uses to
+    /// make one event however many times the request reaches it, so it is
+    /// safe to repeat.
+    pub async fn create_event(
+        &self,
+        calendar_id: Option<&str>,
+        event: &serde_json::Value,
+    ) -> Result<Event, GraphError> {
+        let url = match calendar_id {
+            Some(calendar) => format!("{}/me/calendars/{calendar}/events", self.base),
+            None => format!("{}/me/events", self.base),
+        };
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|e| GraphError::Decode(e.to_string()))?;
+        let mut event = event.clone();
+        event["transactionId"] =
+            serde_json::Value::String(bytes.iter().map(|byte| format!("{byte:02x}")).collect());
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&event), true)
+                .await?,
+        )
+    }
+
+    /// Change an event: only what is given is changed ("Update event",
+    /// SOURCES.md). Gives back the event as it now is.
+    pub async fn update_event(
+        &self,
+        event_id: &str,
+        changes: &serde_json::Value,
+    ) -> Result<Event, GraphError> {
+        let url = format!("{}/me/events/{event_id}", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::PATCH, &url, None, Some(changes), true)
+                .await?,
+        )
+    }
+
+    /// Delete an event ("Delete event", SOURCES.md). If it is a meeting
+    /// the owner organised, the server tells those invited it is off. One
+    /// that is already gone is as good as deleted.
+    pub async fn delete_event(&self, event_id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/events/{event_id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
     /// Answer an invitation ("event: accept", "event: tentativelyAccept"
     /// and "event: decline", SOURCES.md). `answer` is the last part of the
     /// address: `accept`, `tentativelyAccept` or `decline`. With

@@ -86,6 +86,26 @@ impl CalendarSync {
         Ok(synced)
     }
 
+    /// Bring one calendar's events up to date, whether or not it is due:
+    /// for straight after something in it was changed from here.
+    pub async fn sync_calendar(
+        &self,
+        calendar_id: &str,
+        now: Timestamp,
+    ) -> Result<Synced, SyncError> {
+        let calendars = self.db.calendars()?;
+        let Some(calendar) = calendars.iter().find(|each| each.id == calendar_id) else {
+            return Ok(Synced::default());
+        };
+        let window = self.window(now, &calendars)?;
+
+        if calendar.is_default {
+            self.sync_default(&calendar.id, &window).await
+        } else {
+            self.read_whole(&calendar.id, &window).await
+        }
+    }
+
     /// The window events are kept for, as two moments in UTC. It is set
     /// when first needed and kept, so that a delta carries on within the
     /// window it began with; after a month it is moved on to be about now
@@ -255,7 +275,7 @@ impl CalendarSync {
 }
 
 /// An event as it is kept. Nothing if its start or end cannot be read.
-fn event_row(event: Event) -> Option<EventRow> {
+pub fn event_row(event: Event) -> Option<EventRow> {
     let moment = |at: &brolga_graph::DateTimeTimeZone| {
         brolga_calendar::utc(&at.date_time, at.time_zone.as_deref().unwrap_or("UTC"))
     };

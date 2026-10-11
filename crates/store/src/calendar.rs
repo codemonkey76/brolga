@@ -108,6 +108,51 @@ fn events_resource(calendar_id: &str) -> String {
     format!("events:{calendar_id}")
 }
 
+fn insert_event(
+    transaction: &rusqlite::Transaction<'_>,
+    calendar_id: &str,
+    event: &EventRow,
+    generation: i64,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        &format!(
+            "INSERT OR REPLACE INTO events ({EVENT_COLUMNS}, generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                     ?20, ?21, ?22, ?23, ?24, ?25, ?26)"
+        ),
+        params![
+            event.id,
+            calendar_id,
+            event.subject,
+            event.preview,
+            event.location,
+            event.start,
+            event.end,
+            event.is_all_day,
+            event.start_zone,
+            event.end_zone,
+            event.show_as,
+            event.sensitivity,
+            event.is_cancelled,
+            event.is_organizer,
+            event.organizer_name,
+            event.organizer_address,
+            event.response,
+            event.kind,
+            event.series_master_id,
+            event.categories,
+            event.reminder_minutes,
+            event.join_url,
+            event.web_link,
+            event.change_key,
+            event.attendees,
+            generation
+        ],
+    )?;
+
+    Ok(())
+}
+
 impl AccountDb {
     /// Make the calendars here the ones the server has. A calendar it no
     /// longer has goes, with its events. Whether each is shown is this
@@ -226,41 +271,7 @@ impl AccountDb {
         let state = sync_state(&transaction, &resource)?;
 
         for event in changed {
-            transaction.execute(
-                &format!(
-                    "INSERT OR REPLACE INTO events ({EVENT_COLUMNS}, generation)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                             ?20, ?21, ?22, ?23, ?24, ?25, ?26)"
-                ),
-                params![
-                    event.id,
-                    calendar_id,
-                    event.subject,
-                    event.preview,
-                    event.location,
-                    event.start,
-                    event.end,
-                    event.is_all_day,
-                    event.start_zone,
-                    event.end_zone,
-                    event.show_as,
-                    event.sensitivity,
-                    event.is_cancelled,
-                    event.is_organizer,
-                    event.organizer_name,
-                    event.organizer_address,
-                    event.response,
-                    event.kind,
-                    event.series_master_id,
-                    event.categories,
-                    event.reminder_minutes,
-                    event.join_url,
-                    event.web_link,
-                    event.change_key,
-                    event.attendees,
-                    state.generation
-                ],
-            )?;
+            insert_event(&transaction, calendar_id, event, state.generation)?;
         }
         for id in removed {
             // A view names as removed events that were never in it, as well
@@ -278,6 +289,18 @@ impl AccountDb {
         }
 
         advance(&transaction, &resource, link, round)?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    /// Put in one event as the server has just given it, after it was made
+    /// or changed from here. The sync is left where it was.
+    pub fn put_event(&self, calendar_id: &str, event: &EventRow) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let state = sync_state(&transaction, &events_resource(calendar_id))?;
+        insert_event(&transaction, calendar_id, event, state.generation)?;
         transaction.commit()?;
 
         Ok(())

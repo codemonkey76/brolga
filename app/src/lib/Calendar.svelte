@@ -4,6 +4,10 @@
     import {
         type Answer,
         type Calendar,
+        type EventFields,
+        createEvent,
+        deleteEvent,
+        updateEvent,
         type CalendarEvent,
         type View,
         addDays,
@@ -23,7 +27,9 @@
     import { execute, say } from "./commands";
     import { openLink } from "./mail";
     import MonthGrid from "./MonthGrid.svelte";
+    import EventEditor from "./EventEditor.svelte";
     import Rsvp from "./Rsvp.svelte";
+    import { Pencil, Plus, Trash } from "@lucide/svelte";
     import TimeGrid from "./TimeGrid.svelte";
 
     interface Props {
@@ -63,6 +69,39 @@
 
     let selected = $state<CalendarEvent | null>(null);
     let description = $state<{ text: string; complete: boolean } | null>(null);
+    /** An event is being made (`new`) or the selected one changed (`change`). */
+    let editing = $state<"new" | "change" | null>(null);
+    /** True once Delete has been pressed once, and it is being asked whether to. */
+    let sure = $state(false);
+
+    /** When a new event starts, unless said otherwise: the next half hour, on the day shown if it is not today. */
+    function newStart(): Date {
+        const at = new Date();
+        const day = days.some((each) => sameDay(each, at)) ? at : (view === "month" ? anchor : days[0]);
+        const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), sameDay(day, at) ? at.getHours() : 9, sameDay(day, at) && at.getMinutes() >= 30 ? 60 : sameDay(day, at) ? 30 : 0);
+        return start;
+    }
+
+    async function save(fields: EventFields, calendarId: string | null) {
+        if (!accountId) return;
+        const saved = editing === "change" && selected ? await updateEvent(accountId, selected.id, fields) : await createEvent(accountId, calendarId, fields);
+        editing = null;
+        await load();
+        await select(saved);
+    }
+
+    async function remove() {
+        const event = selected;
+        if (!accountId || !event) return;
+        try {
+            await deleteEvent(accountId, event.id);
+            selected = null;
+            sure = false;
+            await load();
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
 
     const days = $derived(daysOf(view, anchor));
     const title = $derived.by(() => {
@@ -140,6 +179,8 @@
 
     async function select(event: CalendarEvent) {
         selected = event;
+        editing = null;
+        sure = false;
         description = null;
         if (!accountId) return;
         try {
@@ -171,10 +212,18 @@
     }
 
     function keydown(event: KeyboardEvent) {
-        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+        if (event.key === "Escape" && editing) {
+            editing = null;
+            return;
+        }
+        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
         if (event.key === "F9") {
             event.preventDefault();
             sync();
+        } else if (event.key.toLowerCase() === "n" && !event.ctrlKey && !event.metaKey && !editing) {
+            event.preventDefault();
+            selected = null;
+            editing = "new";
         } else if (event.key === "Escape" && selected) {
             selected = null;
         } else if (event.key.toLowerCase() === "t" && !event.ctrlKey && !event.metaKey) {
@@ -243,6 +292,7 @@
 
     <section class="main" aria-label="Calendar">
         <div class="bar">
+            <button type="button" class="primary new" title="New event (N)" onclick={() => ((selected = null), (editing = "new"))}><Plus size={16} aria-hidden="true" />New event</button>
             <button type="button" title="Today (T)" onclick={() => (anchor = startOfDay(new Date()))}>Today</button>
             <button type="button" aria-label="Earlier" onclick={() => (anchor = step(view, anchor, -1))}>‹</button>
             <button type="button" aria-label="Later" onclick={() => (anchor = step(view, anchor, 1))}>›</button>
@@ -282,9 +332,37 @@
         </div>
     </section>
 
-    {#if selected}
+    {#if editing}
+        <aside class="details" aria-label="Event">
+            {#key editing + (selected?.id ?? "")}
+                <EventEditor
+                    event={editing === "change" ? selected : null}
+                    description={editing === "change" ? (description?.complete ? description.text : null) : ""}
+                    startAt={newStart()}
+                    {calendars}
+                    onSave={save}
+                    onCancel={() => (editing = null)}
+                />
+            {/key}
+        </aside>
+    {:else if selected}
         <aside class="details" aria-label="Event">
             <button type="button" class="close" aria-label="Close" title="Escape" onclick={() => (selected = null)}>✕</button>
+            {#if calendars.find((c) => c.id === selected?.calendar_id)?.can_edit ?? true}
+                <div class="tools">
+                    {#if sure}
+                        <button type="button" class="danger" onclick={remove}>
+                            {selected.is_organizer && selected.attendees.length > 0 ? "Delete, and tell everyone it is cancelled?" : "Delete for good?"}
+                        </button>
+                        <button type="button" onclick={() => (sure = false)}>Keep</button>
+                    {:else}
+                        {#if selected.is_organizer || selected.response === "none"}
+                            <button type="button" aria-label="Change" title="Change" onclick={() => (editing = "change")}><Pencil size={16} aria-hidden="true" /></button>
+                        {/if}
+                        <button type="button" aria-label="Delete" title="Delete" onclick={() => (sure = true)}><Trash size={16} aria-hidden="true" /></button>
+                    {/if}
+                </div>
+            {/if}
             <h2 class:cancelled={selected.is_cancelled}>{selected.subject || "(No subject)"}</h2>
             {#if selected.is_cancelled}<p class="warn">Cancelled</p>{/if}
             <p>{whenSaid(selected)}</p>
@@ -327,6 +405,31 @@
 </div>
 
 <style>
+    .bar .new {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        white-space: nowrap;
+        font-size: 0.9rem;
+    }
+
+    .tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-bottom: 0.4rem;
+    }
+
+    .tools button {
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.85rem;
+    }
+
+    .tools .danger {
+        color: var(--danger);
+    }
+
     .calendar {
         height: 100%;
         min-height: 0;

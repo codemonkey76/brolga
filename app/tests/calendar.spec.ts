@@ -355,3 +355,83 @@ test("an invitation is answered from the calendar, quietly, and a declined one g
     await expect(panel).toHaveCount(0);
     await expect(calendar.getByRole("button", { name: /Budget review/ })).toHaveCount(0);
 });
+
+test("an event is made, changed and deleted from the calendar", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: week });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    const calendar = page.getByRole("region", { name: "Calendar" });
+    const panel = page.getByRole("complementary", { name: "Event" });
+
+    // Made: by the clock here, with the zone it was made in.
+    await calendar.getByRole("button", { name: "New event" }).click();
+    const form = panel.getByRole("form", { name: "New event" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Dentist");
+    await form.getByLabel("Start day").fill("2026-10-15");
+    await form.getByLabel("Start time").fill("14:00");
+    // The end keeps half an hour behind the start.
+    await expect(form.getByLabel("End day")).toHaveValue("2026-10-15");
+    await expect(form.getByLabel("End time")).toHaveValue("14:30");
+    await form.getByLabel("End time").fill("15:00");
+    await form.getByRole("textbox", { name: "Location" }).fill("Level 2");
+    await form.getByLabel("Reminder").selectOption("60");
+    await form.getByLabel("Private").check();
+    if (process.env.SCREENSHOTS) await page.screenshot({ path: "../docs/screenshots/calendar-new-event.png" });
+    await form.getByRole("button", { name: "Save" }).click();
+
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.create").at(-1)?.args).toMatchObject({
+        calendar_id: "main",
+        subject: "Dentist",
+        start: "2026-10-15T14:00",
+        end: "2026-10-15T15:00",
+        time_zone: "Australia/Brisbane",
+        is_all_day: false,
+        reminder_minutes: 60,
+        is_private: true,
+        location: "Level 2",
+    });
+    await expect(calendar.getByRole("button", { name: /Dentist/ })).toBeVisible();
+    await expect(panel).toContainText("Thu, Oct 15, 2026, 2:00 PM to 3:00 PM");
+
+    // Changed: only what was changed is sent.
+    await panel.getByRole("button", { name: "Change" }).click();
+    const change = panel.getByRole("form", { name: "Change event" });
+    await expect(change.getByRole("textbox", { name: "Subject" })).toHaveValue("Dentist");
+    await change.getByRole("textbox", { name: "Subject" }).fill("Dentist (check-up)");
+    await change.getByRole("button", { name: "Save" }).click();
+    const sent = (await ran(page)).filter((r) => r.command === "calendar.events.update").at(-1)?.args as Record<string, unknown>;
+    expect(sent).toMatchObject({ subject: "Dentist (check-up)" });
+    expect(Object.keys(sent).sort()).toEqual(["account_id", "event_id", "subject"]);
+    await expect(panel.getByRole("heading", { level: 2 })).toHaveText("Dentist (check-up)");
+
+    // Made all day: its last day is the day it ends, to a person, and the day after to the server.
+    await panel.getByRole("button", { name: "Change" }).click();
+    await change.getByLabel("All day").check();
+    await change.getByLabel("End day").fill("2026-10-16");
+    await change.getByRole("button", { name: "Save" }).click();
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.update").at(-1)?.args).toMatchObject({ is_all_day: true, start: "2026-10-15", end: "2026-10-17" });
+    await expect(panel).toContainText("Thu, Oct 15, 2026 to Fri, Oct 16, 2026, all day");
+
+    // Deleted, once it has been asked.
+    await panel.getByRole("button", { name: "Delete" }).click();
+    await panel.getByRole("button", { name: "Keep" }).click();
+    await panel.getByRole("button", { name: "Delete" }).click();
+    await panel.getByRole("button", { name: "Delete for good?" }).click();
+    await expect(panel).toHaveCount(0);
+    await expect(calendar.getByText("Dentist")).toHaveCount(0);
+});
+
+test("an event that cannot be saved says so and the form is kept", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: week, offline: true });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    await page.keyboard.press("n");
+    const form = page.getByRole("form", { name: "New event" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Dentist");
+    await form.getByRole("button", { name: "Save" }).click();
+
+    await expect(form.getByRole("alert")).toContainText("could not be reached");
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Dentist");
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
+});

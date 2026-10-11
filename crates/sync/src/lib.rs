@@ -16,7 +16,7 @@
 mod calendar;
 mod mail;
 
-pub use calendar::CalendarSync;
+pub use calendar::{CalendarSync, event_row};
 pub use mail::{MailSync, Synced};
 
 use brolga_graph::GraphError;

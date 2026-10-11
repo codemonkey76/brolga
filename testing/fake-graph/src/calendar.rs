@@ -39,6 +39,10 @@ pub struct FakeEvent {
     pub cancelled_days: Vec<String>,
     /// Occurrences that were moved: the day one fell on, and its new start and end in UTC.
     pub moved: Vec<(String, String, String)>,
+    pub sensitivity: String,
+    pub categories: Vec<String>,
+    /// What it says, as HTML or plain words.
+    pub body: Option<String>,
     /// Who called the meeting, `(name, address)`, where it was not the
     /// owner of the mailbox.
     pub organizer: Option<(String, String)>,
@@ -63,6 +67,9 @@ impl FakeEvent {
             series: None,
             cancelled_days: Vec::new(),
             moved: Vec::new(),
+            sensitivity: "normal".to_owned(),
+            categories: Vec::new(),
+            body: None,
             organizer: None,
             response: "notResponded".to_owned(),
         }
@@ -115,6 +122,9 @@ struct Stored {
 pub struct Calendars {
     calendars: Vec<FakeCalendar>,
     events: BTreeMap<String, Stored>,
+    /// The events made with each `transactionId`, so that a request that
+    /// arrives twice makes one event.
+    made: BTreeMap<String, String>,
     /// Every change to an event, oldest first: (when, which).
     log: Vec<(u64, String)>,
     seq: u64,
@@ -129,6 +139,80 @@ pub enum View {
     /// The token is no longer accepted: sync again from the start.
     Gone,
     NoSuchCalendar,
+}
+
+/// Write what a request gives into an event, as "Create event" and
+/// "Update event" do: what is not given is left as it was.
+fn write(event: &mut FakeEvent, body: &Value) -> Result<(), &'static str> {
+    const INVALID: &str = "ErrorPropertyValidationFailure";
+    let words = |value: &Value| value.as_str().map(str::to_owned);
+
+    if let Some(subject) = words(&body["subject"]) {
+        event.subject = subject;
+    }
+    if let Some(location) = words(&body["location"]["displayName"]) {
+        event.location = location;
+    }
+    if let Some(show_as) = words(&body["showAs"]) {
+        if !["free", "tentative", "busy", "oof", "workingElsewhere"].contains(&show_as.as_str()) {
+            return Err(INVALID);
+        }
+        event.show_as = show_as;
+    }
+    if let Some(sensitivity) = words(&body["sensitivity"]) {
+        if !["normal", "personal", "private", "confidential"].contains(&sensitivity.as_str()) {
+            return Err(INVALID);
+        }
+        event.sensitivity = sensitivity;
+    }
+    if let Some(categories) = body["categories"].as_array() {
+        event.categories = categories.iter().filter_map(words).collect();
+    }
+    if let Some(content) = words(&body["body"]["content"]) {
+        event.body = Some(content);
+    }
+    if let Some(all_day) = body["isAllDay"].as_bool() {
+        event.is_all_day = all_day;
+    }
+    if let Some(minutes) = body["reminderMinutesBeforeStart"].as_i64() {
+        event.reminder_minutes = Some(minutes);
+    }
+    if body["isReminderOn"].as_bool() == Some(false) {
+        event.reminder_minutes = None;
+    }
+    for (name, kept) in [("start", &mut event.start), ("end", &mut event.end)] {
+        let given = &body[name];
+        if given.is_null() {
+            continue;
+        }
+        let (Some(local), Some(zone)) = (given["dateTime"].as_str(), given["timeZone"].as_str())
+        else {
+            return Err(INVALID);
+        };
+        if brolga_calendar::iana_zone(zone).is_none() {
+            return Err(INVALID);
+        }
+        if name == "start" {
+            event.zone = zone.to_owned();
+        }
+        // An all-day event is days, not moments: its start and end must
+        // both be at midnight, and are kept as the days that were written.
+        *kept = if event.is_all_day {
+            if !local.contains("T00:00:00") {
+                return Err(INVALID);
+            }
+            format!("{}Z", local.split('.').next().unwrap_or(local))
+        } else {
+            brolga_calendar::utc(local, zone).ok_or(INVALID)?
+        };
+    }
+    if let (Some(start), Some(end)) = (stamp(&event.start), stamp(&event.end))
+        && end < start
+    {
+        return Err(INVALID);
+    }
+
+    Ok(())
 }
 
 fn stamp(text: &str) -> Option<Timestamp> {
@@ -218,6 +302,53 @@ impl Calendars {
         }
     }
 
+    /// "Create event" (SOURCES.md): the id of the event made, or of the
+    /// one already made by a request with the same `transactionId`.
+    pub fn create(&mut self, calendar: &str, body: &Value) -> Result<String, &'static str> {
+        if !self.calendars.iter().any(|each| each.id == calendar) {
+            return Err("ErrorItemNotFound");
+        }
+        let transaction = body["transactionId"].as_str().map(str::to_owned);
+        if let Some(made) = transaction.as_ref().and_then(|id| self.made.get(id)) {
+            return Ok(made.clone());
+        }
+        let mut event = FakeEvent::new("", "", "");
+        event.reminder_minutes = Some(15);
+        write(&mut event, body)?;
+        if stamp(&event.start).is_none() || stamp(&event.end).is_none() {
+            return Err("ErrorPropertyValidationFailure");
+        }
+        let id = self.add_event(calendar, event);
+        if let Some(transaction) = transaction {
+            self.made.insert(transaction, id.clone());
+        }
+
+        Ok(id)
+    }
+
+    /// "Update event" (SOURCES.md): only what is given is changed.
+    pub fn update(&mut self, id: &str, body: &Value) -> Result<(), &'static str> {
+        let Some(stored) = self.events.get_mut(id).filter(|stored| !stored.deleted) else {
+            return Err("ErrorItemNotFound");
+        };
+        let mut changed = stored.event.clone();
+        write(&mut changed, body)?;
+        stored.event = changed;
+        self.touched(id);
+
+        Ok(())
+    }
+
+    /// "Delete event" (SOURCES.md).
+    pub fn delete(&mut self, id: &str) -> Result<(), &'static str> {
+        if !self.events.get(id).is_some_and(|stored| !stored.deleted) {
+            return Err("ErrorItemNotFound");
+        }
+        self.delete_event(id);
+
+        Ok(())
+    }
+
     /// Answer an invitation ("event: accept" and its fellows): `Err` says
     /// why not. A declined event leaves the calendar.
     pub fn respond(&mut self, id: &str, answer: &str) -> Result<(), &'static str> {
@@ -287,7 +418,7 @@ impl Calendars {
                 "originalEndTimeZone": event.zone,
                 "location": { "displayName": event.location },
                 "showAs": event.show_as,
-                "sensitivity": "normal",
+                "sensitivity": event.sensitivity,
                 "isCancelled": event.is_cancelled,
                 "isOrganizer": event.organizer.is_none(),
                 "organizer": { "emailAddress": match &event.organizer {
@@ -298,7 +429,7 @@ impl Calendars {
                 "responseStatus": { "response": if event.organizer.is_some() { event.response.as_str() } else { "organizer" } },
                 "type": kind,
                 "seriesMasterId": if kind == "singleInstance" { Value::Null } else { json!(id) },
-                "categories": [],
+                "categories": event.categories,
                 "isReminderOn": event.reminder_minutes.is_some(),
                 "reminderMinutesBeforeStart": event.reminder_minutes.unwrap_or(15),
                 "onlineMeeting": Value::Null,
@@ -538,10 +669,13 @@ impl Calendars {
             )
             .into_iter()
             .find(|each| each["id"] == id)?;
-        found["body"] = json!({
-            "contentType": "html",
-            "content": format!("<p>About <b>{}</b>.</p>", stored.event.subject)
-        });
+        found["body"] = match &stored.event.body {
+            Some(words) => json!({ "contentType": "text", "content": words }),
+            None => json!({
+                "contentType": "html",
+                "content": format!("<p>About <b>{}</b>.</p>", stored.event.subject)
+            }),
+        };
 
         Some(found)
     }

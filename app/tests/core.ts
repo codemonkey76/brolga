@@ -259,18 +259,35 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             is_all_day: e.is_all_day ?? false,
             time_zone: e.time_zone ?? "Australia/Brisbane",
             show_as: e.show_as ?? "busy",
-            sensitivity: "normal",
+            sensitivity: e.sensitivity ?? "normal",
             is_cancelled: e.is_cancelled ?? false,
-            is_organizer: false,
-            organizer: { name: "Sam Taylor", address: "sam.taylor@example.test" },
-            response: e.response ?? "accepted",
+            is_organizer: e.mine ?? false,
+            organizer: e.mine ? { name: "Robin Example", address: "robin@example.test" } : { name: "Sam Taylor", address: "sam.taylor@example.test" },
+            response: e.mine ? "organizer" : (e.response ?? "accepted"),
             kind: "singleInstance",
             series_id: null,
             categories: [],
-            reminder_minutes: 15,
+            reminder_minutes: e.reminder_minutes === undefined ? 15 : e.reminder_minutes,
             join_url: e.join_url ?? null,
             attendees: e.attendees ?? [],
         });
+        /** Write what a command gives into an event, as the core does: what is left out is left. */
+        const written = (e: NonNullable<typeof core.events>[number], args: Record<string, unknown>) => {
+            if (typeof args.subject === "string") e.subject = args.subject;
+            if (typeof args.calendar_id === "string") e.calendar_id = args.calendar_id;
+            if (typeof args.location === "string") e.location = args.location;
+            if (typeof args.description === "string") e.description = args.description;
+            if (typeof args.show_as === "string") e.show_as = args.show_as;
+            if (typeof args.is_private === "boolean") e.sensitivity = args.is_private ? "private" : "normal";
+            if ("reminder_minutes" in args) e.reminder_minutes = args.reminder_minutes as number | null;
+            if (typeof args.start === "string" && typeof args.end === "string") {
+                e.is_all_day = args.is_all_day === true;
+                // The page is in the zone the times are given in: a time by the clock is read as its own.
+                e.start = e.is_all_day ? `${args.start}T00:00:00Z` : new Date(args.start).toISOString();
+                e.end = e.is_all_day ? `${args.end}T00:00:00Z` : new Date(args.end).toISOString();
+                if (typeof args.time_zone === "string") e.time_zone = args.time_zone;
+            }
+        };
         const asking = [...(core.asking ?? [])];
         let replies: Record<string, unknown> = {
             status: "off",
@@ -484,6 +501,27 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "calendar.reminders.snooze": (args) => {
                 done.set(args.event_id, Date.now() + (args.minutes as number) * 60_000);
                 return { snoozed_until: "" };
+            },
+            "calendar.events.create": (args) => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the calendar was not changed. Sync before trying again, in case it was." };
+                core.events ??= [];
+                const made = { id: `made-${core.events.length + 1}`, subject: "", start: "", end: "", mine: true };
+                core.events.push(made);
+                written(made, args);
+                return { event: event(made), note: "" };
+            },
+            "calendar.events.update": (args) => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the calendar was not changed. Sync before trying again, in case it was." };
+                const found = (core.events ?? []).find((each) => each.id === args.event_id);
+                if (!found) throw { code: "failed", message: "There is no such event on this computer." };
+                written(found, args);
+                return { event: event(found), note: "" };
+            },
+            "calendar.events.delete": (args) => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the calendar was not changed. Sync before trying again, in case it was." };
+                const at = (core.events ?? []).findIndex((each) => each.id === args.event_id);
+                if (at >= 0) core.events?.splice(at, 1);
+                return { deleted: true };
             },
             "calendar.events.respond": (args) => {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, and the answer was not taken. Nothing was sent; try again." };
@@ -750,6 +788,10 @@ export interface FakeEvent {
     description?: string;
     /** The owner's own answer. Left out, the meeting has been accepted. */
     response?: string;
+    /** The owner's own event, not one they were invited to. */
+    mine?: boolean;
+    sensitivity?: string;
+    reminder_minutes?: number | null;
 }
 
 /**

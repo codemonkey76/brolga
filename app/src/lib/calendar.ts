@@ -23,6 +23,7 @@ export interface CalendarEvent {
     /** The zone the event was made in. */
     time_zone: string;
     show_as: string;
+    sensitivity?: string;
     is_cancelled: boolean;
     is_organizer: boolean;
     organizer: { name: string | null; address: string | null };
@@ -43,6 +44,30 @@ export const listEvents = async (account_id: string, start: Date, end: Date) =>
 
 export const getEvent = (account_id: string, event_id: string) =>
     execute<{ event: CalendarEvent; description: string; description_complete: boolean }>("calendar.events.get", { account_id, event_id });
+
+/** What an event is made of, to make one or to change one. What is left out is left as it is. */
+export interface EventFields {
+    subject?: string;
+    /** By the clock in `time_zone`: `2026-10-20T09:00`. For an all-day event, its first day. */
+    start?: string;
+    /** For an all-day event, the day after its last. */
+    end?: string;
+    time_zone?: string;
+    is_all_day?: boolean;
+    location?: string;
+    description?: string;
+    show_as?: string;
+    is_private?: boolean;
+    reminder_minutes?: number | null;
+}
+
+export const createEvent = async (account_id: string, calendar_id: string | null, fields: EventFields) =>
+    (await execute<{ event: CalendarEvent }>("calendar.events.create", { account_id, ...(calendar_id ? { calendar_id } : {}), ...fields })).event;
+
+export const updateEvent = async (account_id: string, event_id: string, fields: EventFields) =>
+    (await execute<{ event: CalendarEvent }>("calendar.events.update", { account_id, event_id, ...fields })).event;
+
+export const deleteEvent = (account_id: string, event_id: string) => execute("calendar.events.delete", { account_id, event_id });
 
 export type Answer = "accept" | "tentative" | "decline";
 

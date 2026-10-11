@@ -61,6 +61,8 @@ struct Inner {
     lose_next_attachment_answer: bool,
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
+    /// The next event is made, and the caller is told the server is busy.
+    lose_next_event_answer: bool,
     /// The next answer to an invitation is taken, and the caller is not told.
     lose_next_response_answer: bool,
     /// Every answer to an invitation: (event, answer, comment, organiser told).
@@ -118,7 +120,15 @@ impl FakeGraph {
                 "/v1.0/me/calendars/{calendar}/calendarView",
                 get(calendar_view),
             )
-            .route("/v1.0/me/events/{event}", get(one_event))
+            .route("/v1.0/me/events", axum::routing::post(create_event))
+            .route(
+                "/v1.0/me/calendars/{calendar}/events",
+                axum::routing::post(create_event_in),
+            )
+            .route(
+                "/v1.0/me/events/{event}",
+                get(one_event).patch(update_event).delete(delete_event),
+            )
             .route(
                 "/v1.0/me/events/{event}/{action}",
                 axum::routing::post(event_action),
@@ -267,6 +277,10 @@ impl FakeGraph {
 
     /// The next move is made, but the answer to it is an error: the case
     /// of a request that reached the server and an answer that did not come back.
+    pub fn lose_next_event_answer(&self) {
+        lock(&self.shared).lose_next_event_answer = true;
+    }
+
     pub fn lose_next_response_answer(&self) {
         lock(&self.shared).lose_next_response_answer = true;
     }
@@ -593,6 +607,81 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+fn event_refused(code: &str) -> Response {
+    if code == "ErrorItemNotFound" {
+        error(
+            StatusCode::NOT_FOUND,
+            code,
+            "The specified object was not found in the store.",
+        )
+    } else {
+        error(
+            StatusCode::BAD_REQUEST,
+            code,
+            "At least one property failed validation.",
+        )
+    }
+}
+
+fn make_event(shared: &Shared, calendar: Option<String>, body: &Value) -> Response {
+    let mut inner = lock(shared);
+    let calendar = calendar.unwrap_or_else(|| inner.calendars().default_calendar());
+    let made = match inner.calendars().create(&calendar, body) {
+        Ok(id) => id,
+        Err(code) => return event_refused(code),
+    };
+    if std::mem::take(&mut inner.lose_next_event_answer) {
+        // Made, and the caller is told to try again.
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
+    match inner.calendars().one(&made) {
+        Some(event) => (StatusCode::CREATED, axum::Json(event)).into_response(),
+        None => event_refused("ErrorItemNotFound"),
+    }
+}
+
+/// "Create event" (SOURCES.md): 201 and the event.
+async fn create_event(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    make_event(&shared, None, &body)
+}
+
+async fn create_event_in(
+    State(shared): State<Shared>,
+    Path(calendar): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    make_event(&shared, Some(calendar), &body)
+}
+
+/// "Update event" (SOURCES.md): 200 and the event as it now is.
+async fn update_event(
+    State(shared): State<Shared>,
+    Path(event): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    if let Err(code) = inner.calendars().update(&event, &body) {
+        return event_refused(code);
+    }
+
+    match inner.calendars().one(&event) {
+        Some(event) => axum::Json(event).into_response(),
+        None => event_refused("ErrorItemNotFound"),
+    }
+}
+
+/// "Delete event" (SOURCES.md): 204.
+async fn delete_event(State(shared): State<Shared>, Path(event): Path<String>) -> Response {
+    match lock(&shared).calendars().delete(&event) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(code) => event_refused(code),
+    }
 }
 
 /// "event: accept", "event: tentativelyAccept" and "event: decline"

@@ -2191,3 +2191,164 @@ async fn an_invitation_is_answered_once_and_the_calendar_follows() {
     assert_eq!(answer_of(review).await.unwrap(), "accepted");
     assert_eq!(f.graph.responses().len(), 4);
 }
+
+#[tokio::test]
+async fn an_event_is_made_changed_and_deleted_and_the_server_has_it_so() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let main = f.graph.default_calendar();
+    let on_server = || {
+        f.graph
+            .events(&main, "2027-03-01T00:00:00", "2027-05-01T00:00:00")
+    };
+
+    // Nine in the morning in Sydney, the week after its clocks go back:
+    // eleven at night the day before, in UTC.
+    let made = f
+        .run(
+            "calendar.events.create",
+            json!({
+                "subject": "Planning", "start": "2027-04-06T09:00", "end": "2027-04-06T10:30",
+                "time_zone": "Australia/Sydney", "location": "Harbour Room", "description": "Bring the plan.",
+                "show_as": "tentative", "is_private": true, "reminder_minutes": 30, "categories": ["Red category"]
+            }),
+        )
+        .await["event"]
+        .clone();
+    let id = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(made["start"], "2027-04-05T23:00:00Z");
+    assert_eq!(made["end"], "2027-04-06T00:30:00Z");
+    assert_eq!(made["time_zone"], "Australia/Sydney");
+    assert_eq!(made["sensitivity"], "private");
+    assert_eq!(made["reminder_minutes"], 30);
+    assert_eq!(made["categories"], json!(["Red category"]));
+    assert_eq!(
+        on_server(),
+        [(
+            id.clone(),
+            "2027-04-05T23:00:00Z".to_owned(),
+            "2027-04-06T00:30:00Z".to_owned()
+        )]
+    );
+    // It is here without a sync, and reads the same after one.
+    let read = f
+        .run("calendar.events.get", json!({ "event_id": id }))
+        .await;
+    assert_eq!(read["event"]["location"], "Harbour Room");
+    assert_eq!(read["description"], "Bring the plan.");
+    f.sync().await;
+    assert_eq!(
+        f.run("calendar.events.get", json!({ "event_id": id }))
+            .await["event"]["show_as"],
+        "tentative"
+    );
+
+    // Changed: only what is given. A moment with its offset is as good as a time by the clock.
+    let changed = f
+        .run(
+            "calendar.events.update",
+            json!({ "event_id": id, "subject": "Planning (moved)", "reminder_minutes": null,
+                    "start": "2027-04-07T00:00:00Z", "end": "2027-04-07T01:00:00Z", "time_zone": "Australia/Brisbane" }),
+        )
+        .await["event"]
+        .clone();
+    assert_eq!(changed["subject"], "Planning (moved)");
+    assert_eq!(changed["start"], "2027-04-07T00:00:00Z");
+    assert_eq!(changed["reminder_minutes"], Value::Null);
+    assert_eq!(changed["location"], "Harbour Room");
+    assert_eq!(changed["sensitivity"], "private");
+
+    // Two whole days.
+    let days = f
+        .run(
+            "calendar.events.create",
+            json!({ "subject": "Conference", "start": "2027-04-12", "end": "2027-04-14", "is_all_day": true, "time_zone": "Australia/Brisbane" }),
+        )
+        .await["event"]
+        .clone();
+    assert_eq!(days["is_all_day"], true);
+    // Days, as written: not moments to be moved by a zone.
+    assert_eq!(days["start"], "2027-04-12T00:00:00Z");
+    assert_eq!(days["end"], "2027-04-14T00:00:00Z");
+
+    // The answer to a request is lost: it is asked again, and one event is made.
+    f.graph.lose_next_event_answer();
+    f.run(
+        "calendar.events.create",
+        json!({ "subject": "Once", "start": "2027-04-20T09:00", "end": "2027-04-20T10:00", "time_zone": "UTC" }),
+    )
+    .await;
+    assert_eq!(on_server().len(), 3);
+
+    // What cannot be: an end before the start, a zone nobody knows, half a time.
+    for bad in [
+        json!({ "subject": "x", "start": "2027-04-06T10:00", "end": "2027-04-06T09:00" }),
+        json!({ "subject": "x", "start": "2027-04-06T10:00", "end": "2027-04-06T11:00", "time_zone": "Mars/Olympus" }),
+        json!({ "subject": "x", "start": "2027-04-06", "end": "2027-04-06", "is_all_day": true }),
+    ] {
+        assert!(
+            f.registry
+                .execute("calendar.events.create", bad.clone())
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+    assert!(
+        f.registry
+            .execute(
+                "calendar.events.update",
+                json!({ "event_id": id, "start": "2027-04-06T10:00" })
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(on_server().len(), 3);
+
+    // Out of reach, nothing is made here that is not there.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 40));
+    let offline = f
+        .registry
+        .execute(
+            "calendar.events.create",
+            json!({ "subject": "Never", "start": "2027-04-21T09:00", "end": "2027-04-21T10:00" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        offline.to_string().contains("could not be reached"),
+        "{offline}"
+    );
+    assert!(
+        f.registry
+            .execute("calendar.events.delete", json!({ "event_id": id }))
+            .await
+            .is_err()
+    );
+    f.graph.clear_faults();
+    assert!(
+        f.registry
+            .execute("calendar.events.get", json!({ "event_id": id }))
+            .await
+            .is_ok()
+    );
+
+    // Deleted: gone here at once, and there.
+    f.run("calendar.events.delete", json!({ "event_id": id }))
+        .await;
+    assert!(
+        f.registry
+            .execute("calendar.events.get", json!({ "event_id": id }))
+            .await
+            .is_err()
+    );
+    assert_eq!(on_server().len(), 2);
+    f.sync().await;
+    assert!(
+        f.registry
+            .execute("calendar.events.get", json!({ "event_id": id }))
+            .await
+            .is_err()
+    );
+}
