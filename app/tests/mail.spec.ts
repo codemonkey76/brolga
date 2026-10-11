@@ -992,3 +992,16 @@ test("a flag can be given a day to follow up by, changed and taken off", async (
     await expect(actions).toContainText(/Due Mon,? (2 Nov|Nov 2)/);
     await expect(pane).toBeVisible();
 });
+
+test("a message is forwarded as an attachment: a new message with it attached whole", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+
+    await page.getByRole("button", { name: "Forward as attachment" }).click();
+
+    const form = page.getByRole("form", { name: "New message" });
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("FW: Budget review moved to Thursday");
+    await expect(form.getByRole("list", { name: "Attached files" })).toContainText("Budget review moved to Thursday.eml");
+    // The original is attached, not quoted underneath.
+    await expect(form.getByText("The original message is added underneath")).toHaveCount(0);
+});

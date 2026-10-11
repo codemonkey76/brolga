@@ -376,15 +376,17 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             },
             "mail.drafts.create": (args) => {
                 const source = mail.find((each) => each.id === args.message_id);
-                const kind = (args.kind as string) ?? "new";
+                const asked = (args.kind as string) ?? "new";
+                const attached = asked === "forward_as_attachment";
+                const kind = attached ? "new" : asked;
                 const made = {
                     id: `draft-${drafts.length + sent.length + 1}`,
                     kind,
-                    message_id: source?.id ?? null,
+                    message_id: attached ? null : (source?.id ?? null),
                     to: kind === "reply" || kind === "reply_all" ? [source?.from] : [],
                     cc: [],
                     bcc: [],
-                    subject: source ? `${kind === "forward" ? "FW:" : "RE:"} ${source.subject}` : "",
+                    subject: source ? `${kind === "forward" || attached ? "FW:" : "RE:"} ${source.subject}` : "",
                     body: !(signature.text && (kind === "new" || signature.on_replies))
                         ? ""
                         : args.format === "html"
@@ -393,7 +395,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     format: (args.format as string) ?? "text",
                     state: "editing",
                     error: null,
-                    files: [] as Record<string, unknown>[],
+                    files: (attached ? [{ id: 1, name: `${source?.subject}.eml`, content_type: "message/rfc822", size: 4_096 }] : []) as Record<string, unknown>[],
                 };
                 drafts.unshift(made);
                 return { draft: made };

@@ -39,6 +39,7 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | message: permanentDelete | https://learn.microsoft.com/graph/api/message-permanentdelete | `POST …/messages/{id}/permanentDelete`, answered 204; the page shows it under `/users/{id}`, for which `/me` is the signed-in user |
 | List masterCategories, and outlookCategory resource type | https://learn.microsoft.com/graph/api/outlookuser-list-mastercategories | `GET /me/outlook/masterCategories`, each a `displayName` and a `color` preset, and the colour Outlook gives each preset |
 | followupFlag resource type | https://learn.microsoft.com/graph/api/resources/followupflag | A flag's `dueDateTime`, which must be set together with `startDateTime` |
+| Get MIME content of a message | https://learn.microsoft.com/graph/outlook-get-mime-message | `GET /me/messages/{id}/$value`, the message whole as a `.eml` file holds it, for forwarding as an attachment |
 | Get immutable identifiers for Outlook resources | https://learn.microsoft.com/graph/outlook-immutable-id | `Prefer: IdType="ImmutableId"` on every request, so an id survives a move between folders |
 
 ## Microsoft identity platform (Microsoft Learn)

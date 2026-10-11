@@ -431,6 +431,14 @@ impl GraphClient {
         }
     }
 
+    /// A message whole, in MIME: what a `.eml` file holds ("Get MIME
+    /// content of a message", SOURCES.md).
+    pub async fn message_mime(&self, message_id: &str) -> Result<Vec<u8>, GraphError> {
+        let url = format!("{}/me/messages/{message_id}/$value", self.base);
+
+        self.get(&url, None).await
+    }
+
     /// The id of the folder a message is in now.
     pub async fn message_folder(&self, message_id: &str) -> Result<Option<String>, GraphError> {
         let url = format!(

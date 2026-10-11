@@ -315,6 +315,9 @@ fn answer_to(source: &MessageRow, everyone: bool, me: &str) -> (String, String) 
 
 async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, CommandError> {
     let (mailbox, me) = open(&mailboxes, args.account_id.as_deref()).await?;
+    if args.kind.as_deref() == Some("forward_as_attachment") {
+        return forward_as_attachment(&mailbox, args).await;
+    }
     let kind = args.kind.as_deref().unwrap_or("new");
     let mut start = DraftEdit {
         to_recipients: kept(args.to)?,
@@ -491,6 +494,72 @@ async fn set_signature(
     let (text, on_replies) = signature(&mailbox)?;
 
     Ok(json!({ "text": text, "on_replies": on_replies }))
+}
+
+/// A new message with another attached to it whole, as a `.eml` file: the
+/// way to pass a message on exactly as it came, headers and all.
+async fn forward_as_attachment(
+    mailbox: &Arc<Mailbox>,
+    args: Create,
+) -> Result<Value, CommandError> {
+    let id = args
+        .message_id
+        .as_deref()
+        .ok_or_else(|| failed("Say which message to forward, with message_id."))?;
+    let source = mailbox
+        .db
+        .message(id)
+        .map_err(failed)?
+        .ok_or_else(|| failed(format!("There is no message `{id}` on this computer.")))?;
+    let mime = mailbox.graph.message_mime(id).await.map_err(|e| {
+        failed(format!(
+            "The message could not be fetched to attach it. {e}"
+        ))
+    })?;
+    if mime.len() as i64 > MOST_FILES_BYTES {
+        return Err(failed(
+            "That message is over 25 MB, which is more than most mail systems accept as an attachment.",
+        ));
+    }
+
+    let mut start = DraftEdit {
+        to_recipients: kept(args.to)?,
+        cc_recipients: kept(args.cc)?,
+        bcc_recipients: kept(args.bcc)?,
+        subject: Some(
+            args.subject
+                .unwrap_or_else(|| prefixed("FW:", &source.subject)),
+        ),
+        body: body_kept(args.body, args.format.as_deref()),
+        format: args.format,
+    };
+    if start.body.is_none() {
+        let (text, _) = signature(mailbox)?;
+        if !text.trim().is_empty() {
+            start.body = Some(if start.format.as_deref() == Some("html") {
+                format!("<p><br></p>{}", brolga_mail::text_to_paragraphs(&text))
+            } else {
+                format!("\n\n{text}")
+            });
+        }
+    }
+    let draft = mailbox
+        .db
+        .create_draft("new", None, &start)
+        .map_err(failed)?;
+
+    let subject = if source.subject.trim().is_empty() {
+        "Message"
+    } else {
+        source.subject.trim()
+    };
+    let name = crate::saving::safe_name(&format!("{subject}.eml"));
+    mailbox
+        .db
+        .attach_to_draft(&draft.id, &name, "message/rfc822", &mime)
+        .map_err(failed)?;
+
+    Ok(json!({ "draft": shown(mailbox, &draft) }))
 }
 
 async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandError> {
@@ -787,7 +856,10 @@ pub(crate) fn register(
                 "type": "object",
                 "properties": {
                     "account_id": account_id(),
-                    "kind": { "enum": ["new", "reply", "reply_all", "forward"], "description": "Default new." },
+                    "kind": {
+                        "enum": ["new", "reply", "reply_all", "forward", "forward_as_attachment"],
+                        "description": "Default new. forward_as_attachment starts a new message with the one named attached whole, as a .eml file; it needs the network."
+                    },
                     "message_id": { "type": "string", "description": "The message to answer or forward." },
                     "to": people(),
                     "cc": people(),

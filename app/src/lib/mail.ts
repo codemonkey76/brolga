@@ -185,7 +185,10 @@ export const attachFile = async (account_id: string, draft_id: string, path: str
 export const removeFile = (account_id: string, draft_id: string, file_id: number) =>
     execute<{ removed: boolean }>("mail.drafts.files.remove", { account_id, draft_id, file_id });
 
-export const createDraft = async (account_id: string, kind: Draft["kind"], format: Draft["format"], message_id?: string) =>
+/** What a new draft can be started as. Forwarding as an attachment gives a new message with the other attached whole. */
+export type Starting = Draft["kind"] | "forward_as_attachment";
+
+export const createDraft = async (account_id: string, kind: Starting, format: Draft["format"], message_id?: string) =>
     (await execute<{ draft: Draft }>("mail.drafts.create", { account_id, kind, format, ...(message_id ? { message_id } : {}) })).draft;
 
 export const editDraft = (account_id: string, draft_id: string, change: Partial<Pick<Draft, "to" | "cc" | "bcc" | "subject" | "body" | "format">>) =>

@@ -125,6 +125,7 @@ impl FakeGraph {
                 "/v1.0/me/messages/{message}/permanentDelete",
                 axum::routing::post(permanent_delete),
             )
+            .route("/v1.0/me/messages/{message}/$value", get(message_mime))
             .route("/v1.0/me/messages", axum::routing::post(create_draft))
             .route(
                 "/v1.0/me/messages/{message}/attachments/createUploadSession",
@@ -1125,6 +1126,26 @@ async fn send_draft(State(shared): State<Shared>, Path(message): Path<String>) -
     }
 
     StatusCode::ACCEPTED.into_response()
+}
+
+/// "Get MIME content of a message" (SOURCES.md): the message as a mail
+/// program would save it to a file.
+async fn message_mime(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
+    match lock(&shared).mailbox.stored(&message) {
+        Some(m) => (
+            [(header::CONTENT_TYPE, "text/plain")],
+            format!(
+                "From: {} <{}>\r\nSubject: {}\r\nMIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n{}",
+                m.from_name, m.from_address, m.subject, m.body_html
+            ),
+        )
+            .into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        ),
+    }
 }
 
 /// "message: permanentDelete" (SOURCES.md): gone from every folder a mail

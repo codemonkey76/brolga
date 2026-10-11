@@ -16,7 +16,7 @@
         /** Save to the downloads folder, or with `ask` to a place chosen in a dialog. */
         onSave: (attachment: Attachment, ask?: boolean) => void;
         /** Start an answer to the message. */
-        onWrite: (kind: "reply" | "reply_all" | "forward") => void;
+        onWrite: (kind: "reply" | "reply_all" | "forward" | "forward_as_attachment") => void;
         onSetRead: (isRead: boolean) => void;
         /** `due` is a day, `YYYY-MM-DD`; empty for no day; left out to leave the day as it is. */
         onSetFlag: (status: FlagStatus, due?: string) => void;
@@ -198,6 +198,7 @@
                 <button type="button" title="Ctrl+R" onclick={() => onWrite("reply")}>Reply</button>
                 <button type="button" title="Ctrl+Shift+R" onclick={() => onWrite("reply_all")}>Reply all</button>
                 <button type="button" title="Ctrl+F" onclick={() => onWrite("forward")}>Forward</button>
+                <button type="button" title="Forward this message whole, as an attached file" onclick={() => onWrite("forward_as_attachment")}>Forward as attachment</button>
                 {#if within !== "deleteditems"}
                     <button type="button" title="Delete" onclick={onDelete}>Delete</button>
                 {:else if sureOf === opened.message.id}

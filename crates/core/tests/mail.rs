@@ -1634,3 +1634,42 @@ async fn flagging_with_a_day_is_undone_as_one() {
         (Some("notFlagged"), None)
     );
 }
+
+#[tokio::test]
+async fn a_message_is_forwarded_as_an_attachment_whole() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Notice: of / meeting", "Sam Taylor", "2026-10-01T09:00:00Z")
+            .body("<p>At ten.</p>"),
+    );
+    f.sync().await;
+
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "kind": "forward_as_attachment", "message_id": id, "to": [{ "address": "jo@example.test" }] }),
+        )
+        .await["draft"]
+        .clone();
+
+    assert_eq!(draft["kind"], "new");
+    assert_eq!(draft["subject"], "FW: Notice: of / meeting");
+    // The file is named for the message, as a plain file name.
+    assert_eq!(draft["files"][0]["name"], "Notice_ of _ meeting.eml");
+    assert_eq!(draft["files"][0]["content_type"], "message/rfc822");
+
+    f.run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+    let sent = &f.graph.sent()[0];
+    let attached = String::from_utf8(sent.attachments[0].content.clone()).unwrap();
+    assert!(attached.starts_with("From: Sam Taylor"), "{attached}");
+    assert!(
+        attached.contains("Subject: Notice: of / meeting") && attached.ends_with("<p>At ten.</p>")
+    );
+    // The original is not quoted in the body as well.
+    assert!(!sent.body_html.contains("At ten."));
+}
