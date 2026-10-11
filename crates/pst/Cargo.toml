@@ -9,3 +9,16 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# Microsoft's own reader of the PST format, written from MS-PST. Only its
+# reading half is used, through a file opened for reading alone.
+outlook-pst = "1.2"
+# Bodies kept in the code pages older mail was written in.
+encoding_rs = "0.8"
+jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+# Makes the PST files the tests read. Never part of the client itself.
+pst-writer = { package = "outlook-pst-rw", version = "1.2" }

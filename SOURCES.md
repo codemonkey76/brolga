@@ -96,6 +96,8 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | RFC 8252, OAuth 2.0 for Native Apps | https://www.rfc-editor.org/rfc/rfc8252 | Signing in through the system browser with a loopback redirect |
 | RFC 8628, OAuth 2.0 Device Authorization Grant | https://www.rfc-editor.org/rfc/rfc8628 | Waiting five seconds longer after `slow_down` (section 3.5) |
 | RFC 6350, vCard Format Specification | https://www.rfc-editor.org/rfc/rfc6350 | Which properties of a card become which fields of a contact (`FN`, `N`, `ORG`, `TITLE`, `EMAIL`, `TEL` and its `TYPE`, `BDAY`, `NOTE`, `CATEGORIES`), read in any version and written as 3.0 |
+| MS-PST, Outlook Personal Folders (.pst) File Format | https://learn.microsoft.com/openspecs/office_file_formats/ms-pst/141923d5-15ab-4ef1-a524-6dce75aae546 | The format a PST or OST file is in. It is read by Microsoft's own open-source parser written from this document (the `outlook-pst` crate, MIT), through a file opened for reading alone |
+| MS-OXPROPS, Exchange Server Protocols Master Property List | https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-oxprops/f6ab1613-aefe-447d-a49c-18217230b148 | Which numbered property of a message, recipient or attachment in a PST holds what: subject, sender, times, flags, importance, the plain and HTML bodies and their code page, attachment name, type, content id and data |
 | OpenID Connect Core 1.0 | https://openid.net/specs/openid-connect-core-1_0.html | Section 3.1.3.7: an ID token received straight from the token endpoint over TLS need not have its signature checked |
 
 ## Data
