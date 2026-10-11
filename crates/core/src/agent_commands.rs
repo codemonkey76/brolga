@@ -40,6 +40,9 @@ const PRIVATE: &[&str] = &[
     "subject",
     "query",
     "typed",
+    "description",
+    "comment",
+    "notes",
 ];
 /// The longest other text kept whole.
 const LONGEST: usize = 80;

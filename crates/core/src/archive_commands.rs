@@ -586,7 +586,7 @@ pub(crate) fn register(
                 .to_owned(),
             kind: CommandKind::Action,
             // What goes is a copy, and the file it was made from stays.
-            consequential: false,
+            consequential: true,
             mcp_tool: None,
             args_schema: one,
             result_schema: json!({ "type": "object", "properties": { "removed": { "type": "boolean" } }, "required": ["removed"] }),

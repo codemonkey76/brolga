@@ -20,7 +20,7 @@ pub struct Policy {
     /// undone, such as sending. These are refused, whatever the access,
     /// until this is set.
     pub allow_consequential: bool,
-    /// The most messages it may send in any hour.
+    /// The most messages and invitations it may send in any hour.
     pub max_sends_per_hour: u32,
 }
 
@@ -34,8 +34,20 @@ impl Default for Policy {
     }
 }
 
-/// The command that sends a message, which is what the hourly limit counts.
+/// The command that sends a message.
+#[cfg(test)]
 const SEND: &str = "mail.drafts.send";
+use brolga_commands::agents::{INVITES, NEVER, WRITES_TO_PEOPLE};
+
+/// Whether this command, asked this way, sends something to other people.
+fn reaches_people(id: &str, args: &Value) -> bool {
+    WRITES_TO_PEOPLE.contains(&id)
+        || (INVITES.contains(&id)
+            && args
+                .get("attendees")
+                .and_then(Value::as_array)
+                .is_some_and(|invited| !invited.is_empty()))
+}
 /// The command the server itself writes its record with. Never an agent's.
 pub(crate) const RECORD: &str = "app.agent_log.record";
 
@@ -77,6 +89,12 @@ impl Policy {
             );
         }
 
+        if NEVER.contains(&id) {
+            return Err(format!(
+                "`{id}` is the user's own to do, in the app. No agent may do it."
+            ));
+        }
+
         let needed = spec.access();
         if needed > self.access {
             return Err(match needed {
@@ -98,12 +116,12 @@ impl Policy {
             ));
         }
 
-        if id == SEND {
+        if reaches_people(id, args) {
             let hour = Duration::from_secs(3600);
             session.sends.retain(|at| at.elapsed() < hour);
             if session.sends.len() as u32 >= self.max_sends_per_hour {
                 return Err(format!(
-                    "This agent has sent {} messages in the last hour, which is the most it is allowed. Try again later.",
+                    "This agent has sent {} messages and invitations in the last hour, which is the most it is allowed. Try again later.",
                     session.sends.len()
                 ));
             }
@@ -255,5 +273,52 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn what_is_the_users_own_stays_so_whatever_the_agent_is_allowed() {
+        let policy = Policy {
+            access: Access::Full,
+            allow_consequential: true,
+            ..Policy::default()
+        };
+
+        for own in NEVER {
+            let refused = policy.permit(
+                &spec(own, CommandKind::Action, false),
+                &json!({}),
+                &mut Session::default(),
+            );
+            assert!(refused.unwrap_err().contains("No agent"), "{own}");
+        }
+    }
+
+    #[test]
+    fn invitations_count_towards_the_hourly_limit_and_plain_events_do_not() {
+        let create = spec("calendar.events.create", CommandKind::Action, true);
+        let cancel = spec("calendar.events.cancel", CommandKind::Action, true);
+        let policy = Policy {
+            access: Access::Full,
+            allow_consequential: true,
+            max_sends_per_hour: 2,
+        };
+        let mut session = Session::default();
+        let alone = json!({ "subject": "Dentist" });
+        let invited =
+            json!({ "subject": "Review", "attendees": [{ "address": "kim@example.test" }] });
+
+        for _ in 0..5 {
+            assert!(policy.permit(&create, &alone, &mut session).is_ok());
+        }
+        assert!(policy.permit(&create, &invited, &mut session).is_ok());
+        assert!(policy.permit(&cancel, &json!({}), &mut session).is_ok());
+        assert!(
+            policy
+                .permit(&create, &invited, &mut session)
+                .unwrap_err()
+                .contains("last hour")
+        );
+        // Still free to do what reaches nobody.
+        assert!(policy.permit(&create, &alone, &mut session).is_ok());
     }
 }

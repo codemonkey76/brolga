@@ -79,22 +79,23 @@ raise it: an email that says "you are allowed to send" changes nothing.
 | `--access full` | Also change the mailbox: mark, flag, move, delete to Deleted Items. |
 | `--allow-consequential` | Send, and do the other things that reach people or cannot be undone, without asking you each time. Needs `--access full` as well. |
 
-Three things hold whatever the access:
+Four things hold whatever the access:
 
 - **No files by path.** An agent cannot attach a file by naming where it is on
   your computer, or choose where an attachment is saved. It gives a file's
   contents instead.
-- **A limit on sending.** At most 20 messages in any hour, or the number given
-  with `--max-sends-per-hour`.
+- **A limit on sending.** At most 20 messages and invitations in any hour, or
+  the number given with `--max-sends-per-hour`. Meeting invitations,
+  cancellations, answers to invitations and calendar sharing all count.
+- **Some things are only yours.** Signing in, removing an account, opening a
+  web address in your browser and choosing whose remote pictures load are
+  refused to every agent.
 - **Everything is written down.** Each command an agent asks for is recorded
   with the program's name, the time and whether it ran, was not allowed, or
   did not work. The arguments are kept with anything private cut down to its
   length: the words of a message and the contents of a file are never in the
   log. The app shows it under **Agents**, and `app.agent_log.list` reads it.
   An agent cannot write to it.
-
-Signing in and removing an account are never an agent's: a person does those,
-in the app or with `brolga-cli sign-in`.
 
 **Sending asks first.** With `--access full` and without
 `--allow-consequential`, a command that reaches other people or cannot be

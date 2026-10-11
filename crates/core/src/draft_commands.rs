@@ -1049,7 +1049,7 @@ pub(crate) fn register(
                           An empty text means no signature. Drafts already started are not changed."
                 .to_owned(),
             kind: CommandKind::Action,
-            consequential: false,
+            consequential: true,
             mcp_tool: None,
             args_schema: json!({
                 "type": "object",

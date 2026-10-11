@@ -6,6 +6,7 @@
 //! MCP server all run commands through one [`Registry`], so nothing can be
 //! done by clicking that cannot also be done by an agent.
 
+pub mod agents;
 mod builtin;
 mod registry;
 

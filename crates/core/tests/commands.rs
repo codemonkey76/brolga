@@ -426,6 +426,17 @@ async fn the_commands_an_agent_may_draft_with_are_real_and_are_all_drafting() {
         assert_eq!(spec.access(), brolga_commands::Access::Draft);
         assert!(!spec.consequential, "`{id}` reaches other people");
     }
+    // The ids an agent is limited or refused by name all answer to something.
+    use brolga_commands::agents::{INVITES, NEVER, WRITES_TO_PEOPLE};
+    for id in NEVER.iter().chain(WRITES_TO_PEOPLE).chain(INVITES) {
+        assert!(registry.spec(id).is_some(), "`{id}` is not a command");
+    }
+    for id in WRITES_TO_PEOPLE.iter().chain(INVITES) {
+        assert!(
+            registry.spec(id).is_some_and(|s| s.consequential),
+            "`{id}` writes to people without asking"
+        );
+    }
     // What reaches other people is never let through as drafting or reading.
     for spec in registry.specs().filter(|s| s.consequential) {
         assert_eq!(
