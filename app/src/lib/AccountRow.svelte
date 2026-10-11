@@ -1,6 +1,7 @@
 <script lang="ts">
     import { type Account, type SharedMailbox, addShared, listShared, removeShared } from "./accounts";
     import AutoReplies from "./AutoReplies.svelte";
+    import CalendarSharing from "./CalendarSharing.svelte";
     import Categories from "./Categories.svelte";
     import Rules from "./Rules.svelte";
     import { execute, say } from "./commands";
@@ -58,6 +59,7 @@
     let replies = $state(false);
     let rules = $state(false);
     let categories = $state(false);
+    let calendarSharing = $state(false);
 
     /** The signature being edited, while its editor is open. */
     let signature = $state<{ text: string; on_replies: boolean } | null>(null);
@@ -120,6 +122,7 @@
         <button type="button" aria-expanded={replies} onclick={() => ((replies = !replies), (signatureSaid = null))}>Automatic replies</button>
         <button type="button" aria-expanded={rules} disabled={account.needs_sign_in} onclick={() => (rules = !rules)}>Rules</button>
         <button type="button" aria-expanded={categories} disabled={account.needs_sign_in} onclick={() => (categories = !categories)}>Categories</button>
+        <button type="button" aria-expanded={calendarSharing} disabled={account.needs_sign_in} onclick={() => (calendarSharing = !calendarSharing)}>Calendar sharing</button>
         <button type="button" aria-expanded={sharing !== null} disabled={account.needs_sign_in} onclick={openShared}>Shared mailboxes</button>
         <button type="button" disabled={busy} onclick={() => (confirming = true)}>Remove</button>
     {/if}
@@ -166,6 +169,9 @@
     {/if}
     {#if rules}
         <Rules accountId={account.id} username={account.username} />
+    {/if}
+    {#if calendarSharing}
+        <CalendarSharing accountId={account.id} username={account.username} />
     {/if}
     {#if categories}
         <Categories accountId={account.id} username={account.username} />

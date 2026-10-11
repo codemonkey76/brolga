@@ -330,6 +330,9 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             { name: "Plain", color: "none" },
         ];
         let rules: Record<string, unknown>[] = [...(core.rules ?? [])];
+        let sharing: { id: string; name: string; address: string | null; role: string; allowed_roles: string[]; removable: boolean }[] = [
+            { id: "org", name: "My Organization", address: null, role: "freeBusyRead", allowed_roles: ["none", "freeBusyRead", "limitedRead", "read", "write"], removable: false },
+        ];
         /** A rule as the command gives it. The real sentence is the core's; here it only names what was asked. */
         const ruled = (rule: Record<string, unknown>) => ({
             has_error: false,
@@ -614,6 +617,25 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 const changed = contactOf((core.contacts ?? [])[at], args);
                 (core.contacts ?? [])[at] = changed;
                 return { contact: changed, note: "" };
+            },
+            "calendar.sharing.list": () => ({ shares: sharing }),
+            "calendar.sharing.set": (args) => {
+                const outside = ["freeBusyRead", "limitedRead", "read"];
+                const found = sharing.find((each) => each.id === args.share_id || (each.address !== null && each.address === args.address));
+                if (found) {
+                    if (!found.allowed_roles.includes(String(args.role))) throw { code: "failed", message: `Microsoft 365 will not let them be given \`${args.role}\`.` };
+                    found.role = String(args.role);
+                    return { share: found };
+                }
+                const inside = String(args.address).endsWith("@example.test");
+                if (!inside && !outside.includes(String(args.role))) throw { code: "failed", message: `Microsoft 365 will not let them be given \`${args.role}\`.` };
+                const made = { id: `share-${sharing.length}`, name: String(args.address), address: String(args.address), role: String(args.role), allowed_roles: inside ? [...outside, "write"] : outside, removable: true };
+                sharing.push(made);
+                return { share: made };
+            },
+            "calendar.sharing.remove": (args) => {
+                sharing = sharing.filter((each) => each.id !== args.share_id);
+                return { removed: true };
             },
             "people.card": (args) => {
                 const known = (core.directory ?? []).find((each) => each.address === args.address);

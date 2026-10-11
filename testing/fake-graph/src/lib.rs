@@ -60,6 +60,8 @@ struct Inner {
     /// The inbox's rules, and the categories the mailbox has.
     rules: rules::Rules,
     categories: rules::Categories,
+    /// Who the main calendar is shared with. Nobody yet, until it is first asked about.
+    calendar_permissions: Option<Vec<Value>>,
     /// Handed out one a request, oldest first.
     faults: Vec<Fault>,
     /// How many requests to answer normally before handing out faults.
@@ -157,6 +159,14 @@ impl FakeGraph {
             .route(
                 "/v1.0/me/calendars/{calendar}",
                 axum::routing::delete(delete_calendar),
+            )
+            .route(
+                "/v1.0/me/calendar/calendarPermissions",
+                get(calendar_permissions).post(share_calendar),
+            )
+            .route(
+                "/v1.0/me/calendar/calendarPermissions/{permission}",
+                axum::routing::patch(update_calendar_permission).delete(delete_calendar_permission),
             )
             .route("/v1.0/me/calendarView/delta", get(events_delta))
             .route(
@@ -434,6 +444,23 @@ impl FakeGraph {
     /// Make the next rule asked for, and answer as if the server were busy.
     pub fn lose_next_rule_answer(&self) {
         lock(&self.shared).lose_next_rule_answer = true;
+    }
+
+    /// Who the main calendar is shared with, as the server has it: (address, role).
+    pub fn calendar_shares(&self) -> Vec<(String, String)> {
+        lock(&self.shared)
+            .permissions()
+            .iter()
+            .map(|each| {
+                (
+                    each["emailAddress"]["address"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    each["role"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
     }
 
     /// Put a rule on the inbox, as Graph would hold it. Gives its id.
@@ -1410,6 +1437,144 @@ async fn delete_category(State(shared): State<Shared>, Path(category): Path<Stri
     match lock(&shared).categories.delete(&category) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(refusal) => rule_refused(refusal),
+    }
+}
+
+/// The roles a share with someone in the organisation may have, and with someone outside it.
+const INSIDE_ROLES: [&str; 6] = [
+    "freeBusyRead",
+    "limitedRead",
+    "read",
+    "write",
+    "delegateWithoutPrivateEventAccess",
+    "delegateWithPrivateEventAccess",
+];
+const OUTSIDE_ROLES: [&str; 3] = ["freeBusyRead", "limitedRead", "read"];
+
+impl Inner {
+    /// Who the main calendar is shared with: at first, the organisation as
+    /// a whole, which sees when the owner is busy and cannot be removed.
+    fn permissions(&mut self) -> &mut Vec<Value> {
+        self.calendar_permissions.get_or_insert_with(|| {
+            vec![json!({
+                "id": "RGVmYXVsdA==",
+                "emailAddress": { "name": "My Organization" },
+                "isRemovable": false,
+                "isInsideOrganization": true,
+                "role": "freeBusyRead",
+                "allowedRoles": ["none", "freeBusyRead", "limitedRead", "read", "write"]
+            })]
+        })
+    }
+}
+
+/// "List calendarPermissions" (SOURCES.md).
+async fn calendar_permissions(State(shared): State<Shared>) -> Response {
+    let all = lock(&shared).permissions().clone();
+    axum::Json(json!({ "value": all })).into_response()
+}
+
+/// "Create calendarPermission" (SOURCES.md): 200 and the permission.
+async fn share_calendar(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let Some(address) = body["emailAddress"]["address"]
+        .as_str()
+        .map(str::to_lowercase)
+    else {
+        return event_refused("ErrorInvalidArgument");
+    };
+    let inside = address.ends_with("@example.test");
+    let allowed: &[&str] = if inside {
+        &INSIDE_ROLES
+    } else {
+        &OUTSIDE_ROLES
+    };
+    let role = body["role"].as_str().unwrap_or_default();
+    if !allowed.contains(&role) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "ErrorInvalidArgument",
+            "The role is not one this person may be given.",
+        );
+    }
+    if inner
+        .permissions()
+        .iter()
+        .any(|each| each["emailAddress"]["address"].as_str() == Some(&address))
+    {
+        return error(
+            StatusCode::CONFLICT,
+            "ErrorCalendarPermissionExists",
+            "The calendar is already shared with this person.",
+        );
+    }
+    let made = json!({
+        "id": format!("permission-{}", inner.permissions().len()),
+        "emailAddress": { "name": body["emailAddress"]["name"], "address": address },
+        "isRemovable": true,
+        "isInsideOrganization": inside,
+        "role": role,
+        "allowedRoles": allowed
+    });
+    inner.permissions().push(made.clone());
+
+    axum::Json(made).into_response()
+}
+
+/// "Update calendarPermission" (SOURCES.md): the role, and nothing else.
+async fn update_calendar_permission(
+    State(shared): State<Shared>,
+    Path(permission): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let Some(found) = inner
+        .permissions()
+        .iter_mut()
+        .find(|each| each["id"] == permission.as_str())
+    else {
+        return event_refused("ErrorItemNotFound");
+    };
+    let role = body["role"].as_str().unwrap_or_default();
+    let allowed = found["allowedRoles"]
+        .as_array()
+        .is_some_and(|all| all.iter().any(|each| each == role));
+    if !allowed || body.as_object().is_some_and(|given| given.len() != 1) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "ErrorInvalidArgument",
+            "The role is not one this person may be given.",
+        );
+    }
+    found["role"] = json!(role);
+
+    axum::Json(found.clone()).into_response()
+}
+
+/// "Delete calendarPermission" (SOURCES.md): 204.
+async fn delete_calendar_permission(
+    State(shared): State<Shared>,
+    Path(permission): Path<String>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let all = inner.permissions();
+    match all
+        .iter()
+        .position(|each| each["id"] == permission.as_str())
+    {
+        None => event_refused("ErrorItemNotFound"),
+        Some(at) if all[at]["isRemovable"] == false => error(
+            StatusCode::BAD_REQUEST,
+            "ErrorInvalidOperation",
+            "This share cannot be removed.",
+        ),
+        Some(at) => {
+            all.remove(at);
+            StatusCode::NO_CONTENT.into_response()
+        }
     }
 }
 

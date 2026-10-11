@@ -4053,3 +4053,114 @@ async fn a_persons_card_says_who_they_are_their_last_mail_and_the_meetings_to_co
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn the_main_calendar_is_shared_changed_and_unshared_on_the_server() {
+    let f = Fixture::signed_in().await;
+
+    // At first, only the organisation as a whole, which cannot be removed.
+    let listed = f.run("calendar.sharing.list", json!({})).await;
+    let whole = &listed["shares"][0];
+    assert_eq!(whole["address"], Value::Null);
+    assert_eq!(whole["role"], "freeBusyRead");
+    assert_eq!(whole["removable"], false);
+
+    let made = f
+        .run(
+            "calendar.sharing.set",
+            json!({ "address": " Sam@Example.test ", "name": "Sam Taylor", "role": "read" }),
+        )
+        .await;
+    assert_eq!(made["share"]["address"], "sam@example.test");
+    assert_eq!(made["share"]["inside_organization"], true);
+    let id = made["share"]["id"].as_str().unwrap().to_owned();
+
+    // Named again by address, the same share is changed and no second one made.
+    let changed = f
+        .run(
+            "calendar.sharing.set",
+            json!({ "address": "sam@example.test", "role": "write" }),
+        )
+        .await;
+    assert_eq!(changed["share"]["id"], id.as_str());
+    assert_eq!(
+        f.graph.calendar_shares(),
+        [
+            (String::new(), "freeBusyRead".to_owned()),
+            ("sam@example.test".to_owned(), "write".to_owned())
+        ]
+    );
+
+    // The organisation is named by its share, and may be shown nothing.
+    f.run(
+        "calendar.sharing.set",
+        json!({ "share_id": whole["id"], "role": "none" }),
+    )
+    .await;
+    assert_eq!(f.graph.calendar_shares()[0].1, "none");
+
+    // What Microsoft 365 will not allow is said, with what it will.
+    let outsider = f
+        .run(
+            "calendar.sharing.set",
+            json!({ "address": "pat@elsewhere.test", "role": "read" }),
+        )
+        .await;
+    assert_eq!(outsider["share"]["inside_organization"], false);
+    let refused = f
+        .registry
+        .execute(
+            "calendar.sharing.set",
+            json!({ "address": "pat@elsewhere.test", "role": "write" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("freeBusyRead, limitedRead, read"),
+        "{refused}"
+    );
+    for wrong in [
+        json!({ "role": "read" }),
+        json!({ "address": "not an address", "role": "read" }),
+        json!({ "share_id": "no-such", "role": "read" }),
+        json!({ "address": "new@example.test", "role": "none" }),
+    ] {
+        assert!(
+            f.registry
+                .execute("calendar.sharing.set", wrong)
+                .await
+                .is_err()
+        );
+    }
+
+    assert_eq!(
+        f.run("calendar.sharing.remove", json!({ "share_id": id }))
+            .await["removed"],
+        true
+    );
+    assert_eq!(f.graph.calendar_shares().len(), 2);
+    assert!(
+        f.registry
+            .execute(
+                "calendar.sharing.remove",
+                json!({ "share_id": whole["id"] })
+            )
+            .await
+            .is_err()
+    );
+
+    // Out of reach, it says so.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    let error = f
+        .registry
+        .execute("calendar.sharing.list", json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("could not be reached"),
+        "{error}"
+    );
+}

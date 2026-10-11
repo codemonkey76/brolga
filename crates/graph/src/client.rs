@@ -867,6 +867,60 @@ impl GraphClient {
         }
     }
 
+    /// Who the main calendar is shared with or delegated to, each as Graph
+    /// gives it ("List calendarPermissions", SOURCES.md). Empty for a
+    /// calendar that is not one's own.
+    pub async fn calendar_permissions(&self) -> Result<Vec<serde_json::Value>, GraphError> {
+        self.list_values(format!("{}/me/calendar/calendarPermissions", self.base))
+            .await
+    }
+
+    /// Share the main calendar with someone ("Create calendarPermission",
+    /// SOURCES.md). Asked twice, the second is refused as already there.
+    pub async fn share_calendar(
+        &self,
+        permission: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/calendar/calendarPermissions", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(permission), false)
+                .await?,
+        )
+    }
+
+    /// Change what someone may do with the main calendar: the role, which
+    /// is all of it that can be changed ("Update calendarPermission", SOURCES.md).
+    pub async fn update_calendar_permission(
+        &self,
+        id: &str,
+        role: &str,
+    ) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/calendar/calendarPermissions/{id}", self.base);
+        let body = serde_json::json!({ "role": role });
+
+        decode(
+            &self
+                .send(reqwest::Method::PATCH, &url, None, Some(&body), true)
+                .await?,
+        )
+    }
+
+    /// Stop sharing the main calendar with someone ("Delete
+    /// calendarPermission", SOURCES.md). One already gone is as good as removed.
+    pub async fn delete_calendar_permission(&self, id: &str) -> Result<(), GraphError> {
+        let url = format!("{}/me/calendar/calendarPermissions/{id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
     /// The inbox's rules, each as Graph gives it ("List rules", SOURCES.md).
     pub async fn message_rules(&self) -> Result<Vec<serde_json::Value>, GraphError> {
         self.list_values(format!("{}/me/mailFolders/inbox/messageRules", self.base))

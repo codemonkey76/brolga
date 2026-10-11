@@ -436,3 +436,37 @@ test("a person who shared only their calendar is added the same way, and is in C
     await page.getByRole("button", { name: "Calendar", exact: true }).click();
     await expect(page.getByRole("combobox", { name: "Account" }).getByRole("option")).toHaveText(["robin@example.test", "↳ alex@example.test (shared)"]);
 });
+
+test("the calendar is shared with someone, what they see is changed, and the sharing is stopped", async ({ page }) => {
+    await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Calendar sharing" }).click();
+    const section = page.getByRole("region", { name: "Calendar sharing for robin@example.test" });
+    const rows = section.getByRole("listitem");
+
+    // The organisation as a whole is there from the start, and cannot be removed.
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Everyone in your organisation");
+    await expect(rows.first().getByRole("button")).toHaveCount(0);
+    await expect(section.getByRole("combobox", { name: "What Everyone in your organisation can see" })).toHaveValue("freeBusyRead");
+
+    await section.getByRole("textbox", { name: "Address of someone to share with" }).fill("sam@example.test");
+    await section.getByRole("combobox", { name: "What they can see" }).selectOption({ label: "Titles and places" });
+    await section.getByRole("button", { name: "Share" }).click();
+    await expect(rows).toHaveCount(2);
+    expect((await ran(page)).find((r) => r.command === "calendar.sharing.set")?.args).toMatchObject({ address: "sam@example.test", role: "limitedRead" });
+
+    await section.getByRole("combobox", { name: "What sam@example.test can see" }).selectOption({ label: "Can change it" });
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "calendar.sharing.set").at(-1)?.args).toMatchObject({ share_id: "share-1", role: "write" });
+    await picture(page, "calendar-sharing");
+
+    // Someone outside is offered less, and asking for more says why not.
+    await section.getByRole("textbox", { name: "Address of someone to share with" }).fill("pat@elsewhere.test");
+    await section.getByRole("combobox", { name: "What they can see" }).selectOption({ label: "Can change it" });
+    await section.getByRole("button", { name: "Share" }).click();
+    await expect(section.getByRole("alert")).toContainText("will not let them");
+    await expect(rows).toHaveCount(2);
+
+    await section.getByRole("button", { name: "Stop sharing with sam@example.test" }).click();
+    await expect(rows).toHaveCount(1);
+});

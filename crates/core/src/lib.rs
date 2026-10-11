@@ -20,6 +20,7 @@ mod reply_commands;
 mod rule_commands;
 mod saving;
 mod shared_commands;
+mod sharing_commands;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -125,6 +126,7 @@ impl Core {
         )?;
         shared_commands::register(&mut registry, mailboxes.clone())?;
         rule_commands::register(&mut registry, mailboxes.clone())?;
+        sharing_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;
         mail_commands::register(
             &mut registry,
