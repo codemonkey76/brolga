@@ -276,6 +276,19 @@ impl Outbox {
                 let changes = json!({ "flag": { "flagStatus": op.value } });
                 self.graph.update_message(&op.message_id, &changes).await
             }
+            // "followupFlag resource type": a due date must come with a
+            // start. A day with no time is given as its first moment, in
+            // UTC. An empty day has nothing to send: the flag was cleared
+            // or set afresh by the change beside it.
+            "flag_due" if op.value.is_empty() => Ok(()),
+            "flag_due" => {
+                let day =
+                    json!({ "dateTime": format!("{}T00:00:00", op.value), "timeZone": "UTC" });
+                let changes = json!({
+                    "flag": { "flagStatus": "flagged", "startDateTime": day, "dueDateTime": day }
+                });
+                self.graph.update_message(&op.message_id, &changes).await
+            }
             "categories" => {
                 let names: serde_json::Value =
                     serde_json::from_str(&op.value).unwrap_or_else(|_| json!([]));

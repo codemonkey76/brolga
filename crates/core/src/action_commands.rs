@@ -29,6 +29,7 @@ struct SetFlag {
     account_id: Option<String>,
     message_ids: Vec<String>,
     flag: String,
+    due: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +97,73 @@ async fn edit(
         .db
         .queue_edit(&action, &message_ids, &edit)
         .map_err(failed)?;
+    if changed > 0 {
+        send_soon(&mailbox);
+    }
+
+    Ok(json!({ "changed": changed, "undo_id": action }))
+}
+
+/// `2026-10-20`, and a day there is.
+fn is_day(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let number =
+        |range: std::ops::Range<usize>| text.get(range).and_then(|part| part.parse::<u32>().ok());
+    let (Some(_), Some(month), Some(day)) = (number(0..4), number(5..7), number(8..10)) else {
+        return false;
+    };
+
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && (1..=12).contains(&month)
+        && (1..=31).contains(&day)
+}
+
+/// Flag, complete or clear, and give or take away the day it is due. The
+/// several changes this can take are one action, undone as one.
+async fn set_flag(mailboxes: Arc<Mailboxes>, args: SetFlag) -> Result<Value, CommandError> {
+    if let Some(due) = args.due.as_deref().filter(|due| !due.is_empty()) {
+        if args.flag != "flagged" {
+            return Err(failed("Only a flagged message has a day it is due."));
+        }
+        if !is_day(due) {
+            return Err(failed(format!(
+                "`{due}` is not a day, written as 2026-10-20."
+            )));
+        }
+    }
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let action = mailbox.db.new_action().map_err(failed)?;
+    let queue = |edit: MessageEdit| {
+        mailbox
+            .db
+            .queue_edit(&action, &args.message_ids, &edit)
+            .map_err(failed)
+    };
+
+    let changed = match (args.flag.as_str(), args.due) {
+        // Flagged, leaving the day as it is.
+        ("flagged", None) => queue(MessageEdit::Flag("flagged".to_owned()))?,
+        // Flagged with no day: the flag is cleared and set afresh, which is
+        // how a day is taken off one.
+        ("flagged", Some(due)) if due.is_empty() => {
+            let cleared = queue(MessageEdit::Flag("notFlagged".to_owned()))?;
+            let undated = queue(MessageEdit::FlagDue(String::new()))?;
+            cleared
+                .max(undated)
+                .max(queue(MessageEdit::Flag("flagged".to_owned()))?)
+        }
+        ("flagged", Some(due)) => {
+            let flagged = queue(MessageEdit::Flag("flagged".to_owned()))?;
+            flagged.max(queue(MessageEdit::FlagDue(due))?)
+        }
+        // Complete or cleared: there is no longer a day it is due.
+        (status, _) => {
+            let changed = queue(MessageEdit::Flag(status.to_owned()))?;
+            changed.max(queue(MessageEdit::FlagDue(String::new()))?)
+        }
+    };
     if changed > 0 {
         send_soon(&mailbox);
     }
@@ -189,7 +257,7 @@ async fn outbox(mailboxes: Arc<Mailboxes>) -> Result<Value, CommandError> {
                     "subject": op.subject,
                     "change": match op.kind.as_str() {
                         "is_read" => "read or unread",
-                        "flag_status" => "flag",
+                        "flag_status" | "flag_due" => "flag",
                         "folder_id" => "folder",
                         "categories" => "categories",
                         other => other,
@@ -321,17 +389,19 @@ pub(crate) fn register(
                 "properties": {
                     "account_id": account_id(),
                     "message_ids": message_ids(),
-                    "flag": { "enum": ["flagged", "complete", "notFlagged"] }
+                    "flag": { "enum": ["flagged", "complete", "notFlagged"] },
+                    "due": { "type": "string", "description": "With flagged: the day to follow up by, as 2026-10-20, or an empty string for no day. Left out, the day stays as it is." }
                 },
                 "required": ["message_ids", "flag"],
                 "additionalProperties": false
             }),
             result_schema: edited(),
-            examples: vec![json!({ "message_ids": ["message-000008"], "flag": "flagged" })],
+            examples: vec![
+                json!({ "message_ids": ["message-000008"], "flag": "flagged" }),
+                json!({ "message_ids": ["message-000008"], "flag": "flagged", "due": "2026-10-20" }),
+            ],
         },
-        handler(&mailboxes, |mailboxes, args: SetFlag| {
-            edit(mailboxes, args.account_id, args.message_ids, MessageEdit::Flag(args.flag))
-        }),
+        handler(&mailboxes, set_flag),
     )?;
 
     registry.register(

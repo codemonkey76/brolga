@@ -16,6 +16,8 @@ pub enum MessageEdit {
     Read(bool),
     /// `notFlagged`, `flagged` or `complete`.
     Flag(String),
+    /// To be followed up by this day, `YYYY-MM-DD`, or by no day if empty.
+    FlagDue(String),
     /// To the folder with this id.
     Move(String),
     /// These categories and no others, by name.
@@ -28,6 +30,7 @@ impl MessageEdit {
         match self {
             Self::Read(_) => "is_read",
             Self::Flag(_) => "flag_status",
+            Self::FlagDue(_) => "flag_due",
             Self::Move(_) => "folder_id",
             Self::Categories(_) => "categories",
         }
@@ -37,6 +40,7 @@ impl MessageEdit {
         match self {
             Self::Read(read) => i64::from(*read).to_string(),
             Self::Flag(status) => status.clone(),
+            Self::FlagDue(day) => day.clone(),
             Self::Move(folder) => folder.clone(),
             // Kept as the message keeps them: a JSON array of names.
             Self::Categories(names) => serde_json::Value::from(names.clone()).to_string(),
@@ -76,6 +80,7 @@ fn column(kind: &str) -> Option<&'static str> {
     match kind {
         "is_read" => Some("is_read"),
         "flag_status" => Some("flag_status"),
+        "flag_due" => Some("flag_due"),
         "folder_id" => Some("folder_id"),
         "categories" => Some("categories"),
         _ => None,
@@ -365,7 +370,13 @@ pub(crate) fn keep_queued_edits(
         return Ok(());
     }
 
-    for kind in ["is_read", "flag_status", "folder_id", "categories"] {
+    for kind in [
+        "is_read",
+        "flag_status",
+        "flag_due",
+        "folder_id",
+        "categories",
+    ] {
         let Some(column) = column(kind) else {
             continue;
         };

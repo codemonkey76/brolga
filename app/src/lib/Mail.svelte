@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, deletePermanently, dismissRefused, flushOutbox, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, deletePermanently, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -125,7 +125,7 @@
     const UNDO_FOR = 10_000;
 
     /** Show a change that has been made: in the list, in the folder counts and on the message being read. */
-    async function redraw(change: { is_read?: boolean; flag_status?: string }, ids: string[]) {
+    async function redraw(change: { is_read?: boolean; flag_status?: string; flag_due?: string | null }, ids: string[]) {
         if (opened && ids.includes(opened.message.id)) opened = { ...opened, message: { ...opened.message, ...change } };
         thread = thread.map((each) => (ids.includes(each.id) ? { ...each, ...change } : each));
         if (accountId) folders = await listFolders(accountId);
@@ -139,11 +139,17 @@
      * `said` is offered with an Undo for ten seconds; without it the change
      * is made quietly.
      */
-    async function change(ids: string[], what: { is_read: boolean } | { flag_status: FlagStatus }, said?: string) {
+    async function change(ids: string[], what: { is_read: boolean } | { flag_status: FlagStatus; due?: string }, said?: string) {
         if (!accountId || ids.length === 0) return;
         try {
-            const done = "is_read" in what ? await setRead(accountId, ids, what.is_read) : await setFlag(accountId, ids, what.flag_status);
-            await redraw(what, ids);
+            const done = "is_read" in what ? await setRead(accountId, ids, what.is_read) : await setFlag(accountId, ids, what.flag_status, what.due);
+            if ("is_read" in what) {
+                await redraw(what, ids);
+            } else {
+                // Only a flagged message has a day; one not mentioned keeps the day it had.
+                const day = what.flag_status !== "flagged" ? { flag_due: null } : what.due === undefined ? {} : { flag_due: what.due || null };
+                await redraw({ flag_status: what.flag_status, ...day }, ids);
+            }
             if (said && done.changed > 0) offerUndo(said, done.undo_id);
         } catch (failure) {
             problem = say(failure);
@@ -162,7 +168,10 @@
             // The message being read is drawn again from what the list now says of it.
             const now = rows.find((row) => row && row.id === opened?.message.id);
             if (opened && now) {
-                opened = { ...opened, message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status, categories: now.categories } };
+                opened = {
+                    ...opened,
+                    message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status, flag_due: now.flag_due, categories: now.categories },
+                };
             }
         } catch (failure) {
             problem = say(failure);
@@ -170,8 +179,13 @@
     }
 
     const markRead = (isRead: boolean) => opened && change([opened.message.id], { is_read: isRead }, isRead ? "Marked as read" : "Marked as unread");
-    const flag = (status: FlagStatus) =>
-        opened && change([opened.message.id], { flag_status: status }, status === "flagged" ? "Flagged" : status === "complete" ? "Marked complete" : "Flag cleared");
+    const flag = (status: FlagStatus, due?: string) =>
+        opened &&
+        change(
+            [opened.message.id],
+            { flag_status: status, due },
+            status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged",
+        );
 
     function offerUndo(said: string, id: string) {
         clearTimeout(undoTimer);

@@ -43,6 +43,17 @@ pub struct Recipient {
 pub struct Flag {
     /// `notFlagged`, `flagged` or `complete`.
     pub flag_status: Option<String>,
+    /// When it is to be followed up by ("followupFlag resource type").
+    pub due_date_time: Option<DateTimeTimeZone>,
+}
+
+/// A date and time with the zone it is in.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DateTimeTimeZone {
+    /// Without an offset: `2026-10-20T00:00:00.0000000`.
+    pub date_time: String,
+    pub time_zone: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

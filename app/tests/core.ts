@@ -220,6 +220,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const mail = (core.mail ?? []).map((m) => ({ ...m }));
         const flags = new Map<string, string>();
         const tags = new Map<string, string[]>();
+        const dues = new Map<string, string | null>();
         /** What each action changed, by the id that undoes it. */
         const actions = new Map<string, () => void>();
         const refused = [...(core.refused ?? [])];
@@ -269,6 +270,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             has_attachments: m.has_attachments,
             importance: "normal",
             flag_status: flags.get(m.id) ?? "notFlagged",
+            flag_due: dues.get(m.id) ?? null,
             categories: tags.get(m.id) ?? [],
             focused: true,
         });
@@ -497,9 +499,15 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.messages.set_flag": (args) =>
                 acted(args.message_ids, (m) => {
                     const was = flags.get(m.id) ?? "notFlagged";
-                    if (was === args.flag) return null;
+                    const wasDue = dues.get(m.id) ?? null;
+                    const due = args.flag !== "flagged" ? null : args.due === undefined ? wasDue : (args.due as string) || null;
+                    if (was === args.flag && due === wasDue) return null;
                     flags.set(m.id, args.flag as string);
-                    return () => flags.set(m.id, was);
+                    dues.set(m.id, due);
+                    return () => {
+                        flags.set(m.id, was);
+                        dues.set(m.id, wasDue);
+                    };
                 }),
             "mail.categories.list": () => ({
                 categories: [

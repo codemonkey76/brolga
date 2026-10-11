@@ -957,3 +957,38 @@ test("a draft in the Drafts folder opens to be carried on with, and is saved to 
     await expect(form.getByRole("textbox", { name: "Message" })).toContainText("see you Friday.");
     await expect(page.getByRole("list", { name: "Being written" }).getByRole("button")).toHaveCount(1);
 });
+
+test("a flag can be given a day to follow up by, changed and taken off", async ({ page }) => {
+    // A Friday afternoon in Brisbane.
+    await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const pane = page.getByRole("region", { name: "Message" });
+    const actions = page.getByRole("toolbar", { name: "Message actions" });
+    await messages(page).getByRole("option").first().click();
+
+    await actions.getByText("Flag for…").click();
+    const days = actions.getByRole("list", { name: "Follow up by" });
+    await expect(days.getByRole("button", { name: /This week/ })).toContainText(/Fri,? (9 Oct|Oct 9)/);
+    await expect(days.getByRole("button", { name: /Next week/ })).toContainText(/Mon,? (12 Oct|Oct 12)/);
+    await days.getByRole("button", { name: /Tomorrow/ }).click();
+
+    await expect(actions).toContainText(/Due Sat,? (10 Oct|Oct 10)/);
+    await expect(page.getByText(/Flagged for Sat,? (10 Oct|Oct 10)/)).toBeVisible();
+    expect((await ran(page)).find((r) => r.command === "mail.messages.set_flag")?.args).toMatchObject({ flag: "flagged", due: "2026-10-10" });
+    await picture(page, "flag-due");
+
+    // Another day, typed.
+    await actions.getByText("Due…").click();
+    await days.getByLabel("Another day").fill("2026-11-02");
+    await expect(actions).toContainText(/Due Mon,? (2 Nov|Nov 2)/);
+
+    await actions.getByText("Due…").click();
+    await days.getByRole("button", { name: "No day" }).click();
+    await expect(actions).toContainText("Flagged");
+    await expect(actions).not.toContainText("Due Mon");
+
+    // Undo brings the day back with the flag.
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(actions).toContainText(/Due Mon,? (2 Nov|Nov 2)/);
+    await expect(pane).toBeVisible();
+});

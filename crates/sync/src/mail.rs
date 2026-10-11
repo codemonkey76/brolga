@@ -273,6 +273,16 @@ fn message_change(message: Message) -> MessageChange {
         is_draft: message.is_draft,
         has_attachments: message.has_attachments,
         importance: message.importance,
+        // The day it is due, where the server says: a flag that comes with
+        // no day has none. An entry that does not mention the flag at all
+        // leaves what is known alone.
+        flag_due: message.flag.as_ref().map(|flag| {
+            flag.due_date_time
+                .as_ref()
+                .and_then(|due| due.date_time.get(..10))
+                .unwrap_or_default()
+                .to_owned()
+        }),
         flag_status: message.flag.and_then(|f| f.flag_status),
         categories: message
             .categories

@@ -219,6 +219,11 @@ const STEPS: &[&str] = &[
     ALTER TABLE drafts ADD COLUMN server_rev INTEGER NOT NULL DEFAULT -1;
     CREATE INDEX drafts_by_server ON drafts (server_id);
 ",
+    "
+    -- The day a flagged message is to be followed up by, as YYYY-MM-DD, or
+    -- empty where it has none.
+    ALTER TABLE messages ADD COLUMN flag_due TEXT NOT NULL DEFAULT '';
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,6 +272,8 @@ pub struct MessageRow {
     pub has_attachments: bool,
     pub importance: String,
     pub flag_status: String,
+    /// The day it is to be followed up by, `YYYY-MM-DD`, or empty.
+    pub flag_due: String,
     /// JSON: an array of strings.
     pub categories: String,
     pub inference: String,
@@ -346,6 +353,8 @@ pub struct MessageChange {
     pub has_attachments: Option<bool>,
     pub importance: Option<String>,
     pub flag_status: Option<String>,
+    /// `YYYY-MM-DD`, or empty for none.
+    pub flag_due: Option<String>,
     pub categories: Option<String>,
     pub inference: Option<String>,
 }
@@ -799,8 +808,8 @@ impl AccountDb {
             .query_map(params![folder_id, offset, limit], |row| {
                 Ok(ConversationRow {
                     latest: read_message(row)?,
-                    count: row.get(18)?,
-                    unread: row.get(19)?,
+                    count: row.get(19)?,
+                    unread: row.get(20)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -1115,7 +1124,7 @@ impl AccountDb {
 
 const COLUMNS: &str = "id, folder_id, conversation_id, subject, preview, from_name, from_address, to_recipients, \
                        cc_recipients, received_at, sent_at, is_read, is_draft, has_attachments, importance, \
-                       flag_status, categories, inference";
+                       flag_status, categories, inference, flag_due";
 
 fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -1137,6 +1146,7 @@ fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         flag_status: row.get(15)?,
         categories: row.get(16)?,
         inference: row.get(17)?,
+        flag_due: row.get(18)?,
     })
 }
 
@@ -1333,6 +1343,12 @@ fn upsert_message(
             generation
         ],
     )?;
+    if let Some(due) = &m.flag_due {
+        transaction.execute(
+            "UPDATE messages SET flag_due = ?2 WHERE id = ?1",
+            params![m.id, due],
+        )?;
+    }
 
     index(transaction, &m.id)
 }

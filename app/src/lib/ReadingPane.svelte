@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Attachment, type Category, type FlagStatus, type Folder, type Message, type Opened, categoryColour, size, when, who } from "./mail";
+    import { type Attachment, type Category, type FlagStatus, type Folder, type Message, type Opened, categoryColour, dueSaid, flagDays, size, when, who } from "./mail";
 
     interface Props {
         opened: Opened | null;
@@ -18,7 +18,8 @@
         /** Start an answer to the message. */
         onWrite: (kind: "reply" | "reply_all" | "forward") => void;
         onSetRead: (isRead: boolean) => void;
-        onSetFlag: (status: FlagStatus) => void;
+        /** `due` is a day, `YYYY-MM-DD`; empty for no day; left out to leave the day as it is. */
+        onSetFlag: (status: FlagStatus, due?: string) => void;
         /** The mailbox's categories, to choose from. */
         categories: Category[];
         /** Give the message exactly these categories. */
@@ -42,6 +43,14 @@
 
     let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onWrite, onSetRead, onSetFlag, categories, onCategorise, folders, within, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
+    let dayMenu = $state<HTMLDetailsElement>();
+
+    function due(day: string) {
+        // Closed outright: the menu is the browser's own, and is not left
+        // open behind a choice made from the date box.
+        if (dayMenu) dayMenu.open = false;
+        onSetFlag("flagged", day);
+    }
     /** The message being asked about, once "Delete permanently" has been pressed once. */
     let sureOf = $state<string | null>(null);
     /** Where the link under the pointer really goes. */
@@ -232,6 +241,22 @@
                 {:else}
                     <button type="button" title="Insert" onclick={() => onSetFlag("flagged")}>Flag</button>
                 {/if}
+                {#if opened.message.flag_status !== "complete"}
+                    <details class="menu" bind:this={dayMenu}>
+                        <summary>{opened.message.flag_status === "flagged" ? "Due…" : "Flag for…"}</summary>
+                        <ul aria-label="Follow up by">
+                            {#each flagDays() as each (each.label)}
+                                <li><button type="button" class="plain" onclick={() => due(each.day)}>{each.label} <span class="muted">{dueSaid(each.day)}</span></button></li>
+                            {/each}
+                            <li>
+                                <label>On <input type="date" aria-label="Another day" onchange={(event) => event.currentTarget.value && due(event.currentTarget.value)} /></label>
+                            </li>
+                            {#if opened.message.flag_due}
+                                <li><button type="button" class="plain" onclick={() => due("")}>No day</button></li>
+                            {/if}
+                        </ul>
+                    </details>
+                {/if}
                 {#if categories.length > 0}
                     <details class="menu">
                         <summary>Categories</summary>
@@ -254,7 +279,9 @@
                         </ul>
                     </details>
                 {/if}
-                {#if opened.message.flag_status === "flagged"}<span class="flagged">🚩 Flagged</span>{/if}
+                {#if opened.message.flag_status === "flagged"}
+                    <span class="flagged">🚩 {opened.message.flag_due ? `Due ${dueSaid(opened.message.flag_due)}` : "Flagged"}</span>
+                {/if}
                 {#if opened.message.flag_status === "complete"}<span class="muted">✓ Complete</span>{/if}
             </div>
             {#if (opened.message.categories ?? []).length > 0}
@@ -417,6 +444,21 @@
         border: 1px solid var(--line);
         border-radius: 0.4rem;
         box-shadow: 0 6px 18px color-mix(in srgb, CanvasText 18%, transparent);
+    }
+
+    .menu .plain {
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        border: 0;
+        background: none;
+        padding: 0.25rem 0.4rem;
+        text-align: left;
+    }
+
+    .menu .plain:hover {
+        background: var(--raised);
     }
 
     .menu label {

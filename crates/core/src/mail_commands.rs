@@ -677,6 +677,7 @@ fn shown(row: &MessageRow) -> Value {
         "has_attachments": row.has_attachments,
         "importance": row.importance,
         "flag_status": row.flag_status,
+        "flag_due": Some(&row.flag_due).filter(|due| !due.is_empty()),
         "categories": list(&row.categories),
         "focused": row.inference != "other",
     })
@@ -709,6 +710,7 @@ fn message_schema() -> Value {
             "has_attachments": { "type": "boolean" },
             "importance": { "type": "string" },
             "flag_status": { "type": "string" },
+            "flag_due": { "type": ["string", "null"], "description": "The day a flagged message is to be followed up by, YYYY-MM-DD." },
             "categories": { "type": "array", "items": { "type": "string" } },
             "focused": { "type": "boolean", "description": "False for mail Microsoft 365 sorted into Other." },
             "conversation": {

@@ -1538,3 +1538,99 @@ async fn a_draft_written_in_another_mail_program_is_taken_up_changed_and_sent() 
             .any(|(folder, _, _)| *folder == f.graph.folder_id("drafts"))
     );
 }
+
+#[tokio::test]
+async fn a_flag_can_be_given_a_day_changed_and_cleared_and_all_of_it_undone() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Quote", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+    let here = || async {
+        let m = f
+            .run("mail.messages.list", json!({ "folder_id": f.inbox }))
+            .await["messages"][0]
+            .clone();
+        (
+            m["flag_status"].as_str().unwrap().to_owned(),
+            m["flag_due"].as_str().map(str::to_owned),
+        )
+    };
+    let flag = |args: Value| f.run("mail.messages.set_flag", args);
+
+    let dated = flag(json!({ "message_ids": [id], "flag": "flagged", "due": "2026-10-20" })).await;
+    assert_eq!(
+        here().await,
+        ("flagged".to_owned(), Some("2026-10-20".to_owned()))
+    );
+    f.sync().await;
+    assert_eq!(f.graph.flag(&id).as_deref(), Some("flagged"));
+    assert_eq!(f.graph.flag_due(&id).as_deref(), Some("2026-10-20"));
+    // What comes back down from the server agrees.
+    assert_eq!(here().await.1.as_deref(), Some("2026-10-20"));
+
+    flag(json!({ "message_ids": [id], "flag": "flagged", "due": "2026-11-02" })).await;
+    f.sync().await;
+    assert_eq!(f.graph.flag_due(&id).as_deref(), Some("2026-11-02"));
+
+    // No day, and still flagged.
+    flag(json!({ "message_ids": [id], "flag": "flagged", "due": "" })).await;
+    assert_eq!(here().await, ("flagged".to_owned(), None));
+    f.sync().await;
+    assert_eq!(
+        (f.graph.flag(&id).as_deref(), f.graph.flag_due(&id)),
+        (Some("flagged"), None)
+    );
+    assert_eq!(here().await, ("flagged".to_owned(), None));
+
+    // Done has no day; undoing the very first action takes the flag off altogether.
+    flag(json!({ "message_ids": [id], "flag": "flagged", "due": "2026-10-20" })).await;
+    flag(json!({ "message_ids": [id], "flag": "complete" })).await;
+    assert_eq!(here().await, ("complete".to_owned(), None));
+    let _ = dated;
+
+    for bad in [
+        json!({ "message_ids": [id], "flag": "flagged", "due": "next Tuesday" }),
+        json!({ "message_ids": [id], "flag": "flagged", "due": "2026-13-01" }),
+        json!({ "message_ids": [id], "flag": "complete", "due": "2026-10-20" }),
+    ] {
+        assert!(
+            f.registry
+                .execute("mail.messages.set_flag", bad)
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn flagging_with_a_day_is_undone_as_one() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Quote", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+
+    let dated = f
+        .run(
+            "mail.messages.set_flag",
+            json!({ "message_ids": [id], "flag": "flagged", "due": "2026-10-20" }),
+        )
+        .await;
+    f.run("mail.undo", json!({ "undo_id": dated["undo_id"] }))
+        .await;
+
+    let m = f
+        .run("mail.messages.list", json!({ "folder_id": f.inbox }))
+        .await["messages"][0]
+        .clone();
+    assert_eq!(m["flag_status"], "notFlagged");
+    assert_eq!(m["flag_due"], Value::Null);
+    f.sync().await;
+    assert_eq!(
+        (f.graph.flag(&id).as_deref(), f.graph.flag_due(&id)),
+        (Some("notFlagged"), None)
+    );
+}

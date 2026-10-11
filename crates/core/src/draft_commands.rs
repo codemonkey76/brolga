@@ -1167,6 +1167,7 @@ mod tests {
             has_attachments: false,
             importance: "normal".to_owned(),
             flag_status: "notFlagged".to_owned(),
+            flag_due: String::new(),
             categories: "[]".to_owned(),
             inference: "focused".to_owned(),
         };

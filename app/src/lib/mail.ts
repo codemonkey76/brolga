@@ -37,6 +37,8 @@ export interface Message {
     has_attachments: boolean;
     importance: string;
     flag_status: string;
+    /** The day a flagged message is to be followed up by, `YYYY-MM-DD`. */
+    flag_due?: string | null;
     categories: string[];
 }
 
@@ -216,8 +218,30 @@ export const setRead = (account_id: string, message_ids: string[], is_read: bool
 
 export type FlagStatus = "flagged" | "complete" | "notFlagged";
 
-export const setFlag = (account_id: string, message_ids: string[], flag: FlagStatus) =>
-    execute<Edited>("mail.messages.set_flag", { account_id, message_ids, flag });
+/** `due` is the day to follow up by, `YYYY-MM-DD`; an empty string for no day; left out to leave the day as it is. */
+export const setFlag = (account_id: string, message_ids: string[], flag: FlagStatus, due?: string) =>
+    execute<Edited>("mail.messages.set_flag", { account_id, message_ids, flag, ...(due === undefined ? {} : { due }) });
+
+/** A day as `YYYY-MM-DD`, by this computer's calendar. */
+export const dayOf = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+/** The days a flag is usually given: today, tomorrow, the end of this working week, the start of the next. */
+export function flagDays(now = new Date()): { label: string; day: string }[] {
+    const ahead = (days: number) => dayOf(new Date(now.getFullYear(), now.getMonth(), now.getDate() + days));
+    // Monday is 0. Friday of this week, or today if the week's work is over.
+    const weekday = (now.getDay() + 6) % 7;
+
+    return [
+        { label: "Today", day: ahead(0) },
+        { label: "Tomorrow", day: ahead(1) },
+        { label: "This week", day: ahead(Math.max(0, 4 - weekday)) },
+        { label: "Next week", day: ahead(7 - weekday) },
+    ];
+}
+
+/** A due day as a person would say it: `Tue 20 Oct`. */
+export const dueSaid = (day: string) =>
+    new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 
 /** Move messages to a folder, by its id or a well-known name. Deleting is a move to `deleteditems`. */
 export const moveMessages = (account_id: string, message_ids: string[], folder_id: string) =>

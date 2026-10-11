@@ -292,6 +292,14 @@ impl FakeGraph {
             .unwrap_or_default()
     }
 
+    /// The day a message's flag is due, as the server has it.
+    pub fn flag_due(&self, message: &str) -> Option<String> {
+        lock(&self.shared)
+            .mailbox
+            .stored(message)
+            .and_then(|m| m.flag_due)
+    }
+
     /// A message's flag, as the server has it.
     pub fn flag(&self, message: &str) -> Option<String> {
         lock(&self.shared).mailbox.flag(message)
@@ -739,8 +747,26 @@ async fn update_message(
             }
             ("isRead", Value::Bool(read)) => inner.mailbox.set_read(&message, *read),
             ("flag", flag) if flag["flagStatus"].is_string() => {
+                // "followupFlag resource type": a due date with no start is refused.
+                if !flag["dueDateTime"].is_null() && flag["startDateTime"].is_null() {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "ErrorInvalidArgument",
+                        "To set the due date, startDateTime must be given too.",
+                    );
+                }
                 let status = flag["flagStatus"].as_str().unwrap_or_default().to_owned();
+                let due = flag["dueDateTime"]["dateTime"]
+                    .as_str()
+                    .and_then(|at| at.get(..10))
+                    .map(str::to_owned);
                 inner.mailbox.set_flag(&message, &status);
+                // A flag that is cleared or done has no day; one set afresh keeps the day it had.
+                if status != "flagged" {
+                    inner.mailbox.edit(&message, |m| m.flag_due = None);
+                } else if due.is_some() {
+                    inner.mailbox.edit(&message, |m| m.flag_due = due);
+                }
             }
             _ => {
                 return error(

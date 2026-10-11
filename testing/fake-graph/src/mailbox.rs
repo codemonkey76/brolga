@@ -31,6 +31,8 @@ pub struct FakeMessage {
     pub conversation: Option<String>,
     /// `notFlagged`, `flagged` or `complete`.
     pub flag: String,
+    /// The day a flag is due, `YYYY-MM-DD`.
+    pub flag_due: Option<String>,
     pub is_draft: bool,
     pub categories: Vec<String>,
     /// `(name, address)`. Left empty, the message is to the mailbox's owner.
@@ -64,6 +66,7 @@ impl FakeMessage {
             body_html: format!("<html><body><p>{subject}</p></body></html>"),
             conversation: None,
             flag: "notFlagged".to_owned(),
+            flag_due: None,
             is_draft: false,
             categories: Vec::new(),
             to: Vec::new(),
@@ -441,7 +444,14 @@ impl Mailbox {
             "isDraft": m.is_draft,
             "hasAttachments": m.has_attachments,
             "importance": "normal",
-            "flag": { "flagStatus": m.flag },
+            "flag": match &m.flag_due {
+                Some(day) => json!({
+                    "flagStatus": m.flag,
+                    "startDateTime": { "dateTime": format!("{day}T00:00:00.0000000"), "timeZone": "UTC" },
+                    "dueDateTime": { "dateTime": format!("{day}T00:00:00.0000000"), "timeZone": "UTC" }
+                }),
+                None => json!({ "flagStatus": m.flag }),
+            },
             "categories": m.categories,
             "inferenceClassification": "focused",
         });
