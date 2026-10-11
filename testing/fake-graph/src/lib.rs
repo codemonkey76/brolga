@@ -1453,7 +1453,7 @@ mod tests {
     async fn something_not_built_says_so() {
         let graph = FakeGraph::start().await.unwrap();
 
-        let response = get(&graph, "/me/calendar/events", Some("token")).await;
+        let response = get(&graph, "/me/contacts", Some("token")).await;
 
         assert_eq!(response.status(), 404);
         let body: Value = response.json().await.unwrap();
@@ -1462,7 +1462,7 @@ mod tests {
             body["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("/v1.0/me/calendar/events")
+                .contains("/v1.0/me/contacts")
         );
     }
 }
