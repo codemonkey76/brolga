@@ -18,6 +18,7 @@ mod mailboxes;
 mod remote_images;
 mod reply_commands;
 mod saving;
+mod shared_commands;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -102,6 +103,7 @@ impl Core {
         ));
 
         let mailboxes = Arc::new(mailboxes::Mailboxes::new(
+            global.clone(),
             accounts.clone(),
             options.data_dir.clone(),
             options.graph_base.clone(),
@@ -116,6 +118,7 @@ impl Core {
         draft_commands::register(&mut registry, mailboxes.clone())?;
         calendar_commands::register(&mut registry, mailboxes.clone())?;
         contact_commands::register(&mut registry, mailboxes.clone())?;
+        shared_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;
         mail_commands::register(
             &mut registry,

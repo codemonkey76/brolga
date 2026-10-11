@@ -64,6 +64,8 @@ async fn every_command_is_described_and_its_examples_run() {
         )
         .attach("notes.txt", "text/plain", b"Some notes."),
     );
+    // A mailbox someone shared, for `accounts.shared.add`.
+    graph.add_shared_mailbox("support@example.test", true);
     // A contact, for `contacts.get` and `contacts.update`.
     assert_eq!(
         graph.add_contact(None, serde_json::json!({ "givenName": "Sam", "surname": "Taylor", "emailAddresses": [{ "address": "sam@example.test" }] })),

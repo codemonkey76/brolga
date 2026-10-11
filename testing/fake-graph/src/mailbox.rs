@@ -188,7 +188,7 @@ struct Change {
     removed: bool,
 }
 
-pub(crate) struct Mailbox {
+pub struct Mailbox {
     seq: u64,
     /// Raised to make every delta token handed out so far stale.
     epoch: u64,
@@ -204,7 +204,7 @@ pub(crate) struct Mailbox {
 }
 
 /// What a delta request is answered with, before it is turned into HTTP.
-pub(crate) enum Answer {
+pub enum Answer {
     Page(Value),
     /// The token is from before the tokens were expired.
     Gone,

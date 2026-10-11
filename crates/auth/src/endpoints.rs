@@ -24,6 +24,9 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     "Contacts.ReadWrite",
     "People.Read",
     "User.ReadBasic.All",
+    // Mailboxes other people have shared: to read, change and send from.
+    "Mail.ReadWrite.Shared",
+    "Mail.Send.Shared",
 ];
 
 /// The app registration a sign-in is made under.

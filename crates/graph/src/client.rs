@@ -32,6 +32,9 @@ pub struct GraphClient {
     tokens: Arc<dyn TokenSource>,
     retry: RetryPolicy,
     in_flight: Semaphore,
+    /// Whose mailbox requests are for, where it is not the mailbox of
+    /// whoever is signed in: another's, opened by its address.
+    mailbox: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -64,7 +67,28 @@ impl GraphClient {
             tokens,
             retry,
             in_flight: Semaphore::new(IN_FLIGHT),
+            mailbox: None,
         })
+    }
+
+    /// The same client for a mailbox someone else has given access to: a
+    /// shared mailbox, by its address. Every request written for `/me` is
+    /// then made of `/users/{address}` ("Get message", SOURCES.md).
+    pub fn for_mailbox(mut self, address: &str) -> Self {
+        self.mailbox = Some(address.to_owned());
+        self
+    }
+
+    /// A request's address, for the mailbox this client is for.
+    fn addressed<'a>(&self, url: &'a str) -> std::borrow::Cow<'a, str> {
+        let own = format!("{}/me", self.base);
+        match (&self.mailbox, url.strip_prefix(&own)) {
+            // `/me` itself, `/me/…` or `/me?…`: not a longer name that begins the same.
+            (Some(address), Some(rest)) if rest.is_empty() || rest.starts_with(['/', '?']) => {
+                format!("{}/users/{address}{rest}", self.base).into()
+            }
+            _ => url.into(),
+        }
     }
 
     pub fn production(tokens: Arc<dyn TokenSource>) -> Result<Self, GraphError> {
@@ -905,7 +929,8 @@ impl GraphClient {
         body: Option<&serde_json::Value>,
         repeatable: bool,
     ) -> Result<Vec<u8>, GraphError> {
-        let url = Url::parse(url).map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
+        let url = Url::parse(&self.addressed(url))
+            .map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
         // Closing the semaphore is not something this client ever does.
         let _permit = self
             .in_flight

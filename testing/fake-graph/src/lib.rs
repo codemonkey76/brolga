@@ -16,7 +16,7 @@ mod people;
 
 pub use calendar::{FakeCalendar, FakeEvent};
 pub use identity::FakeIdentity;
-pub use mailbox::{FakeAttachment, FakeMeeting, FakeMessage};
+pub use mailbox::{FakeAttachment, FakeMeeting, FakeMessage, Mailbox as FakeMailbox};
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -41,6 +41,12 @@ pub enum Fault {
 
 #[derive(Default)]
 struct Inner {
+    /// Other people's mailboxes the owner has been given: each by its
+    /// address, with whether the owner may also send as it.
+    others: HashMap<String, (mailbox::Mailbox, bool)>,
+    /// One request at a time: a request for another mailbox stands that
+    /// mailbox in the owner's place while it is answered.
+    turn: Arc<tokio::sync::Mutex<()>>,
     /// Contacts, and the organisation's people.
     people: people::People,
     /// Handed out one a request, oldest first.
@@ -232,13 +238,22 @@ impl FakeGraph {
             .layer(middleware::from_fn_with_state(shared.clone(), inject_fault))
             .layer(middleware::from_fn_with_state(shared.clone(), record))
             .with_state(shared.clone());
+        // Around the whole of it, since it changes which address a request is for.
+        let app = tower::Layer::layer(
+            &middleware::from_fn_with_state(shared.clone(), other_mailbox),
+            app,
+        );
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let address = listener.local_addr()?;
         lock(&shared).base = format!("http://{address}/v1.0");
         let server = tokio::spawn(async move {
             // The server only stops when the test drops it.
-            let _ = axum::serve(listener, app).await;
+            let _ = axum::serve(
+                listener,
+                axum::ServiceExt::<Request>::into_make_service(app),
+            )
+            .await;
         });
 
         Ok(Self {
@@ -310,6 +325,32 @@ impl FakeGraph {
     /// Reminders dealt with from a device: (event, `dismissed` or until when).
     pub fn reminders_done(&self) -> Vec<(String, String)> {
         lock(&self.shared).calendars().reminders.clone()
+    }
+
+    /// Give the owner someone else's mailbox, empty but for the folders
+    /// every mailbox has, with or without leave to send as it.
+    pub fn add_shared_mailbox(&self, address: &str, may_send_as: bool) {
+        lock(&self.shared).others.insert(
+            address.to_lowercase(),
+            (mailbox::Mailbox::default(), may_send_as),
+        );
+    }
+
+    /// Take a mailbox the owner was given away again.
+    pub fn remove_shared_mailbox(&self, address: &str) {
+        lock(&self.shared).others.remove(&address.to_lowercase());
+    }
+
+    /// Do something to a mailbox the owner was given, as a test's hands would.
+    pub fn in_shared<R>(
+        &self,
+        address: &str,
+        with: impl FnOnce(&mut FakeMailbox) -> R,
+    ) -> Option<R> {
+        lock(&self.shared)
+            .others
+            .get_mut(&address.to_lowercase())
+            .map(|(mailbox, _)| with(mailbox))
     }
 
     /// Put a contact in the mailbox: in a folder, or with none named in the main one. Gives its id.
@@ -643,6 +684,98 @@ async fn inject_fault(State(shared): State<Shared>, request: Request, next: Next
         ),
         None => next.run(request).await,
     }
+}
+
+/// A request for someone else's mailbox, `/users/{address}/…`, is answered
+/// as the same request for the owner's would be, with that mailbox stood
+/// in the owner's place: for a mailbox the owner has been given, and a
+/// sign-in with leave to open other people's ("Get message", SOURCES.md:
+/// `Mail.Read.Shared`).
+async fn other_mailbox(State(shared): State<Shared>, mut request: Request, next: Next) -> Response {
+    let turn = lock(&shared).turn.clone();
+    let _one_at_a_time = turn.lock().await;
+
+    let path = request.uri().path().to_owned();
+    let Some((address, rest)) = path
+        .strip_prefix("/v1.0/users/")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return next.run(request).await;
+    };
+    let address = address.to_lowercase();
+    let granted: Vec<String> = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once('.'))
+        .map(|(_, scopes)| scopes.split(',').map(str::to_owned).collect())
+        .unwrap_or_default();
+    let has = |scope: &str| granted.iter().any(|each| each == scope);
+    let reading = request.method() == axum::http::Method::GET;
+    let allowed = if rest.ends_with("/send") {
+        has("Mail.Send.Shared")
+    } else {
+        has("Mail.ReadWrite.Shared") || (reading && has("Mail.Read.Shared"))
+    };
+    if !allowed {
+        return error(
+            StatusCode::FORBIDDEN,
+            "ErrorAccessDenied",
+            "Access is denied. Check credentials and try again.",
+        );
+    }
+    if !lock(&shared).others.contains_key(&address) {
+        // A mailbox there is none of, or none the owner has been given.
+        return error(
+            StatusCode::NOT_FOUND,
+            "ErrorItemNotFound",
+            "The specified object was not found in the store.",
+        );
+    }
+
+    let query = request
+        .uri()
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    let Ok(uri) = format!("/v1.0/me/{rest}{query}").parse() else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "BadRequest",
+            "The address could not be read.",
+        );
+    };
+    *request.uri_mut() = uri;
+    let swap = |shared: &Shared| {
+        let mut inner = lock(shared);
+        let inner = &mut *inner;
+        if let Some((other, _)) = inner.others.get_mut(&address) {
+            std::mem::swap(&mut inner.mailbox, other);
+        }
+    };
+    swap(&shared);
+    let response = next.run(request).await;
+    swap(&shared);
+
+    // What it says of where to go next is said of the mailbox asked about.
+    let base = lock(&shared).base.clone();
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "fakeGraph",
+            "The answer could not be read back.",
+        );
+    };
+    let body = match String::from_utf8(bytes.to_vec()) {
+        Ok(text) => axum::body::Body::from(
+            text.replace(&format!("{base}/me/"), &format!("{base}/users/{address}/")),
+        ),
+        Err(not_text) => axum::body::Body::from(not_text.into_bytes()),
+    };
+    let mut response = Response::from_parts(parts, body);
+    response.headers_mut().remove(header::CONTENT_LENGTH);
+    response
 }
 
 async fn require_token(request: Request, next: Next) -> Response {

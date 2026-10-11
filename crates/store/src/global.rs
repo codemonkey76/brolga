@@ -213,6 +213,28 @@ impl GlobalDb {
     }
 
     /// The client ID the last successful sign-in used, if there has been one.
+    /// Something kept for the whole client, by its name.
+    pub fn setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+        use rusqlite::OptionalExtension;
+
+        Ok(self
+            .connection()
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = ?2",
+            rusqlite::params![key, value],
+        )?;
+
+        Ok(())
+    }
+
     pub fn remembered_client_id(&self) -> Result<Option<String>, StoreError> {
         use rusqlite::OptionalExtension;
 

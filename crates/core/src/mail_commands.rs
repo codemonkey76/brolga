@@ -196,6 +196,11 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             // And the calendar. Trouble with it is said beside the mail's
             // result and does not make the mail's sync a failure: a sign-in
             // from before calendars were built has no leave to read them.
+            // A mailbox someone shared brings its mail, and no calendar or
+            // contacts of its own.
+            if mailbox.shared.is_some() {
+                return Ok(Some((synced, bodies, Ok(0), Ok(()))));
+            }
             let calendar = mailbox
                 .calendars
                 .sync_all(jiff::Timestamp::now())

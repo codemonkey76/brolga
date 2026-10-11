@@ -3290,3 +3290,184 @@ async fn contacts_sync_are_changed_and_people_are_looked_up_and_suggested() {
     );
     assert_eq!(f.graph.contacts(&suppliers).len(), 1);
 }
+
+#[tokio::test]
+async fn a_shared_mailbox_is_added_by_address_and_read_changed_and_sent_from() {
+    let f = Fixture::signed_in().await;
+    f.graph.add_shared_mailbox("support@example.test", true);
+    let (inbox, first) = f
+        .graph
+        .in_shared("support@example.test", |mailbox| {
+            let inbox = mailbox.folder_id("inbox").unwrap();
+            let first = mailbox.add_message(
+                &inbox,
+                message("Printer is down", "Alex Chen", "2026-10-02T09:00:00Z"),
+            );
+            mailbox.add_message(
+                &inbox,
+                message("Password reset", "Jo Nguyen", "2026-10-03T09:00:00Z"),
+            );
+            (inbox, first)
+        })
+        .unwrap();
+    f.graph.add_message(
+        &f.inbox,
+        message("Mine", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+
+    // One there is no access to is not added, and says why; nor is what is not an address.
+    let refused = f
+        .registry
+        .execute(
+            "accounts.shared.add",
+            json!({ "address": "payroll@example.test" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("not been given access"),
+        "{refused}"
+    );
+    assert!(
+        f.registry
+            .execute("accounts.shared.add", json!({ "address": "support" }))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.run("accounts.shared.list", json!({})).await["mailboxes"],
+        json!([])
+    );
+
+    let added = f
+        .run(
+            "accounts.shared.add",
+            json!({ "address": "Support@example.test" }),
+        )
+        .await["mailbox"]
+        .clone();
+    let id = added["id"].as_str().unwrap().to_owned();
+    assert_eq!(added["address"], "support@example.test");
+    assert!(
+        f.registry
+            .execute(
+                "accounts.shared.add",
+                json!({ "address": "support@example.test" })
+            )
+            .await
+            .is_err()
+    );
+
+    // It syncs with the account, into a copy of its own.
+    let synced = f.run("mail.sync", json!({})).await;
+    assert_eq!(synced["accounts"].as_array().unwrap().len(), 2);
+    assert_eq!(synced["accounts"][1]["account_id"], id);
+    assert_eq!(synced["accounts"][1]["ok"], true, "{synced}");
+    let subjects = |found: &Value| -> Vec<String> {
+        found["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["subject"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let theirs = f
+        .run(
+            "mail.messages.list",
+            json!({ "account_id": id, "folder_id": inbox }),
+        )
+        .await;
+    assert_eq!(subjects(&theirs), ["Password reset", "Printer is down"]);
+    // The account's own mail is as it was, and none of the shared mailbox's is in it.
+    let mine = f
+        .run("mail.messages.list", json!({ "folder_id": f.inbox }))
+        .await;
+    assert_eq!(subjects(&mine), ["Mine"]);
+    assert_eq!(
+        subjects(
+            &f.run(
+                "mail.search",
+                json!({ "account_id": id, "query": "printer" })
+            )
+            .await
+        ),
+        ["Printer is down"]
+    );
+
+    // A change made here goes to the shared mailbox, not the owner's.
+    f.run(
+        "mail.messages.set_read",
+        json!({ "account_id": id, "message_ids": [first], "is_read": true }),
+    )
+    .await;
+    f.run("mail.sync", json!({})).await;
+    assert_eq!(
+        f.graph
+            .in_shared("support@example.test", |mailbox| mailbox
+                .message(&first)
+                .unwrap()["isRead"]
+                .clone())
+            .unwrap(),
+        true
+    );
+
+    // A reply written in it is sent from it, and kept in its own Sent Items.
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "account_id": id, "kind": "reply", "message_id": first }),
+        )
+        .await["draft"]["id"]
+        .clone();
+    f.run(
+        "mail.drafts.edit",
+        json!({ "account_id": id, "draft_id": draft, "body": "On our way." }),
+    )
+    .await;
+    f.run(
+        "mail.drafts.send",
+        json!({ "account_id": id, "draft_id": draft }),
+    )
+    .await;
+    for _ in 0..20 {
+        f.run("mail.sync", json!({})).await;
+        if f.graph.sent().len() == 1 {
+            break;
+        }
+    }
+    assert_eq!(f.graph.sent().len(), 1);
+    let in_sent = |mailbox: &mut brolga_fake_graph::FakeMailbox| {
+        let sent = mailbox.folder_id("sentitems").unwrap();
+        mailbox
+            .messages()
+            .values()
+            .filter(|each| each.0 == sent)
+            .count()
+    };
+    assert_eq!(f.graph.in_shared("support@example.test", in_sent), Some(1));
+
+    // Removed: it is asked for no more, and its copy here is gone; the mailbox is untouched.
+    assert_eq!(
+        f.run("accounts.shared.remove", json!({ "mailbox_id": id }))
+            .await["removed"],
+        true
+    );
+    assert_eq!(
+        f.run("mail.sync", json!({})).await["accounts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        f.registry
+            .execute(
+                "mail.messages.list",
+                json!({ "account_id": id, "folder_id": inbox })
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(f.graph.in_shared("support@example.test", in_sent), Some(1));
+}
