@@ -162,13 +162,138 @@ pub fn downloads_dir() -> Option<PathBuf> {
 }
 
 /// Hand a link to the system's default browser.
+///
+/// An AppImage runs with its own libraries and programs put ahead of the
+/// system's, in the environment. A browser started with those looks for
+/// its libraries in the AppImage and does not start at all, so the browser
+/// is given the environment as it was outside.
 pub fn open_in_browser(url: &str) -> std::io::Result<()> {
-    open::that_detached(url)
+    let Some(inside) = std::env::var_os("APPDIR").filter(|dir| !dir.is_empty()) else {
+        return open::that_detached(url);
+    };
+    let inside = inside.to_string_lossy().into_owned();
+    let changes = outside_of(
+        std::env::vars_os().map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        }),
+        &inside,
+    );
+
+    let mut last = std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "there is no program to open a link with",
+    );
+    for mut opener in open::commands(url) {
+        for (name, value) in &changes {
+            match value {
+                Some(value) => opener.env(name, value),
+                None => opener.env_remove(name),
+            };
+        }
+        opener
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match opener.spawn() {
+            Ok(mut started) => {
+                // Waited for elsewhere, so that it is not left half-ended.
+                std::thread::spawn(move || {
+                    let _ = started.wait();
+                });
+                return Ok(());
+            }
+            Err(error) => last = error,
+        }
+    }
+
+    Err(last)
+}
+
+/// What to change in an environment so that nothing in it points inside
+/// `inside`: for each variable that does, its value with those places taken
+/// out of its list, or `None` where nothing is left of it.
+fn outside_of(
+    environment: impl Iterator<Item = (String, String)>,
+    inside: &str,
+) -> Vec<(String, Option<String>)> {
+    let inside = inside.trim_end_matches('/');
+    environment
+        .filter(|(name, _)| name != "APPDIR")
+        .filter_map(|(name, value)| {
+            let kept: Vec<&str> = value
+                .split(':')
+                .filter(|place| !place.starts_with(inside))
+                .collect();
+            if kept.len() == value.split(':').count() {
+                return None;
+            }
+            let left = kept.join(":");
+            let left = left.trim_matches(':');
+            Some((name, (!left.is_empty()).then(|| left.to_owned())))
+        })
+        .chain([("APPDIR".to_owned(), None), ("APPIMAGE".to_owned(), None)])
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_browser_is_started_with_nothing_of_the_appimage_in_its_environment() {
+        let app = "/tmp/.mount_Brolga1";
+        let inside = [
+            (
+                "PATH",
+                "/tmp/.mount_Brolga1/usr/bin/:/tmp/.mount_Brolga1/bin/:/usr/local/bin:/usr/bin",
+            ),
+            (
+                "LD_LIBRARY_PATH",
+                "/tmp/.mount_Brolga1/usr/lib/:/tmp/.mount_Brolga1/lib/",
+            ),
+            ("XDG_DATA_DIRS", "/tmp/.mount_Brolga1/usr/share/:/usr/share"),
+            ("GTK_EXE_PREFIX", "/tmp/.mount_Brolga1//usr"),
+            (
+                "GST_PLUGIN_SYSTEM_PATH",
+                "/tmp/.mount_Brolga1/usr/lib/gstreamer:",
+            ),
+            ("HOME", "/home/robin"),
+            ("APPDIR", "/tmp/.mount_Brolga1"),
+        ];
+        let mut changes = outside_of(
+            inside
+                .iter()
+                .map(|(n, v)| ((*n).to_owned(), (*v).to_owned())),
+            app,
+        );
+        changes.sort();
+
+        let now = |name: &str| {
+            changes
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            now("PATH"),
+            Some(Some("/usr/local/bin:/usr/bin".to_owned()))
+        );
+        assert_eq!(now("XDG_DATA_DIRS"), Some(Some("/usr/share".to_owned())));
+        for gone in [
+            "LD_LIBRARY_PATH",
+            "GTK_EXE_PREFIX",
+            "GST_PLUGIN_SYSTEM_PATH",
+            "APPDIR",
+            "APPIMAGE",
+        ] {
+            assert_eq!(now(gone), Some(None), "{gone}");
+        }
+        // What never pointed inside is left alone.
+        assert_eq!(now("HOME"), None);
+    }
 
     /// A store that holds only so much in an entry, as Windows does.
     struct Small(
