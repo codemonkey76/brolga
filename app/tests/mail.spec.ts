@@ -667,3 +667,30 @@ test("a message Microsoft 365 will not send comes back with the reason", async (
     await expect(form.getByRole("alert")).toContainText("This was not sent. The mailbox is over its sending limit.");
     await expect(form.getByRole("textbox", { name: "Message" })).toHaveValue("Nothing of this is lost.");
 });
+
+test("a signature is set on the accounts screen and starts new messages", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Signature" }).click();
+    const editor = page.getByRole("form", { name: "Signature for robin@example.test" });
+
+    await editor.getByRole("textbox", { name: "Signature" }).fill("Robin Example\nExample Pty Ltd");
+    await editor.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByText("Signature saved.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Mail" }).click();
+    await page.getByRole("button", { name: "New message" }).click();
+    const words = page.getByRole("form", { name: "New message" }).getByRole("textbox", { name: "Message" });
+    await expect(words).toHaveValue("\n\nRobin Example\nExample Pty Ltd");
+
+    // Typing goes above it.
+    await words.focus();
+    await page.keyboard.type("Hello");
+    await expect(words).toHaveValue("Hello\n\nRobin Example\nExample Pty Ltd");
+
+    // An answer has none unless asked for.
+    await page.keyboard.press("Escape");
+    await messages(page).getByRole("option").first().click();
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    await expect(page.getByRole("form", { name: "Reply" }).getByRole("textbox", { name: "Message" })).toHaveValue("");
+});

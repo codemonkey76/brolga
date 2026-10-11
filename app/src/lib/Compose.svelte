@@ -49,6 +49,8 @@
         // An answer is already addressed, so the place to start is the words.
         if (start.kind === "new" || start.to.length === 0) first?.focus();
         else words?.focus();
+        // Above the signature, where the writing goes.
+        words?.setSelectionRange(0, 0);
     });
 
     function changed() {

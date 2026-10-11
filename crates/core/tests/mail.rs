@@ -1088,3 +1088,53 @@ async fn an_answer_is_addressed_and_titled_and_a_message_to_nobody_is_not_sent()
     assert!(not_an_address.is_err());
     assert!(f.graph.sent().is_empty());
 }
+
+#[tokio::test]
+async fn a_signature_starts_new_messages_and_answers_only_if_asked() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Lunch", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+    let body_of = |args: Value| async {
+        f.run("mail.drafts.create", args).await["draft"]["body"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    assert_eq!(body_of(json!({})).await, "");
+    f.run(
+        "mail.signature.set",
+        json!({ "text": "Robin Example\r\nExample Pty Ltd\n\n" }),
+    )
+    .await;
+
+    assert_eq!(
+        body_of(json!({})).await,
+        "\n\nRobin Example\nExample Pty Ltd"
+    );
+    assert_eq!(
+        body_of(json!({ "body": "My own words." })).await,
+        "My own words."
+    );
+    assert_eq!(
+        body_of(json!({ "kind": "reply", "message_id": id })).await,
+        ""
+    );
+
+    f.run(
+        "mail.signature.set",
+        json!({ "text": "Robin", "on_replies": true }),
+    )
+    .await;
+    assert_eq!(
+        body_of(json!({ "kind": "reply", "message_id": id })).await,
+        "\n\nRobin"
+    );
+    assert_eq!(
+        f.run("mail.signature.get", json!({})).await,
+        json!({ "text": "Robin", "on_replies": true })
+    );
+}

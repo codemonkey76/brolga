@@ -53,6 +53,33 @@ struct One {
 }
 
 #[derive(Deserialize)]
+struct SetSignature {
+    account_id: Option<String>,
+    text: String,
+    on_replies: Option<bool>,
+}
+
+/// The longest signature kept.
+const LONGEST_SIGNATURE: usize = 4_000;
+
+/// The account's signature and whether answers get it too.
+fn signature(mailbox: &Mailbox) -> Result<(String, bool), CommandError> {
+    let text = mailbox
+        .db
+        .setting("signature")
+        .map_err(failed)?
+        .unwrap_or_default();
+    let on_replies = mailbox
+        .db
+        .setting("signature_on_replies")
+        .map_err(failed)?
+        .as_deref()
+        == Some("1");
+
+    Ok((text, on_replies))
+}
+
+#[derive(Deserialize)]
 struct Account {
     account_id: Option<String>,
 }
@@ -222,6 +249,15 @@ async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, Comman
             .get_or_insert_with(|| prefixed(prefix, &source.subject));
     }
 
+    // A message started with no words of its own starts with the
+    // signature, two lines down, where the writing will go above it.
+    if start.body.is_none() {
+        let (text, on_replies) = signature(&mailbox)?;
+        if !text.trim().is_empty() && (kind == "new" || on_replies) {
+            start.body = Some(format!("\n\n{text}"));
+        }
+    }
+
     let draft = mailbox
         .db
         .create_draft(
@@ -232,6 +268,36 @@ async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, Comman
         .map_err(failed)?;
 
     Ok(json!({ "draft": shown(&draft) }))
+}
+
+async fn get_signature(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let (text, on_replies) = signature(&mailbox)?;
+
+    Ok(json!({ "text": text, "on_replies": on_replies }))
+}
+
+async fn set_signature(
+    mailboxes: Arc<Mailboxes>,
+    args: SetSignature,
+) -> Result<Value, CommandError> {
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let text = args.text.trim_end().replace("\r\n", "\n");
+    if text.chars().count() > LONGEST_SIGNATURE {
+        return Err(failed(format!(
+            "A signature can be at most {LONGEST_SIGNATURE} characters."
+        )));
+    }
+    mailbox.db.set_setting("signature", &text).map_err(failed)?;
+    if let Some(on_replies) = args.on_replies {
+        mailbox
+            .db
+            .set_setting("signature_on_replies", if on_replies { "1" } else { "0" })
+            .map_err(failed)?;
+    }
+    let (text, on_replies) = signature(&mailbox)?;
+
+    Ok(json!({ "text": text, "on_replies": on_replies }))
 }
 
 async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandError> {
@@ -432,6 +498,59 @@ pub(crate) fn register(
             ],
         },
         handler(&mailboxes, create),
+    )?;
+
+    let signature_result = json!({
+        "type": "object",
+        "properties": { "text": { "type": "string" }, "on_replies": { "type": "boolean" } },
+        "required": ["text", "on_replies"]
+    });
+
+    registry.register(
+        CommandSpec {
+            id: "mail.signature.get".to_owned(),
+            title: "Read the signature".to_owned(),
+            description: "The account's signature, as plain text, and whether replies and forwards get it as well as new messages. \
+                          It is kept on this computer: Microsoft 365 has no public way to read the one set in Outlook."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id() },
+                "additionalProperties": false
+            }),
+            result_schema: signature_result.clone(),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, get_signature),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.signature.set".to_owned(),
+            title: "Set the signature".to_owned(),
+            description: "Set the account's signature, as plain text. A new message starts with it; with `on_replies` true, so do replies and forwards. \
+                          An empty text means no signature. Drafts already started are not changed."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "text": { "type": "string", "maxLength": LONGEST_SIGNATURE },
+                    "on_replies": { "type": "boolean", "description": "Left out, it stays as it is." }
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+            result_schema: signature_result,
+            examples: vec![json!({ "text": "Robin Example\nExample Pty Ltd", "on_replies": false })],
+        },
+        handler(&mailboxes, set_signature),
     )?;
 
     registry.register(

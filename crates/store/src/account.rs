@@ -184,6 +184,13 @@ const STEPS: &[&str] = &[
         send_tried INTEGER NOT NULL DEFAULT 0
     ) STRICT;
 ",
+    "
+    -- Small things kept for the account on this computer, such as its signature.
+    CREATE TABLE settings (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -571,6 +578,26 @@ impl AccountDb {
             .collect::<Result<_, _>>()?;
 
         Ok(as_tree(folders))
+    }
+
+    /// Something kept for the account on this computer, by its name.
+    pub fn setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .connection()
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = ?2",
+            params![key, value],
+        )?;
+
+        Ok(())
     }
 
     /// A folder's id, given its id or, for a standard folder, its

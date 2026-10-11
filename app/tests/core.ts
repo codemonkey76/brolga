@@ -220,6 +220,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             return people;
         };
         const draft = (id: unknown) => drafts.find((each) => each.id === id);
+        let signature = { text: "", on_replies: false };
         const acted = (ids: unknown, apply: (m: (typeof mail)[number]) => (() => void) | null) => {
             const undo: (() => void)[] = [];
             for (const m of mail.filter((each) => (ids as string[]).includes(each.id))) {
@@ -357,12 +358,17 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     cc: [],
                     bcc: [],
                     subject: source ? `${kind === "forward" ? "FW:" : "RE:"} ${source.subject}` : "",
-                    body: "",
+                    body: signature.text && (kind === "new" || signature.on_replies) ? `\n\n${signature.text}` : "",
                     state: "editing",
                     error: null,
                 };
                 drafts.unshift(made);
                 return { draft: made };
+            },
+            "mail.signature.get": () => signature,
+            "mail.signature.set": (args) => {
+                signature = { text: args.text as string, on_replies: (args.on_replies as boolean) ?? signature.on_replies };
+                return signature;
             },
             "mail.drafts.edit": (args) => {
                 const found = draft(args.draft_id);
