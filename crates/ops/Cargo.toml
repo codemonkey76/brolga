@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 brolga-graph.workspace = true
+brolga-mail = { path = "../mail" }
 brolga-store.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

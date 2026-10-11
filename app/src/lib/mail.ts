@@ -132,7 +132,9 @@ export interface Draft {
     cc: Person[];
     bcc: Person[];
     subject: string;
+    /** The words as written: plain, or HTML the core has cleaned, as `format` says. */
     body: string;
+    format: "text" | "html";
     /** queued: waiting to be sent. failed: Microsoft 365 would not send it. */
     state: "editing" | "queued" | "failed";
     error: string | null;
@@ -153,10 +155,10 @@ export const attachFile = async (account_id: string, draft_id: string, path: str
 export const removeFile = (account_id: string, draft_id: string, file_id: number) =>
     execute<{ removed: boolean }>("mail.drafts.files.remove", { account_id, draft_id, file_id });
 
-export const createDraft = async (account_id: string, kind: Draft["kind"], message_id?: string) =>
-    (await execute<{ draft: Draft }>("mail.drafts.create", { account_id, kind, ...(message_id ? { message_id } : {}) })).draft;
+export const createDraft = async (account_id: string, kind: Draft["kind"], format: Draft["format"], message_id?: string) =>
+    (await execute<{ draft: Draft }>("mail.drafts.create", { account_id, kind, format, ...(message_id ? { message_id } : {}) })).draft;
 
-export const editDraft = (account_id: string, draft_id: string, change: Partial<Pick<Draft, "to" | "cc" | "bcc" | "subject" | "body">>) =>
+export const editDraft = (account_id: string, draft_id: string, change: Partial<Pick<Draft, "to" | "cc" | "bcc" | "subject" | "body" | "format">>) =>
     execute<{ draft: Draft }>("mail.drafts.edit", { account_id, draft_id, ...change });
 
 export const listDrafts = async (account_id: string) => (await execute<{ drafts: Draft[] }>("mail.drafts.list", { account_id })).drafts;

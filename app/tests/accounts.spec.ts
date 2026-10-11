@@ -124,8 +124,8 @@ test("automatic replies are scheduled from the accounts screen, in local time", 
     await expect(form.getByRole("radio", { name: "Off", exact: true })).toBeChecked();
     await form.getByRole("radio", { name: "On between two times" }).check();
     // Brisbane is ten hours ahead of UTC, all year.
-    await form.getByLabel("From").fill("2026-10-20T08:00");
-    await form.getByLabel("Until").fill("2026-10-24T17:30");
+    await form.getByLabel("From", { exact: true }).fill("2026-10-20T08:00");
+    await form.getByLabel("Until", { exact: true }).fill("2026-10-24T17:30");
     await form.getByLabel("To people in your organisation").fill("Away until Monday.");
     await form.getByLabel("Reply to people outside it").selectOption("everyone");
     await form.getByLabel("To people outside your organisation").fill("I am away until Monday.");
@@ -143,7 +143,7 @@ test("automatic replies are scheduled from the accounts screen, in local time", 
 
     // Opened again, the times are back in local time.
     await page.getByRole("button", { name: "Automatic replies" }).click();
-    await expect(form.getByLabel("From")).toHaveValue("2026-10-20T08:00");
+    await expect(form.getByLabel("From", { exact: true })).toHaveValue("2026-10-20T08:00");
 });
 
 test("a sign-in from before automatic replies says to sign in again", async ({ page }) => {

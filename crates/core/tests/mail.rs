@@ -1266,3 +1266,55 @@ async fn automatic_replies_are_read_set_and_scheduled_on_the_server() {
     }
     assert_eq!(f.graph.automatic_replies()["status"], "disabled");
 }
+
+#[tokio::test]
+async fn a_formatted_message_is_cleaned_when_kept_and_sent_with_its_formatting() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    f.run(
+        "mail.signature.set",
+        json!({ "text": "Robin\nExample Pty Ltd" }),
+    )
+    .await;
+
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Plan", "format": "html" }),
+        )
+        .await["draft"]
+        .clone();
+    assert_eq!(draft["format"], "html");
+    // The signature of a formatted message is formatted too.
+    assert_eq!(draft["body"], "<p><br></p><p>Robin<br>Example Pty Ltd</p>");
+
+    let kept = f
+        .run(
+            "mail.drafts.edit",
+            json!({
+                "draft_id": draft["id"],
+                "body": "<p>The <b>plan</b>:</p><ol><li>Go</li></ol><script>evil()</script><p onclick=\"evil()\">x</p>"
+            }),
+        )
+        .await;
+    let body = kept["draft"]["body"].as_str().unwrap();
+    assert!(
+        body.contains("<b>plan</b>") && body.contains("<ol><li>Go</li></ol>"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("script") && !body.contains("onclick"),
+        "{body}"
+    );
+
+    f.run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+    let sent = &f.graph.sent()[0].body_html;
+    assert!(
+        sent.starts_with("<html><body><p>The <b>plan</b>:</p><ol><li>Go</li></ol>"),
+        "{sent}"
+    );
+}

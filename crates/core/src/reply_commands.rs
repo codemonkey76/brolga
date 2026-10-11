@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use brolga_commands::{CommandError, CommandKind, CommandSpec, Handler, Registry, RegistryError};
-use brolga_mail::{html_to_text, text_to_html};
+use brolga_mail::{html_to_text, text_to_paragraphs};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -127,7 +127,7 @@ async fn set(mailboxes: Arc<Mailboxes>, args: Set) -> Result<Value, CommandError
                     "An automatic reply can be at most {LONGEST} characters."
                 )));
             }
-            setting.insert(key.to_owned(), json!(text_to_html(text.trim())));
+            setting.insert(key.to_owned(), json!(text_to_paragraphs(text)));
         }
     }
     if let Some(audience) = &args.external_audience {

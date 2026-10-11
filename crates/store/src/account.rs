@@ -207,6 +207,10 @@ const STEPS: &[&str] = &[
 
     CREATE INDEX draft_files_by_draft ON draft_files (draft_id, id);
 ",
+    "
+    -- Whether a draft's body is plain words (text) or formatted (html).
+    ALTER TABLE drafts ADD COLUMN format TEXT NOT NULL DEFAULT 'text';
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -311,6 +311,30 @@ pub fn text_to_html(text: &str) -> String {
     format!("<pre>{escaped}</pre>")
 }
 
+/// Words written by a person, as the HTML to send them as: a paragraph for
+/// each, line breaks kept, and nothing typed taken as markup. Unlike
+/// `text_to_html`, which shows a received message exactly as it came, this
+/// is for writing, and reads as ordinary text in any mail program.
+pub fn text_to_paragraphs(text: &str) -> String {
+    let mut out = String::new();
+    for paragraph in text.replace("\r\n", "\n").split("\n\n") {
+        if paragraph.trim().is_empty() {
+            continue;
+        }
+        let escaped = paragraph
+            .trim_matches('\n')
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        out.push_str("<p>");
+        out.push_str(&escaped.replace('\n', "<br>"));
+        out.push_str("</p>");
+    }
+
+    out
+}
+
 /// The largest index no greater than `at` that does not split a character.
 fn floor_boundary(text: &str, at: usize) -> usize {
     let mut at = at.min(text.len());
@@ -493,5 +517,14 @@ mod tests {
         );
         assert!(!clean.html.contains("href=\"cid:"), "{}", clean.html);
         assert_eq!(clean.blocked_remote, 0);
+    }
+
+    #[test]
+    fn written_words_become_paragraphs_and_nothing_typed_becomes_markup() {
+        assert_eq!(
+            text_to_paragraphs("Hi Sam,\n\nTwo lines\r\nhere <b>&</b>.\n\n\n"),
+            "<p>Hi Sam,</p><p>Two lines<br>here &lt;b&gt;&amp;&lt;/b&gt;.</p>"
+        );
+        assert_eq!(text_to_paragraphs(" \n "), "");
     }
 }

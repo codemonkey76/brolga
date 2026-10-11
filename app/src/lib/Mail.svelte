@@ -73,7 +73,14 @@
         if (!accountId) return;
         if (kind !== "new" && !opened) return;
         try {
-            writing = await createDraft(accountId, kind, kind === "new" ? undefined : opened?.message.id);
+            // Formatted unless the last message written was switched to plain text.
+            let plain = false;
+            try {
+                plain = localStorage.getItem("brolga.compose.plain") === "1";
+            } catch {
+                // Formatted, then.
+            }
+            writing = await createDraft(accountId, kind, plain ? "text" : "html", kind === "new" ? undefined : opened?.message.id);
             await loadDrafts();
         } catch (failure) {
             problem = say(failure);

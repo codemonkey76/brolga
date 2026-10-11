@@ -152,7 +152,7 @@ impl Outbox {
 
         let content = json!({
             "subject": draft.subject,
-            "body": { "contentType": "html", "content": html(&draft.body, quoted.as_deref()) },
+            "body": { "contentType": "html", "content": html(&draft.body, &draft.format, quoted.as_deref()) },
             "toRecipients": recipients(&draft.to_recipients),
             "ccRecipients": recipients(&draft.cc_recipients),
             "bccRecipients": recipients(&draft.bcc_recipients),
@@ -271,18 +271,18 @@ fn recipients(kept: &str) -> serde_json::Value {
         .collect()
 }
 
-/// The words as typed, as the plain HTML a mail program shows well: a
-/// paragraph for each, line breaks kept, nothing else. Whatever is quoted
-/// goes underneath as the server wrote it.
-fn html(typed: &str, quoted: Option<&str>) -> String {
+/// A draft's body as the HTML that is sent.
+///
+/// Plain words become a paragraph each, with line breaks kept and nothing
+/// typed taken as markup. A formatted body is cleaned on its way out as it
+/// was on its way in: only plain tags leave, whatever put it there.
+/// Whatever is quoted goes underneath as the server wrote it.
+fn html(body: &str, format: &str, quoted: Option<&str>) -> String {
     let mut out = String::from("<html><body>");
-    for paragraph in typed.replace("\r\n", "\n").split("\n\n") {
-        if paragraph.trim().is_empty() {
-            continue;
-        }
-        out.push_str("<p>");
-        out.push_str(&escape(paragraph).replace('\n', "<br>"));
-        out.push_str("</p>");
+    if format == "html" {
+        out.push_str(&brolga_mail::sanitise_html(body, brolga_mail::RemoteContent::Blocked).html);
+    } else {
+        out.push_str(&brolga_mail::text_to_paragraphs(body));
     }
     if let Some(quoted) = quoted {
         out.push_str(quoted);
@@ -292,13 +292,6 @@ fn html(typed: &str, quoted: Option<&str>) -> String {
     out
 }
 
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,12 +299,39 @@ mod tests {
     #[test]
     fn typed_words_become_plain_paragraphs_and_nothing_typed_becomes_markup() {
         assert_eq!(
-            html("Hi Sam,\n\nTwo lines\nhere <b>&</b>.\n", None),
-            "<html><body><p>Hi Sam,</p><p>Two lines<br>here &lt;b&gt;&amp;&lt;/b&gt;.<br></p></body></html>"
+            html("Hi Sam,\n\nTwo lines\nhere <b>&</b>.\n", "text", None),
+            "<html><body><p>Hi Sam,</p><p>Two lines<br>here &lt;b&gt;&amp;&lt;/b&gt;.</p></body></html>"
         );
         assert_eq!(
-            html("Yes.", Some("<hr><p>Original</p>")),
+            html("Yes.", "text", Some("<hr><p>Original</p>")),
             "<html><body><p>Yes.</p><hr><p>Original</p></body></html>"
+        );
+    }
+
+    #[test]
+    fn a_formatted_body_goes_out_with_its_formatting_and_nothing_else() {
+        let sent = html(
+            "<p>Hi <b>Sam</b>, see <a href=\"https://example.test/a\">this</a>.</p><ul><li>One</li></ul>\
+             <script>evil()</script><p style=\"position:fixed\" onclick=\"evil()\">x</p><img src=\"https://tracker.test/p.gif\">",
+            "html",
+            Some("<hr><p>Original</p>"),
+        );
+
+        assert!(
+            sent.contains("<p>Hi <b>Sam</b>, see <a href=\"https://example.test/a\""),
+            "{sent}"
+        );
+        assert!(sent.contains("<ul><li>One</li></ul>"), "{sent}");
+        assert!(
+            !sent.contains("script")
+                && !sent.contains("onclick")
+                && !sent.contains("style")
+                && !sent.contains("tracker"),
+            "{sent}"
+        );
+        assert!(
+            sent.ends_with("<hr><p>Original</p></body></html>"),
+            "{sent}"
         );
     }
 

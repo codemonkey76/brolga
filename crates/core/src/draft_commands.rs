@@ -33,6 +33,7 @@ struct Create {
     bcc: Option<Vec<Person>>,
     subject: Option<String>,
     body: Option<String>,
+    format: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +45,7 @@ struct Edit {
     bcc: Option<Vec<Person>>,
     subject: Option<String>,
     body: Option<String>,
+    format: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -209,6 +211,17 @@ fn is_address(text: &str) -> bool {
         && !text.contains(['<', '>', ',', ';'])
 }
 
+/// A body as it is kept. A formatted one is cleaned before it is kept, so
+/// that what is shown back in the window is already safe to show.
+fn body_kept(body: Option<String>, format: Option<&str>) -> Option<String> {
+    match (body, format) {
+        (Some(body), Some("html")) => {
+            Some(brolga_mail::sanitise_html(&body, brolga_mail::RemoteContent::Blocked).html)
+        }
+        (body, _) => body,
+    }
+}
+
 fn shown(mailbox: &Mailbox, draft: &Draft) -> Value {
     let files: Vec<Value> = mailbox
         .db
@@ -228,6 +241,7 @@ fn shown(mailbox: &Mailbox, draft: &Draft) -> Value {
         "bcc": list(&draft.bcc_recipients),
         "subject": draft.subject,
         "body": draft.body,
+        "format": draft.format,
         "state": draft.state,
         "error": draft.error,
         "updated_at": draft.updated_at,
@@ -293,7 +307,8 @@ async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, Comman
         cc_recipients: kept(args.cc)?,
         bcc_recipients: kept(args.bcc)?,
         subject: args.subject,
-        body: args.body,
+        body: body_kept(args.body, args.format.as_deref()),
+        format: args.format,
     };
 
     if kind != "new" {
@@ -323,7 +338,12 @@ async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, Comman
     if start.body.is_none() {
         let (text, on_replies) = signature(&mailbox)?;
         if !text.trim().is_empty() && (kind == "new" || on_replies) {
-            start.body = Some(format!("\n\n{text}"));
+            start.body = Some(if start.format.as_deref() == Some("html") {
+                // An empty paragraph to write in, and the signature under it.
+                format!("<p><br></p>{}", brolga_mail::text_to_paragraphs(&text))
+            } else {
+                format!("\n\n{text}")
+            });
         }
     }
 
@@ -445,12 +465,24 @@ async fn set_signature(
 
 async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    // A body is cleaned as the format it is being saved in: the one given
+    // with it, or else the draft's own.
+    let format = match (&args.format, &args.body) {
+        (Some(format), _) => Some(format.clone()),
+        (None, Some(_)) => mailbox
+            .db
+            .draft(&args.draft_id)
+            .map_err(failed)?
+            .map(|d| d.format),
+        (None, None) => None,
+    };
     let change = DraftEdit {
         to_recipients: kept(args.to)?,
         cc_recipients: kept(args.cc)?,
         bcc_recipients: kept(args.bcc)?,
         subject: args.subject,
-        body: args.body,
+        body: body_kept(args.body, format.as_deref()),
+        format: args.format,
     };
     if !mailbox
         .db
@@ -578,7 +610,8 @@ fn draft_schema() -> Value {
             "cc": people(),
             "bcc": people(),
             "subject": { "type": "string" },
-            "body": { "type": "string", "description": "The words as written, plain. The original is added under them when it is sent." },
+            "body": { "type": "string", "description": "The words as written: plain, or HTML, as `format` says. The original is added under them when it is sent." },
+            "format": { "enum": ["text", "html"] },
             "state": { "enum": ["editing", "queued", "failed"], "description": "queued: waiting to be sent. failed: Microsoft 365 would not send it; `error` says why." },
             "error": { "type": ["string", "null"] },
             "updated_at": { "type": "integer", "description": "Seconds since 1970." },
@@ -628,7 +661,7 @@ pub(crate) fn register(
             title: "Start a message".to_owned(),
             description: "Start a draft: a new message, or with `kind` and `message_id` a reply, a reply to all or a forward. \
                           An answer is addressed and given its RE: or FW: subject unless those are given. The draft is kept on this computer; \
-                          nothing is sent until mail.drafts.send. The body is plain words; the original is added under it when it is sent."
+                          nothing is sent until mail.drafts.send. The body is plain words unless `format` is html; the original is added under it when it is sent."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: false,
@@ -643,7 +676,8 @@ pub(crate) fn register(
                     "cc": people(),
                     "bcc": people(),
                     "subject": { "type": "string" },
-                    "body": { "type": "string" }
+                    "body": { "type": "string" },
+                    "format": { "enum": ["text", "html"], "description": "Default text. As html, the body is cleaned before it is kept: plain formatting, lists and links stay; scripts, styles and remote pictures do not." }
                 },
                 "additionalProperties": false
             }),
@@ -729,7 +763,8 @@ pub(crate) fn register(
                     "cc": people(),
                     "bcc": people(),
                     "subject": { "type": "string" },
-                    "body": { "type": "string" }
+                    "body": { "type": "string" },
+                    "format": { "enum": ["text", "html"] }
                 },
                 "required": ["draft_id"],
                 "additionalProperties": false

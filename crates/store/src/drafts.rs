@@ -21,8 +21,10 @@ pub struct Draft {
     pub cc_recipients: String,
     pub bcc_recipients: String,
     pub subject: String,
-    /// The words as typed, plain.
+    /// The words as typed: plain, or as HTML, as `format` says.
     pub body: String,
+    /// `text` or `html`.
+    pub format: String,
     /// `editing`, `queued` (waiting to be sent) or `failed` (the server
     /// would not send it; it can be put right and sent again).
     pub state: String,
@@ -59,10 +61,12 @@ pub struct DraftEdit {
     pub bcc_recipients: Option<String>,
     pub subject: Option<String>,
     pub body: Option<String>,
+    /// `text` or `html`.
+    pub format: Option<String>,
 }
 
 const COLUMNS: &str = "id, kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body, state, \
-                       error, updated_at, server_id, quoted, send_tried";
+                       error, updated_at, server_id, quoted, send_tried, format";
 
 fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
     Ok(Draft {
@@ -80,6 +84,7 @@ fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
         server_id: row.get(11)?,
         quoted: row.get(12)?,
         send_tried: row.get(13)?,
+        format: row.get(14)?,
     })
 }
 
@@ -94,8 +99,9 @@ impl AccountDb {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
         transaction.execute(
-            "INSERT INTO drafts (kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body)
-             VALUES (?1, ?2, coalesce(?3, '[]'), coalesce(?4, '[]'), coalesce(?5, '[]'), coalesce(?6, ''), coalesce(?7, ''))",
+            "INSERT INTO drafts (kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body, format)
+             VALUES (?1, ?2, coalesce(?3, '[]'), coalesce(?4, '[]'), coalesce(?5, '[]'), coalesce(?6, ''), coalesce(?7, ''),
+                     coalesce(?8, 'text'))",
             params![
                 kind,
                 source_id,
@@ -103,7 +109,8 @@ impl AccountDb {
                 start.cc_recipients,
                 start.bcc_recipients,
                 start.subject,
-                start.body
+                start.body,
+                start.format
             ],
         )?;
         let id = format!("draft-{}", transaction.last_insert_rowid());
@@ -153,6 +160,7 @@ impl AccountDb {
                  bcc_recipients = coalesce(?4, bcc_recipients),
                  subject = coalesce(?5, subject),
                  body = coalesce(?6, body),
+                 format = coalesce(?7, format),
                  state = 'editing', error = NULL, updated_at = unixepoch()
              WHERE id = ?1 AND state <> 'queued'",
             params![
@@ -161,7 +169,8 @@ impl AccountDb {
                 edit.cc_recipients,
                 edit.bcc_recipients,
                 edit.subject,
-                edit.body
+                edit.body,
+                edit.format
             ],
         )?;
 

@@ -375,7 +375,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     cc: [],
                     bcc: [],
                     subject: source ? `${kind === "forward" ? "FW:" : "RE:"} ${source.subject}` : "",
-                    body: signature.text && (kind === "new" || signature.on_replies) ? `\n\n${signature.text}` : "",
+                    body: !(signature.text && (kind === "new" || signature.on_replies))
+                        ? ""
+                        : args.format === "html"
+                          ? `<p><br></p><p>${signature.text.replace(/\n/g, "<br>")}</p>`
+                          : `\n\n${signature.text}`,
+                    format: (args.format as string) ?? "text",
                     state: "editing",
                     error: null,
                     files: [] as Record<string, unknown>[],
@@ -401,7 +406,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 const found = draft(args.draft_id);
                 if (!found) throw { code: "failed", message: "There is no such draft." };
                 for (const line of ["to", "cc", "bcc"]) if (args[line] !== undefined) found[line] = checked(args[line]);
-                for (const part of ["subject", "body"]) if (args[part] !== undefined) found[part] = args[part];
+                for (const part of ["subject", "body", "format"]) if (args[part] !== undefined) found[part] = args[part];
                 found.state = "editing";
                 found.error = null;
                 return { draft: found };

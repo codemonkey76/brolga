@@ -5,4 +5,6 @@
 
 mod html;
 
-pub use html::{RemoteContent, Sanitised, html_to_text, sanitise_html, text_to_html};
+pub use html::{
+    RemoteContent, Sanitised, html_to_text, sanitise_html, text_to_html, text_to_paragraphs,
+};

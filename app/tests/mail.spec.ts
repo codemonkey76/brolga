@@ -569,7 +569,12 @@ test("a new message is written, kept as it goes, and sent", async ({ page }) => 
     await expect(form.getByRole("textbox", { name: "To" })).toBeFocused();
     await form.getByRole("textbox", { name: "To" }).fill("Jo Nguyen <jo.nguyen@example.test>, sam.taylor@example.test");
     await form.getByRole("textbox", { name: "Subject" }).fill("Lunch on Friday");
-    await form.getByRole("textbox", { name: "Message" }).fill("Are you both free?\n\nRobin");
+    await form.getByRole("textbox", { name: "Message" }).click();
+    await page.keyboard.type("Are you ");
+    await page.keyboard.press("Control+b");
+    await page.keyboard.type("both");
+    await page.keyboard.press("Control+b");
+    await page.keyboard.type(" free?");
     await picture(page, "compose");
 
     // It is kept without being asked, and shows among what is being written.
@@ -585,12 +590,13 @@ test("a new message is written, kept as it goes, and sent", async ({ page }) => 
     expect(went).toHaveLength(1);
     expect(went[0]).toMatchObject({
         subject: "Lunch on Friday",
-        body: "Are you both free?\n\nRobin",
+        format: "html",
         to: [
             { name: "Jo Nguyen", address: "jo.nguyen@example.test" },
             { name: null, address: "sam.taylor@example.test" },
         ],
     });
+    expect(String(went[0].body)).toMatch(/Are you <(b|strong)>both<\/(b|strong)>(&nbsp;| )free\?/);
 });
 
 test("a reply is addressed and titled, and starts in the words", async ({ page }) => {
@@ -608,7 +614,9 @@ test("a reply is addressed and titled, and starts in the words", async ({ page }
     await page.keyboard.press("Control+Enter");
 
     await expect(form).toHaveCount(0);
-    expect((await sent(page))[0]).toMatchObject({ kind: "reply", message_id: "m1", body: "Thursday is fine." });
+    const reply = (await sent(page))[0];
+    expect(reply).toMatchObject({ kind: "reply", message_id: "m1" });
+    expect(String(reply.body)).toContain("Thursday is fine.");
     // The message that was being read is back.
     await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
 });
@@ -618,13 +626,14 @@ test("a draft put aside is there to come back to, and can be thrown away", async
     await page.keyboard.press("Control+n");
     const form = page.getByRole("form", { name: "New message" });
     await form.getByRole("textbox", { name: "Subject" }).fill("Half written");
-    await form.getByRole("textbox", { name: "Message" }).fill("To be finished");
+    await form.getByRole("textbox", { name: "Message" }).click();
+    await page.keyboard.type("To be finished");
 
     await page.keyboard.press("Escape");
     await expect(form).toHaveCount(0);
 
     await page.getByRole("list", { name: "Being written" }).getByRole("button", { name: "Half written" }).click();
-    await expect(form.getByRole("textbox", { name: "Message" })).toHaveValue("To be finished");
+    await expect(form.getByRole("textbox", { name: "Message" })).toHaveText("To be finished");
 
     // Throwing it away takes asking twice.
     await form.getByRole("button", { name: "Discard" }).click();
@@ -657,7 +666,8 @@ test("a message Microsoft 365 will not send comes back with the reason", async (
     const form = page.getByRole("form", { name: "New message" });
     await form.getByRole("textbox", { name: "To" }).fill("jo@example.test");
     await form.getByRole("textbox", { name: "Subject" }).fill("Hello");
-    await form.getByRole("textbox", { name: "Message" }).fill("Nothing of this is lost.");
+    await form.getByRole("textbox", { name: "Message" }).click();
+    await page.keyboard.type("Nothing of this is lost.");
     await form.getByRole("button", { name: "Send" }).click();
 
     const waiting = page.getByRole("list", { name: "Being written" });
@@ -665,7 +675,7 @@ test("a message Microsoft 365 will not send comes back with the reason", async (
     await waiting.getByRole("button", { name: /Hello/ }).click();
 
     await expect(form.getByRole("alert")).toContainText("This was not sent. The mailbox is over its sending limit.");
-    await expect(form.getByRole("textbox", { name: "Message" })).toHaveValue("Nothing of this is lost.");
+    await expect(form.getByRole("textbox", { name: "Message" })).toHaveText("Nothing of this is lost.");
 });
 
 test("a signature is set on the accounts screen and starts new messages", async ({ page }) => {
@@ -680,15 +690,22 @@ test("a signature is set on the accounts screen and starts new messages", async 
 
     await page.getByRole("button", { name: "Mail" }).click();
     await page.getByRole("button", { name: "New message" }).click();
-    const words = page.getByRole("form", { name: "New message" }).getByRole("textbox", { name: "Message" });
-    await expect(words).toHaveValue("\n\nRobin Example\nExample Pty Ltd");
+    const form = page.getByRole("form", { name: "New message" });
+    const words = form.getByRole("textbox", { name: "Message" });
+    await expect(words).toContainText("Robin Example");
+    await expect(words).toContainText("Example Pty Ltd");
 
     // Typing goes above it.
     await words.focus();
     await page.keyboard.type("Hello");
-    await expect(words).toHaveValue("Hello\n\nRobin Example\nExample Pty Ltd");
+    await expect.poll(async () => (await words.innerText()).replace(/\s+/g, " ").trim()).toBe("Hello Robin Example Example Pty Ltd");
 
-    // An answer has none unless asked for.
+    // As plain text it is the same words, and stays plain for the next message.
+    await form.getByRole("checkbox", { name: "Plain text" }).check();
+    await expect(words).toHaveValue(/^Hello\n+Robin Example\nExample Pty Ltd$/);
+    await expect(form.getByRole("toolbar", { name: "Formatting" }).getByRole("button")).toHaveCount(0);
+
+    // An answer has no signature unless asked for.
     await page.keyboard.press("Escape");
     await messages(page).getByRole("option").first().click();
     await page.getByRole("button", { name: "Reply", exact: true }).click();
@@ -748,4 +765,55 @@ test("files are attached from the file dialog, can be removed, and go with the m
     await expect(form).toHaveCount(0);
     const went = (await sent(page))[0] as { files: { name: string }[] };
     expect(went.files.map((each) => each.name)).toEqual(["Quarterly report.pdf"]);
+});
+
+test("a message can be formatted: lists, a link, and plain pasting", async ({ page, context, browserName }) => {
+    // Only Chromium lets a test put something on the clipboard to paste.
+    const canPaste = browserName === "chromium";
+    if (canPaste) await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    const words = form.getByRole("textbox", { name: "Message" });
+    const tools = form.getByRole("toolbar", { name: "Formatting" });
+    await form.getByRole("textbox", { name: "To" }).fill("jo@example.test");
+
+    await words.click();
+    await tools.getByRole("button", { name: "Bulleted list" }).click();
+    await page.keyboard.type("Milk");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Bread");
+    await expect(words.locator("ul > li")).toHaveCount(2);
+
+    // A link is added without leaving the message, and Enter there does not send it.
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await tools.getByRole("button", { name: "Link" }).click();
+    await form.getByRole("textbox", { name: "Link address" }).fill("https://example.test/list");
+    await page.keyboard.press("Enter");
+    await expect(words.locator('a[href="https://example.test/list"]')).toHaveCount(1);
+    await expect(form).toBeVisible();
+
+    if (canPaste) {
+        // Formatting pasted from elsewhere comes in as plain words.
+        await page.evaluate(() =>
+            navigator.clipboard.write([
+                new ClipboardItem({
+                    "text/html": new Blob(['<h1 style="color:red">Loud</h1><img src="https://tracker.test/p.gif">'], { type: "text/html" }),
+                    "text/plain": new Blob(["Loud"], { type: "text/plain" }),
+                }),
+            ]),
+        );
+        await words.focus();
+        await page.keyboard.press("Control+v");
+        await expect(words).toContainText("Loud");
+        await expect(words.locator("h1, img")).toHaveCount(0);
+    }
+
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form).toHaveCount(0);
+    const body = String((await sent(page))[0].body);
+    expect(body).toContain("<li>Milk</li>");
+    expect(body).toContain('href="https://example.test/list"');
+    expect(body).not.toContain("tracker");
 });
