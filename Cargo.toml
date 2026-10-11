@@ -17,7 +17,9 @@ brolga-core = { path = "crates/core" }
 brolga-mcp = { path = "crates/mcp" }
 brolga-platform = { path = "crates/platform" }
 brolga-store = { path = "crates/store" }
+brolga-sync = { path = "crates/sync" }
 brolga-fake-graph = { path = "testing/fake-graph" }
+brolga-graph = { path = "crates/graph" }
 
 axum = "0.8"
 base64 = "0.23"

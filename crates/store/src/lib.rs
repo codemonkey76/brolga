@@ -1,14 +1,18 @@
 //! What Brolga keeps on disk.
 //!
-//! So far that is the global database: the list of accounts. Each account's
-//! own database of mail, calendar and contacts arrives with sync.
+//! The global database holds the list of accounts. Each account then has a
+//! database of its own for its mail.
 //!
 //! No secret is ever written here. Refresh tokens live in the operating
 //! system's secret store, and the tests check that none reaches this file.
 
+mod account;
 mod global;
 mod migrate;
 
+pub use account::{
+    AccountDb, Body, Folder, FolderChange, MessageChange, MessageRow, Round, SyncState,
+};
 pub use global::{Account, GlobalDb};
 
 #[derive(Debug, thiserror::Error)]

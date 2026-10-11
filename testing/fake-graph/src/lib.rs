@@ -5,18 +5,22 @@
 //! tenant, and can be made to meet the failures a real one only produces now
 //! and then: throttling, and a service that is briefly down.
 //!
-//! So far it knows one resource, the signed-in user. Each one the client
-//! comes to use is added here first.
+//! It knows the signed-in user and their mail folders and messages, delta
+//! queries included. Each resource the client comes to use is added here
+//! first.
 
 mod identity;
+mod mailbox;
 
 pub use identity::FakeIdentity;
+pub use mailbox::FakeMessage;
 
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -38,6 +42,12 @@ struct Inner {
     faults: Vec<Fault>,
     /// Every request received, as `GET /v1.0/me`.
     requests: Vec<String>,
+    /// Out of every thousand requests, how many to fail at random, and the
+    /// state of the generator that decides which.
+    chaos: Option<(u32, u64)>,
+    mailbox: mailbox::Mailbox,
+    /// Where this server is, to write links to itself.
+    base: String,
 }
 
 type Shared = Arc<Mutex<Inner>>;
@@ -54,6 +64,13 @@ impl FakeGraph {
         let shared = Shared::default();
         let app = Router::new()
             .route("/v1.0/me", get(me))
+            .route("/v1.0/me/mailFolders/delta", get(folders_delta))
+            .route("/v1.0/me/mailFolders/{folder}", get(folder))
+            .route(
+                "/v1.0/me/mailFolders/{folder}/messages/delta",
+                get(messages_delta),
+            )
+            .route("/v1.0/me/messages/{message}", get(message))
             .fallback(not_built)
             // Outermost last: a request is logged, then faulted, then checked for a token.
             .layer(middleware::from_fn(require_token))
@@ -63,6 +80,7 @@ impl FakeGraph {
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let address = listener.local_addr()?;
+        lock(&shared).base = format!("http://{address}/v1.0");
         let server = tokio::spawn(async move {
             // The server only stops when the test drops it.
             let _ = axum::serve(listener, app).await;
@@ -83,6 +101,101 @@ impl FakeGraph {
     /// Answer the next requests with these faults, one each, before answering normally again.
     pub fn fail_next(&self, faults: impl IntoIterator<Item = Fault>) {
         lock(&self.shared).faults.extend(faults);
+    }
+
+    /// From now on fail this many requests in every thousand, at random but
+    /// the same way each time for the same seed, with a 429 or a 503.
+    pub fn fail_at_random(&self, per_thousand: u32, seed: u64) {
+        lock(&self.shared).chaos = Some((per_thousand, seed.max(1)));
+    }
+
+    pub fn stop_failing(&self) {
+        let mut inner = lock(&self.shared);
+        inner.chaos = None;
+        inner.faults.clear();
+    }
+
+    /// The id of a folder every mailbox has, by its well-known name.
+    pub fn folder_id(&self, well_known: &str) -> String {
+        lock(&self.shared)
+            .mailbox
+            .folder_id(well_known)
+            .unwrap_or_default()
+    }
+
+    pub fn add_folder(&self, name: &str, parent: Option<&str>) -> String {
+        lock(&self.shared).mailbox.add_folder(name, parent)
+    }
+
+    pub fn rename_folder(&self, id: &str, name: &str) {
+        lock(&self.shared).mailbox.rename_folder(id, name);
+    }
+
+    pub fn remove_folder(&self, id: &str) {
+        lock(&self.shared).mailbox.remove_folder(id);
+    }
+
+    pub fn add_message(&self, folder: &str, message: FakeMessage) -> String {
+        lock(&self.shared).mailbox.add_message(folder, message)
+    }
+
+    /// Fill a folder with this many made-up messages, newest last added.
+    pub fn add_messages(&self, folder: &str, count: usize) -> Vec<String> {
+        let mut inner = lock(&self.shared);
+        (0..count)
+            .map(|n| {
+                let day = 1 + (n / 1440) % 28;
+                let (hour, minute) = ((n / 60) % 24, n % 60);
+                let message = FakeMessage::new(
+                    &format!("Message number {n}"),
+                    &format!("Sender {}", n % 97),
+                    &format!("sender{}@example.test", n % 97),
+                    &format!(
+                        "2026-{:02}-{day:02}T{hour:02}:{minute:02}:00Z",
+                        1 + (n / 40320) % 12
+                    ),
+                );
+                inner.mailbox.add_message(folder, message)
+            })
+            .collect()
+    }
+
+    pub fn set_read(&self, id: &str, is_read: bool) {
+        lock(&self.shared).mailbox.set_read(id, is_read);
+    }
+
+    pub fn set_subject(&self, id: &str, subject: &str) {
+        lock(&self.shared).mailbox.set_subject(id, subject);
+    }
+
+    pub fn move_message(&self, id: &str, to_folder: &str) {
+        lock(&self.shared).mailbox.move_message(id, to_folder);
+    }
+
+    pub fn delete_message(&self, id: &str) {
+        lock(&self.shared).mailbox.delete_message(id);
+    }
+
+    /// Make every delta link handed out so far stale, as Graph does when its
+    /// token cache turns over: the next use of one is answered 410.
+    pub fn expire_delta_tokens(&self) {
+        lock(&self.shared).mailbox.expire_delta_tokens();
+    }
+
+    /// Answer every delta request as stale, a first one included: a server
+    /// that never lets a sync finish.
+    pub fn never_settle(&self, never: bool) {
+        lock(&self.shared).mailbox.never_settles = never;
+    }
+
+    /// Every message as it truly is on the server: id to (folder, subject, read).
+    pub fn messages(&self) -> BTreeMap<String, (String, String, bool)> {
+        lock(&self.shared).mailbox.messages()
+    }
+
+    /// Every folder as it truly is on the server: id to (name, parent).
+    pub fn folders(&self) -> BTreeMap<String, (String, String)> {
+        lock(&self.shared).mailbox.folders()
     }
 
     /// Every request received so far, oldest first, as `GET /v1.0/me`.
@@ -114,7 +227,25 @@ async fn record(State(shared): State<Shared>, request: Request, next: Next) -> R
 async fn inject_fault(State(shared): State<Shared>, request: Request, next: Next) -> Response {
     let fault = {
         let mut inner = lock(&shared);
-        (!inner.faults.is_empty()).then(|| inner.faults.remove(0))
+        if !inner.faults.is_empty() {
+            Some(inner.faults.remove(0))
+        } else if let Some((per_thousand, state)) = inner.chaos.as_mut() {
+            // xorshift: small, and the same sequence for the same seed.
+            *state ^= *state << 13;
+            *state ^= *state >> 7;
+            *state ^= *state << 17;
+            let roll = (*state % 1000) as u32;
+            let fault = if roll.is_multiple_of(2) {
+                Fault::Throttled {
+                    retry_after_secs: 0,
+                }
+            } else {
+                Fault::Unavailable
+            };
+            (roll < *per_thousand).then_some(fault)
+        } else {
+            None
+        }
     };
 
     match fault {
@@ -175,6 +306,94 @@ async fn me() -> impl IntoResponse {
         "userPrincipalName": "robin@example.test",
         "id": "00000000-0000-4000-8000-000000000001"
     }))
+}
+
+/// The page size asked for with `Prefer: odata.maxpagesize`, or Graph's own modest default.
+fn page_size(request: &axum::http::HeaderMap) -> usize {
+    request
+        .get_all("prefer")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .find_map(|part| part.trim().strip_prefix("odata.maxpagesize=")?.parse().ok())
+        .unwrap_or(10)
+}
+
+fn token(query: &HashMap<String, String>) -> Option<&str> {
+    query
+        .get("$skiptoken")
+        .or_else(|| query.get("$deltatoken"))
+        .map(String::as_str)
+}
+
+fn delta_answer(answer: mailbox::Answer) -> Response {
+    match answer {
+        mailbox::Answer::Page(body) => axum::Json(body).into_response(),
+        // "Synchronization reset" in the delta query overview: 410 Gone.
+        mailbox::Answer::Gone => error(
+            StatusCode::GONE,
+            "syncStateNotFound",
+            "The delta token is no longer valid.",
+        ),
+        mailbox::Answer::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such folder.",
+        ),
+    }
+}
+
+async fn folders_delta(
+    State(shared): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let inner = lock(&shared);
+    let link = format!("{}/me/mailFolders/delta", inner.base);
+
+    delta_answer(
+        inner
+            .mailbox
+            .folders_delta(token(&query), page_size(&headers), &link),
+    )
+}
+
+async fn messages_delta(
+    State(shared): State<Shared>,
+    Path(folder): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let inner = lock(&shared);
+    let link = format!("{}/me/mailFolders/{folder}/messages/delta", inner.base);
+
+    delta_answer(
+        inner
+            .mailbox
+            .messages_delta(&folder, token(&query), page_size(&headers), &link),
+    )
+}
+
+async fn folder(State(shared): State<Shared>, Path(folder): Path<String>) -> Response {
+    match lock(&shared).mailbox.folder(&folder) {
+        Some(folder) => axum::Json(folder).into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such folder.",
+        ),
+    }
+}
+
+async fn message(State(shared): State<Shared>, Path(message): Path<String>) -> Response {
+    match lock(&shared).mailbox.message(&message) {
+        Some(message) => axum::Json(message).into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such message.",
+        ),
+    }
 }
 
 /// Said loudly, so a test that wanders off what is built fails on the reason.
@@ -259,7 +478,7 @@ mod tests {
     async fn something_not_built_says_so() {
         let graph = FakeGraph::start().await.unwrap();
 
-        let response = get(&graph, "/me/messages", Some("token")).await;
+        let response = get(&graph, "/me/calendar/events", Some("token")).await;
 
         assert_eq!(response.status(), 404);
         let body: Value = response.json().await.unwrap();
@@ -268,7 +487,7 @@ mod tests {
             body["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("/v1.0/me/messages")
+                .contains("/v1.0/me/calendar/events")
         );
     }
 }

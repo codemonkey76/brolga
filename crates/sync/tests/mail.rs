@@ -1,0 +1,502 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+//! Mail sync against the fake Graph server, including the failures a real
+//! one only produces now and then. Every test ends the same way: what is in
+//! the local database must be exactly what is on the server.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use brolga_fake_graph::{FakeGraph, FakeMessage, Fault};
+use brolga_graph::{GraphClient, GraphError, RetryPolicy, TokenSource};
+use brolga_store::AccountDb;
+use brolga_sync::{MailSync, SyncError};
+use futures::future::BoxFuture;
+
+struct FixedToken;
+
+impl TokenSource for FixedToken {
+    fn token(&self) -> BoxFuture<'_, Result<String, GraphError>> {
+        Box::pin(async { Ok("token".to_owned()) })
+    }
+}
+
+struct Fixture {
+    graph: FakeGraph,
+    db: Arc<AccountDb>,
+    inbox: String,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        let graph = FakeGraph::start().await.unwrap();
+        let inbox = graph.folder_id("inbox");
+
+        Self {
+            graph,
+            db: Arc::new(AccountDb::in_memory().unwrap()),
+            inbox,
+        }
+    }
+
+    /// A sync engine as a freshly started Brolga would have it: the same
+    /// database, and nothing carried over in memory.
+    fn sync(&self, page_size: u32) -> MailSync {
+        let client = GraphClient::new(
+            self.graph.base_url(),
+            Arc::new(FixedToken),
+            RetryPolicy::impatient(),
+        )
+        .unwrap();
+
+        MailSync::new(Arc::new(client), self.db.clone()).with_page_size(page_size)
+    }
+
+    /// Every message in the local database: id to (folder, subject, read).
+    fn local(&self) -> BTreeMap<String, (String, String, bool)> {
+        let mut all = BTreeMap::new();
+        // Every folder the server has ever had, so that a message left
+        // behind in a folder that has gone would still be found.
+        for folder in self.db.folders().unwrap() {
+            for m in self.db.messages(&folder.id, 0, u32::MAX).unwrap() {
+                let was = all.insert(m.id.clone(), (m.folder_id, m.subject, m.is_read));
+                assert!(was.is_none(), "{} is in the database twice", m.id);
+            }
+        }
+
+        all
+    }
+
+    fn assert_in_step(&self) {
+        let (local, server) = (self.local(), self.graph.messages());
+        let missing: Vec<_> = server
+            .keys()
+            .filter(|id| !local.contains_key(*id))
+            .collect();
+        let extra: Vec<_> = local
+            .keys()
+            .filter(|id| !server.contains_key(*id))
+            .collect();
+
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "lost {missing:?}, kept {extra:?}"
+        );
+        assert_eq!(local, server);
+
+        let folders: BTreeMap<String, String> = self
+            .db
+            .folders()
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.id, f.name))
+            .collect();
+        let on_server: BTreeMap<String, String> = self
+            .graph
+            .folders()
+            .into_iter()
+            .map(|(id, (name, _))| (id, name))
+            .collect();
+        assert_eq!(folders, on_server);
+    }
+}
+
+fn message(subject: &str, received: &str) -> FakeMessage {
+    FakeMessage::new(subject, "Sam Taylor", "sam@example.test", received)
+}
+
+#[tokio::test]
+async fn a_first_sync_brings_down_the_folders_and_every_message() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 250);
+    let projects = f.graph.add_folder("Projects", None);
+    f.graph.add_messages(&projects, 30);
+
+    let synced = f.sync(20).sync_all().await.unwrap();
+
+    f.assert_in_step();
+    assert_eq!(synced.changed, 280 + 8);
+    let folders = f.db.folders().unwrap();
+    assert_eq!(folders[0].well_known.as_deref(), Some("inbox"));
+    assert_eq!((folders[0].total, folders[0].unread), (250, 250));
+    assert_eq!(
+        folders.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()[..4],
+        ["Inbox", "Drafts", "Sent Items", "Deleted Items"]
+    );
+}
+
+#[tokio::test]
+async fn the_newest_messages_arrive_first() {
+    let f = Fixture::new().await;
+    f.graph
+        .add_message(&f.inbox, message("Old", "2026-01-01T09:00:00Z"));
+    f.graph
+        .add_message(&f.inbox, message("Newest", "2026-10-01T09:00:00Z"));
+    f.graph
+        .add_message(&f.inbox, message("Middle", "2026-06-01T09:00:00Z"));
+    let sync = f.sync(1);
+    sync.sync_folders().await.unwrap();
+
+    // One page of one message, then stopped: as when the app is closed early.
+    let first_page = GraphClient::new(
+        f.graph.base_url(),
+        Arc::new(FixedToken),
+        RetryPolicy::impatient(),
+    )
+    .unwrap()
+    .messages_delta(&f.inbox, None, 1)
+    .await
+    .unwrap();
+
+    assert!(format!("{:?}", first_page.items[0]).contains("Newest"));
+    sync.sync_messages(&f.inbox).await.unwrap();
+    let listed: Vec<String> =
+        f.db.messages(&f.inbox, 0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.subject)
+            .collect();
+    assert_eq!(listed, ["Newest", "Middle", "Old"]);
+}
+
+#[tokio::test]
+async fn later_syncs_pick_up_every_kind_of_change() {
+    let f = Fixture::new().await;
+    let ids = f.graph.add_messages(&f.inbox, 40);
+    let archive = f.graph.folder_id("archive");
+    let sync = f.sync(7);
+    sync.sync_all().await.unwrap();
+
+    f.graph
+        .add_message(&f.inbox, message("Brand new", "2026-10-09T10:00:00Z"));
+    f.graph.set_read(&ids[0], true);
+    f.graph.set_subject(&ids[1], "Renamed");
+    f.graph.move_message(&ids[2], &archive);
+    f.graph.delete_message(&ids[3]);
+    let projects = f.graph.add_folder("Projects", None);
+    f.graph.add_message(
+        &projects,
+        message("In a new folder", "2026-10-09T11:00:00Z"),
+    );
+    f.graph.rename_folder(&archive, "Old mail");
+    let synced = sync.sync_all().await.unwrap();
+
+    f.assert_in_step();
+    assert!(synced.removed >= 2);
+    assert_eq!(f.db.message(&ids[2]).unwrap().unwrap().folder_id, archive);
+    assert_eq!(f.db.message(&ids[3]).unwrap(), None);
+
+    // And with nothing changed, a sync changes nothing.
+    assert_eq!(sync.sync_all().await.unwrap().changed, 0);
+    f.assert_in_step();
+}
+
+#[tokio::test]
+async fn a_moved_message_survives_whichever_folder_is_synced_first() {
+    for destination_first in [true, false] {
+        let f = Fixture::new().await;
+        let id = f
+            .graph
+            .add_message(&f.inbox, message("On the move", "2026-10-01T09:00:00Z"));
+        let archive = f.graph.folder_id("archive");
+        let sync = f.sync(10);
+        sync.sync_all().await.unwrap();
+
+        f.graph.move_message(&id, &archive);
+        let order = if destination_first {
+            [&archive, &f.inbox]
+        } else {
+            [&f.inbox, &archive]
+        };
+        for folder in order {
+            sync.sync_messages(folder).await.unwrap();
+        }
+
+        assert_eq!(
+            f.db.message(&id).unwrap().unwrap().folder_id,
+            archive,
+            "destination first: {destination_first}"
+        );
+        sync.sync_all().await.unwrap();
+        f.assert_in_step();
+    }
+}
+
+#[tokio::test]
+async fn an_interrupted_first_sync_carries_on_from_where_it_stopped() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 100);
+    f.sync(10).sync_folders().await.unwrap();
+
+    // Three pages in, the connection goes and stays gone for this attempt.
+    let before = f.graph.requests().len();
+    let stopped = {
+        let sync = f.sync(10);
+        let run = sync.sync_messages(&f.inbox);
+        tokio::pin!(run);
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut run => break result.is_ok(),
+                () = tokio::task::yield_now() => {
+                    if f.graph.requests().len() >= before + 3 { break false; }
+                }
+            }
+        }
+    };
+    assert!(!stopped, "the sync finished before it could be interrupted");
+    let saved = f.db.message_count(&f.inbox).unwrap();
+    assert!(
+        (20..100).contains(&saved),
+        "{saved} messages saved before the interruption"
+    );
+    let state = f.db.messages_sync(&f.inbox).unwrap();
+    assert!(!state.complete && state.link.unwrap().contains("$skiptoken"));
+
+    let resumed_at = f.graph.requests().len();
+    f.sync(10).sync_messages(&f.inbox).await.unwrap();
+
+    f.assert_in_step();
+    // It asked only for the pages it did not already have.
+    let asked = f.graph.requests().len() - resumed_at;
+    assert!(
+        asked <= 10 - (saved as usize / 10) + 1,
+        "{asked} requests to fetch what was left after {saved}"
+    );
+}
+
+#[tokio::test]
+async fn throttling_and_outages_slow_a_sync_down_but_lose_nothing() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 300);
+    f.graph.fail_next([
+        Fault::Throttled {
+            retry_after_secs: 0,
+        },
+        Fault::Unavailable,
+        Fault::Throttled {
+            retry_after_secs: 0,
+        },
+    ]);
+    // Then nearly a third of all requests fail, at random.
+    f.graph.fail_at_random(300, 7);
+
+    // A request that fails six times running gives up; the sync is simply run again.
+    let sync = f.sync(10);
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match sync.sync_all().await {
+            Ok(_) => break,
+            Err(e) if e.is_transient() && attempts < 50 => {}
+            Err(e) => panic!("after {attempts} attempts: {e}"),
+        }
+    }
+
+    f.graph.stop_failing();
+    f.assert_in_step();
+    assert!(f.graph.requests().len() > 40, "nothing was retried");
+}
+
+#[tokio::test]
+async fn being_throttled_for_good_is_reported_and_nothing_is_lost() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 30);
+    let sync = f.sync(10);
+    sync.sync_all().await.unwrap();
+    f.graph
+        .add_message(&f.inbox, message("While throttled", "2026-10-09T10:00:00Z"));
+    f.graph.fail_at_random(1000, 1);
+
+    let error = sync.sync_all().await.unwrap_err();
+
+    assert!(error.is_transient(), "{error:?}");
+    assert_eq!(f.db.message_count(&f.inbox).unwrap(), 30);
+    f.graph.stop_failing();
+    sync.sync_all().await.unwrap();
+    f.assert_in_step();
+}
+
+#[tokio::test]
+async fn an_expired_delta_token_brings_a_fresh_pass_that_removes_only_what_is_gone() {
+    let f = Fixture::new().await;
+    let ids = f.graph.add_messages(&f.inbox, 60);
+    let sync = f.sync(10);
+    sync.sync_all().await.unwrap();
+
+    // Changes made while the token was good but never fetched, then the token expires.
+    f.graph.delete_message(&ids[5]);
+    f.graph.set_read(&ids[6], true);
+    f.graph
+        .add_message(&f.inbox, message("After the reset", "2026-10-09T10:00:00Z"));
+    let doomed = f.graph.add_folder("Doomed", None);
+    f.graph.remove_folder(&doomed);
+    f.graph.expire_delta_tokens();
+    let synced = sync.sync_all().await.unwrap();
+
+    f.assert_in_step();
+    assert!(
+        synced.restarts >= 2,
+        "the folder list and the inbox should each have started again"
+    );
+    assert_eq!(f.db.message(&ids[5]).unwrap(), None);
+    assert!(f.db.message(&ids[6]).unwrap().unwrap().is_read);
+}
+
+#[tokio::test]
+async fn nothing_is_thrown_away_while_a_fresh_pass_is_under_way() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 50);
+    let sync = f.sync(10);
+    sync.sync_all().await.unwrap();
+    f.graph.expire_delta_tokens();
+    f.graph.fail_next([]);
+
+    // The fresh pass gets one page in and is cut off.
+    let before = f.graph.requests().len();
+    {
+        let run = sync.sync_messages(&f.inbox);
+        tokio::pin!(run);
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut run => break,
+                () = tokio::task::yield_now() => if f.graph.requests().len() >= before + 3 { break },
+            }
+        }
+    }
+
+    assert_eq!(
+        f.db.message_count(&f.inbox).unwrap(),
+        50,
+        "messages were dropped before the pass finished"
+    );
+    f.sync(10).sync_all().await.unwrap();
+    f.assert_in_step();
+}
+
+#[tokio::test]
+async fn tokens_expiring_in_the_middle_of_a_first_sync_start_it_again() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 40);
+    let sync = f.sync(10);
+    sync.sync_folders().await.unwrap();
+    // Read one page by hand, so a next link is saved, then expire it.
+    let client = GraphClient::new(
+        f.graph.base_url(),
+        Arc::new(FixedToken),
+        RetryPolicy::impatient(),
+    )
+    .unwrap();
+    let page = client.messages_delta(&f.inbox, None, 10).await.unwrap();
+    f.db.apply_messages(
+        &f.inbox,
+        &[],
+        &[],
+        page.next.url(),
+        brolga_store::Round::Continues,
+    )
+    .unwrap();
+    f.graph.expire_delta_tokens();
+
+    let synced = sync.sync_all().await.unwrap();
+
+    assert!(synced.restarts >= 1);
+    f.assert_in_step();
+}
+
+#[tokio::test]
+async fn a_server_that_never_lets_a_sync_finish_is_reported_not_looped_on() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 15);
+    let sync = f.sync(10);
+    sync.sync_all().await.unwrap();
+    f.graph.never_settle(true);
+
+    let error = sync.sync_all().await.unwrap_err();
+
+    assert!(matches!(error, SyncError::NeverSettled(_)), "{error:?}");
+    assert!(!error.is_transient());
+    // Everything already here is still here.
+    assert_eq!(f.db.message_count(&f.inbox).unwrap(), 15);
+    f.graph.never_settle(false);
+    sync.sync_all().await.unwrap();
+    f.assert_in_step();
+}
+
+#[tokio::test]
+async fn a_folder_deleted_on_the_server_takes_its_messages_with_it() {
+    let f = Fixture::new().await;
+    let projects = f.graph.add_folder("Projects", None);
+    f.graph.add_messages(&projects, 12);
+    f.graph.add_messages(&f.inbox, 5);
+    let sync = f.sync(10);
+    sync.sync_all().await.unwrap();
+    assert_eq!(f.db.message_count(&projects).unwrap(), 12);
+
+    f.graph.remove_folder(&projects);
+    sync.sync_all().await.unwrap();
+
+    f.assert_in_step();
+    assert_eq!(f.db.message_count(&projects).unwrap(), 0);
+    assert_eq!(f.db.messages_sync(&projects).unwrap().link, None);
+}
+
+/// The chaos test: the mailbox keeps changing, a third of requests fail,
+/// tokens expire, and the sync is cut off at arbitrary points and started
+/// again as a new process would. At the end the two must agree exactly.
+#[tokio::test]
+async fn chaos_ends_with_the_database_matching_the_server() {
+    for seed in 1..=4u64 {
+        let f = Fixture::new().await;
+        let archive = f.graph.folder_id("archive");
+        let mut ids = f.graph.add_messages(&f.inbox, 120);
+        let mut random = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut roll = move |sides: u64| {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            random % sides
+        };
+        f.graph.fail_at_random(250, seed);
+
+        for step in 0..40 {
+            // The mailbox changes under the sync.
+            match roll(6) {
+                0 => ids.push(f.graph.add_message(
+                    &f.inbox,
+                    message(&format!("New at step {step}"), "2026-10-09T10:00:00Z"),
+                )),
+                1 => f
+                    .graph
+                    .set_read(&ids[roll(ids.len() as u64) as usize], true),
+                2 => f
+                    .graph
+                    .move_message(&ids[roll(ids.len() as u64) as usize], &archive),
+                3 => f
+                    .graph
+                    .move_message(&ids[roll(ids.len() as u64) as usize], &f.inbox),
+                4 => f
+                    .graph
+                    .delete_message(&ids[roll(ids.len() as u64) as usize]),
+                _ => f.graph.set_subject(
+                    &ids[roll(ids.len() as u64) as usize],
+                    &format!("Edited at step {step}"),
+                ),
+            }
+            if step % 13 == 12 {
+                f.graph.expire_delta_tokens();
+            }
+
+            // A sync that may be killed at any await, as the process may be.
+            let sync = f.sync(1 + roll(15) as u32);
+            let _ = tokio::time::timeout(Duration::from_micros(200 + roll(4000)), sync.sync_all())
+                .await;
+        }
+
+        f.graph.stop_failing();
+        f.sync(25).sync_all().await.unwrap();
+        f.assert_in_step();
+    }
+}

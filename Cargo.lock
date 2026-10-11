@@ -592,6 +592,16 @@ dependencies = [
 [[package]]
 name = "brolga-graph"
 version = "0.0.1"
+dependencies = [
+ "brolga-fake-graph",
+ "futures",
+ "getrandom 0.4.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
 
 [[package]]
 name = "brolga-mail"
@@ -637,12 +647,22 @@ version = "0.0.1"
 dependencies = [
  "rusqlite",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "brolga-sync"
 version = "0.0.1"
+dependencies = [
+ "brolga-fake-graph",
+ "brolga-graph",
+ "brolga-store",
+ "futures",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
 
 [[package]]
 name = "brotli"
