@@ -59,6 +59,10 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then
             cargo build --release --locked -p brolga-cli --target aarch64-apple-darwin
             cargo build --release --locked -p brolga-cli --target x86_64-apple-darwin
+            # Each half of a universal app is built on its own and looks for
+            # its own, and the whole is then put together from one for both.
+            cp target/aarch64-apple-darwin/release/brolga-cli app/src-tauri/binaries/brolga-cli-aarch64-apple-darwin
+            cp target/x86_64-apple-darwin/release/brolga-cli app/src-tauri/binaries/brolga-cli-x86_64-apple-darwin
             lipo -create -output app/src-tauri/binaries/brolga-cli-universal-apple-darwin \
               target/aarch64-apple-darwin/release/brolga-cli target/x86_64-apple-darwin/release/brolga-cli
             cp app/src-tauri/binaries/brolga-cli-universal-apple-darwin dist/brolga-cli
