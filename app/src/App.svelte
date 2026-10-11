@@ -2,10 +2,11 @@
     import { type Account, listAccounts } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
     import Agents from "./lib/Agents.svelte";
+    import Calendar from "./lib/Calendar.svelte";
     import Questions from "./lib/Questions.svelte";
     import Mail from "./lib/Mail.svelte";
 
-    type View = "mail" | "accounts" | "agents";
+    type View = "mail" | "calendar" | "accounts" | "agents";
 
     let accounts = $state<Account[]>([]);
     let view = $state<View>("accounts");
@@ -29,6 +30,7 @@
     function keydown(event: KeyboardEvent) {
         if (!(event.ctrlKey || event.metaKey)) return;
         if (event.key === "1" && accounts.length > 0) view = "mail";
+        else if (event.key === "2" && accounts.length > 0) view = "calendar";
         else if (event.key === ",") view = "accounts";
         else return;
         event.preventDefault();
@@ -44,6 +46,9 @@
         <button type="button" class:current={view === "mail"} aria-current={view === "mail"} disabled={accounts.length === 0} onclick={() => (view = "mail")} title="Mail (Ctrl+1)">
             Mail
         </button>
+        <button type="button" class:current={view === "calendar"} aria-current={view === "calendar"} disabled={accounts.length === 0} onclick={() => (view = "calendar")} title="Calendar (Ctrl+2)">
+            Calendar
+        </button>
         <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Accounts (Ctrl+,)">
             Accounts
         </button>
@@ -57,6 +62,8 @@
             <p class="muted starting" role="status">Starting…</p>
         {:else if view === "mail" && accounts.length > 0}
             <Mail {accounts} />
+        {:else if view === "calendar" && accounts.length > 0}
+            <Calendar {accounts} />
         {:else if view === "agents"}
             <div class="scroll"><Agents /></div>
         {:else}

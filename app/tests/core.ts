@@ -170,6 +170,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** What is in the calendar. */
+    events?: FakeEvent[];
     /** What agents are waiting for the user's say-so on. */
     asking?: { id: number; client: string; command: string; args: Record<string, unknown> }[];
     /** Microsoft 365 cannot be reached. */
@@ -237,6 +239,33 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         };
         const draft = (id: unknown) => drafts.find((each) => each.id === id);
         let signature = { text: "", on_replies: false };
+        const diaries = [
+            { id: "main", name: "Calendar", color: "auto", hex_color: "", is_default: true, can_edit: true, shown: true },
+            { id: "family", name: "Family", color: "auto", hex_color: "#b3305f", is_default: false, can_edit: true, shown: true },
+        ];
+        const event = (e: NonNullable<typeof core.events>[number]) => ({
+            id: e.id,
+            calendar_id: e.calendar_id ?? "main",
+            subject: e.subject,
+            preview: (e.description ?? "").slice(0, 40),
+            location: e.location ?? "",
+            start: e.start,
+            end: e.end,
+            is_all_day: e.is_all_day ?? false,
+            time_zone: e.time_zone ?? "Australia/Brisbane",
+            show_as: e.show_as ?? "busy",
+            sensitivity: "normal",
+            is_cancelled: e.is_cancelled ?? false,
+            is_organizer: false,
+            organizer: { name: "Sam Taylor", address: "sam.taylor@example.test" },
+            response: "accepted",
+            kind: "singleInstance",
+            series_id: null,
+            categories: [],
+            reminder_minutes: 15,
+            join_url: e.join_url ?? null,
+            attendees: e.attendees ?? [],
+        });
         const asking = [...(core.asking ?? [])];
         let replies: Record<string, unknown> = {
             status: "off",
@@ -421,6 +450,26 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 };
             },
             "app.agent_log.list": () => ({ entries: core.agentLog ?? [] }),
+            "calendar.calendars.list": (args) => ({ account_id: args.account_id, calendars: diaries }),
+            "calendar.calendars.set_shown": (args) => {
+                const found = diaries.find((each) => each.id === args.calendar_id);
+                if (found) found.shown = args.shown as boolean;
+                return { calendar_id: args.calendar_id, shown: args.shown };
+            },
+            "calendar.events.list": (args) => ({
+                events: (core.events ?? [])
+                    .map(event)
+                    .filter((e) => e.start < new Date(args.end as string).toISOString() && e.end > new Date(args.start as string).toISOString())
+                    .filter((e) => diaries.find((d) => d.id === e.calendar_id)?.shown)
+                    .sort((a, b) => a.start.localeCompare(b.start)),
+                more: false,
+                note: "",
+            }),
+            "calendar.events.get": (args) => {
+                const found = (core.events ?? []).find((each) => each.id === args.event_id);
+                if (!found) throw { code: "failed", message: "There is no such event on this computer." };
+                return { event: event(found), description: found.description ?? "", description_complete: !core.offline, note: "" };
+            },
             "app.confirmations.list": () => ({ questions: asking }),
             "app.confirmations.answer": (args) => {
                 const at = asking.findIndex((each) => each.id === args.id);
@@ -644,6 +693,52 @@ export async function withCore(page: Page, core: FakeCore = {}) {
 
 export const ran = (page: Page) =>
     page.evaluate(() => (window as unknown as { ran: { command: string; args: Record<string, unknown> }[] }).ran);
+
+/** An event as the core's commands give it out. */
+export interface FakeEvent {
+    id: string;
+    calendar_id?: string;
+    subject: string;
+    /** UTC. */
+    start: string;
+    end: string;
+    is_all_day?: boolean;
+    location?: string;
+    time_zone?: string;
+    show_as?: string;
+    is_cancelled?: boolean;
+    join_url?: string;
+    attendees?: { name: string; address: string; kind: string; response: string }[];
+    description?: string;
+}
+
+/**
+ * A made-up week, about Wednesday 14 October 2026 in Brisbane (UTC+10):
+ * a timed event, two that overlap, one all day over two days, one on another
+ * calendar, one cancelled, and one made in another zone.
+ */
+export const week: FakeEvent[] = [
+    { id: "e1", subject: "Stand-up", start: "2026-10-13T23:00:00Z", end: "2026-10-13T23:15:00Z", location: "Room 2" },
+    {
+        id: "e2",
+        subject: "Budget review",
+        start: "2026-10-14T04:00:00Z",
+        end: "2026-10-14T05:00:00Z",
+        location: "Harbour Room",
+        join_url: "https://meet.example.test/budget",
+        attendees: [
+            { name: "Sam Taylor", address: "sam.taylor@example.test", kind: "required", response: "accepted" },
+            { name: "Alex Chen", address: "alex.chen@example.test", kind: "optional", response: "notResponded" },
+        ],
+        description: "Bring the Q3 numbers.\nRoom is booked for an hour.",
+    },
+    { id: "e3", subject: "Supplier call", start: "2026-10-14T04:30:00Z", end: "2026-10-14T05:30:00Z", show_as: "tentative" },
+    { id: "e4", subject: "Conference", start: "2026-10-15T00:00:00Z", end: "2026-10-17T00:00:00Z", is_all_day: true },
+    { id: "e5", subject: "School pickup", calendar_id: "family", start: "2026-10-16T05:00:00Z", end: "2026-10-16T05:30:00Z" },
+    { id: "e6", subject: "Old plan", start: "2026-10-12T01:00:00Z", end: "2026-10-12T02:00:00Z", is_cancelled: true },
+    { id: "e7", subject: "London sync", start: "2026-10-14T07:00:00Z", end: "2026-10-14T07:30:00Z", time_zone: "Europe/London" },
+    { id: "e8", subject: "Next month", start: "2026-11-03T01:00:00Z", end: "2026-11-03T02:00:00Z" },
+];
 
 /** What the stand-in core has sent. */
 export const sent = (page: Page) => page.evaluate(() => (window as unknown as { sent: Record<string, unknown>[] }).sent);

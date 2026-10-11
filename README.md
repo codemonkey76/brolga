@@ -5,13 +5,12 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 3 built, awaiting its last check.** You can sign in, sync
-a mailbox, read and search it, mark, flag, categorise, move, archive and delete
-messages with undo, and write, reply, forward and send with formatting,
-attachments and a signature. Drafts are kept in the mailbox as they are
-written. It has been run against a real Microsoft 365 mailbox. What is left is
-checking that mail written here looks right in Outlook and Gmail. There is no
-calendar yet.
+**Status: milestone 4 under way.** Mail is built: sync, read, search, mark,
+flag, categorise, move, archive and delete with undo, and write, reply,
+forward and send with formatting, attachments and a signature. The calendar
+can be read: day, work week, week, month and agenda, across your calendars.
+It has been run against a real Microsoft 365 mailbox. Events cannot be made
+or changed yet, and there are no reminders.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 
@@ -26,6 +25,10 @@ is called out before you click it.
 ![A folder shown as conversations, with a thread's messages listed above the one being read](docs/screenshots/conversation.png)
 
 ![A message with an attachment, just saved to the downloads folder](docs/screenshots/attachments.png)
+
+![The calendar, a working week](docs/screenshots/calendar-week.png)
+
+![The calendar, a month](docs/screenshots/calendar-month.png)
 
 ![Writing a new message](docs/screenshots/compose.png)
 
