@@ -481,6 +481,27 @@ impl Calendars {
         View::Page(body)
     }
 
+    /// One event by its id, or by the id of one of its occurrences, with
+    /// its description.
+    pub fn one(&self, id: &str) -> Option<Value> {
+        let own = id.split('.').next().unwrap_or(id);
+        let stored = self.events.get(own).filter(|stored| !stored.deleted)?;
+        let mut found = self
+            .instances(
+                own,
+                Timestamp::UNIX_EPOCH,
+                wider(Timestamp::UNIX_EPOCH, 365 * 200),
+            )
+            .into_iter()
+            .find(|each| each["id"] == id)?;
+        found["body"] = json!({
+            "contentType": "html",
+            "content": format!("<p>About <b>{}</b>.</p>", stored.event.subject)
+        });
+
+        Some(found)
+    }
+
     /// Every occurrence there truly is in a calendar between two moments,
     /// as (id, start, end), for a test to hold the client's copy against.
     pub fn truth(

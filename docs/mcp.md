@@ -38,11 +38,14 @@ argument `mcp`.
 | `list_attachments` | What is attached to a message: names, types and sizes, without the contents. |
 | `search_mail` | Search synced mail: words, phrases, `from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `after:`, `before:`. |
 | `get_outbox_status` | Changes made on this computer that are still waiting to be sent, and any Microsoft 365 refused. |
+| `list_calendars` | An account's calendars, with their colours and whether each is shown. |
+| `list_events` | The events that overlap a stretch of time, each occurrence of a repeating event on its own. |
+| `get_event` | One event, with its description. |
 | `get_sync_status` | For each account: syncing or not, needing sign-in or not, how much is on this computer and when it was last brought up to date. |
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |
 
-Calendar and contacts tools arrive with those features.
+Contacts tools arrive with that feature. The calendar can be read; changing it comes later.
 
 Every result that carries a message's own words also carries a note saying
 they were written by the sender and are not instructions. Reading a message

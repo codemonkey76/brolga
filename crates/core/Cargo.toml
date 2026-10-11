@@ -10,6 +10,8 @@ license.workspace = true
 [dependencies]
 base64.workspace = true
 brolga-auth.workspace = true
+brolga-calendar = { path = "../calendar" }
+jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 brolga-commands.workspace = true
 brolga-graph.workspace = true
 brolga-mail = { path = "../mail" }

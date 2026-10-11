@@ -193,14 +193,29 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                 .download_bodies(&days_ago(OFFLINE_DAYS), BODIES_PER_SYNC)
                 .await
                 .unwrap_or(0);
-            Ok::<_, String>(Some((synced, bodies)))
+            // And the calendar. Trouble with it is said beside the mail's
+            // result and does not make the mail's sync a failure: a sign-in
+            // from before calendars were built has no leave to read them.
+            let calendar = mailbox
+                .calendars
+                .sync_all(jiff::Timestamp::now())
+                .await
+                .map(|synced| synced.changed + synced.removed)
+                .map_err(|error| match error {
+                    brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }) => {
+                        "This sign-in was not given permission to read the calendar. Sign in to the account again, from the accounts screen, to grant it.".to_owned()
+                    }
+                    other => other.to_string(),
+                });
+            Ok::<_, String>(Some((synced, bodies, calendar)))
         }
         .await;
 
         results.push(match outcome {
-            Ok(Some((synced, bodies))) => json!({
+            Ok(Some((synced, bodies, calendar))) => json!({
                 "account_id": account.id, "ok": true, "changed": synced.changed, "removed": synced.removed,
-                "bodies_downloaded": bodies, "syncing_elsewhere": false, "error": null
+                "bodies_downloaded": bodies, "syncing_elsewhere": false, "error": null,
+                "events_changed": calendar.as_ref().ok(), "calendar_error": calendar.as_ref().err(),
             }),
             Ok(None) => json!({
                 "account_id": account.id, "ok": true, "changed": 0, "removed": 0,
@@ -749,7 +764,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
         CommandSpec {
             id: "mail.sync".to_owned(),
             title: "Sync now".to_owned(),
-            description: "Fetch new and changed mail from Microsoft 365 into this computer's copy, for one account or all of them. \
+            description: "Fetch new and changed mail and calendar events from Microsoft 365 into this computer's copy, for one account or all of them. \
                           Changes nothing in the mailbox itself. Each account reports its own result, so one failing does not hide the others."
                 .to_owned(),
             // It reads from the server and writes only the local copy.
@@ -775,7 +790,9 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "removed": { "type": "integer" },
                                 "bodies_downloaded": { "type": "integer", "description": "Recent messages whose full text was fetched for reading offline." },
                                 "syncing_elsewhere": { "type": "boolean", "description": "Another copy of Brolga on this computer was already syncing this account, so this one left it to it." },
-                                "error": { "type": ["string", "null"], "description": "Why this account did not sync, in plain words." }
+                                "error": { "type": ["string", "null"], "description": "Why this account did not sync, in plain words." },
+                                "events_changed": { "type": ["integer", "null"], "description": "Calendars and events added, updated or removed." },
+                                "calendar_error": { "type": ["string", "null"], "description": "Why the calendar did not sync, where the mail did." }
                             },
                             "required": ["account_id", "ok", "changed", "removed", "error"]
                         }

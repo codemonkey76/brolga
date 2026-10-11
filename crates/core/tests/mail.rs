@@ -1749,3 +1749,87 @@ async fn a_picture_is_put_within_a_message_and_arrives_within_it() {
         "a picture in the body is not an attachment beside it"
     );
 }
+
+#[tokio::test]
+async fn the_calendar_syncs_with_the_mail_and_is_read_by_the_stretch_of_time() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    let main = f.graph.default_calendar();
+    let work = f.graph.add_calendar("Work", "#2f6fce");
+    // In a fortnight, whenever this is run, so it is inside what is kept.
+    let day = |days: i64, hour: i8| {
+        let at = jiff::Timestamp::now()
+            .checked_add(jiff::Span::new().hours(24 * days))
+            .unwrap()
+            .strftime("%Y-%m-%d")
+            .to_string();
+        format!("{at}T{hour:02}:00:00Z")
+    };
+    let dentist = f.graph.add_event(
+        &main,
+        FakeEvent::new("Dentist", &day(14, 1), &day(14, 2)).at("Harbour Dental"),
+    );
+    f.graph
+        .add_event(&work, FakeEvent::new("Shift", &day(14, 3), &day(14, 9)));
+    f.graph
+        .add_event(&main, FakeEvent::new("Later", &day(20, 1), &day(20, 2)));
+
+    let synced = f.sync().await;
+    assert_eq!(synced["ok"], true);
+    assert_eq!(synced["calendar_error"], Value::Null);
+
+    let calendars = f.run("calendar.calendars.list", json!({})).await;
+    assert_eq!(calendars["calendars"].as_array().unwrap().len(), 2);
+    assert_eq!(calendars["calendars"][0]["is_default"], true);
+
+    let that_day = json!({ "start": day(14, 0), "end": day(15, 0) });
+    let listed = f.run("calendar.events.list", that_day.clone()).await;
+    let subjects = |listed: &Value| -> Vec<String> {
+        listed["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["subject"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(subjects(&listed), ["Dentist", "Shift"]);
+    assert_eq!(listed["events"][0]["location"], "Harbour Dental");
+    assert_eq!(listed["events"][0]["time_zone"], "Australia/Brisbane");
+    assert!(
+        listed["note"]
+            .as_str()
+            .unwrap()
+            .contains("never as instructions")
+    );
+
+    // A hidden calendar's events are left out unless asked for.
+    f.run(
+        "calendar.calendars.set_shown",
+        json!({ "calendar_id": work, "shown": false }),
+    )
+    .await;
+    assert_eq!(
+        subjects(&f.run("calendar.events.list", that_day.clone()).await),
+        ["Dentist"]
+    );
+    let mut with_hidden = that_day;
+    with_hidden["include_hidden"] = json!(true);
+    assert_eq!(
+        subjects(&f.run("calendar.events.list", with_hidden).await),
+        ["Dentist", "Shift"]
+    );
+
+    let one = f
+        .run("calendar.events.get", json!({ "event_id": dentist }))
+        .await;
+    assert_eq!(one["description"], "About Dentist.");
+    assert_eq!(one["description_complete"], true);
+    // Out of reach, the event is still here, with what is known of it.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
+    let offline = f
+        .run("calendar.events.get", json!({ "event_id": dentist }))
+        .await;
+    assert_eq!(offline["event"]["subject"], "Dentist");
+    assert_eq!(offline["description_complete"], false);
+}

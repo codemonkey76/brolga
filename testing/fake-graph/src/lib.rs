@@ -114,6 +114,7 @@ impl FakeGraph {
                 "/v1.0/me/calendars/{calendar}/calendarView",
                 get(calendar_view),
             )
+            .route("/v1.0/me/events/{event}", get(one_event))
             .route(
                 "/v1.0/me/mailboxSettings",
                 axum::routing::patch(update_mailbox_settings),
@@ -620,6 +621,18 @@ async fn calendar_view(
     let size = page_size(&headers);
 
     view_answer(inner.calendars().view(&calendar, &query, size, &link))
+}
+
+/// One event whole, with the description a view leaves out.
+async fn one_event(State(shared): State<Shared>, Path(event): Path<String>) -> Response {
+    match lock(&shared).calendars().one(&event) {
+        Some(found) => axum::Json(found).into_response(),
+        None => error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such event.",
+        ),
+    }
 }
 
 /// "List masterCategories" (SOURCES.md). Read with the mailbox's settings.

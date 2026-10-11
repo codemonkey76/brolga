@@ -64,6 +64,18 @@ async fn every_command_is_described_and_its_examples_run() {
         )
         .attach("notes.txt", "text/plain", b"Some notes."),
     );
+    // An event, for `calendar.events.get`.
+    assert_eq!(
+        graph.add_event(
+            &graph.default_calendar(),
+            brolga_fake_graph::FakeEvent::new(
+                "Dentist",
+                "2026-10-20T01:00:00Z",
+                "2026-10-20T02:00:00Z"
+            ),
+        ),
+        "event-0001"
+    );
     // A draft written in some other mail program, for `mail.drafts.open`.
     let mut elsewhere = FakeMessage::new(
         "Half written",
