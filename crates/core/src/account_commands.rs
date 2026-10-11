@@ -324,7 +324,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
         CommandSpec {
             id: "accounts.sign_in_options".to_owned(),
             title: "Sign-in options".to_owned(),
-            description: "What signing in needs on this build of the client: whether a client ID has to be given, because Brolga has no app registration of its own.".to_owned(),
+            description: "What signing in needs on this build of the client: whether a client ID has to be given, because this build has no app registration of its own.".to_owned(),
             kind: CommandKind::Query,
             consequential: false,
             mcp_tool: None,

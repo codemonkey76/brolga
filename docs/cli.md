@@ -23,8 +23,10 @@ was not JSON.
 
 ## Signing in
 
-Brolga has no app registration of its own with Microsoft yet, so for now
-`sign-in` needs the client ID of one your organisation has made:
+`brolga-cli sign-in` signs in under Brolga's own app registration. Its
+publisher is not verified yet, so an organisation that allows only apps it
+has approved will refuse it. Such an organisation makes a registration of its
+own and names it:
 
 ```sh
 brolga-cli sign-in --client-id <application id> --tenant <tenant id or domain>

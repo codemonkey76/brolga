@@ -25,10 +25,14 @@ use brolga_store::{GlobalDb, StoreError};
 
 pub use saving::safe_name as safe_file_name;
 
-/// Brolga's own app registration, for organisations that have not made one.
-/// There is none yet: registering it with Microsoft is the owner's to do.
-/// Until then every sign-in names a client ID of the organisation's own.
-pub const DEFAULT_CLIENT_ID: Option<&str> = None;
+/// Brolga's own app registration with Microsoft: multi-tenant, a public
+/// client, redirecting to `http://localhost`. A client ID is not a secret;
+/// it names the app and is in every sign-in link.
+///
+/// It is the owner's development registration, and its publisher is not
+/// verified. An organisation that allows only apps it has approved enters
+/// the client ID of its own registration instead, under Advanced.
+pub const DEFAULT_CLIENT_ID: Option<&str> = Some("3b0d6477-515b-429a-96b2-f8759528a5cc");
 
 /// Hands a link to the person's browser.
 pub type OpenBrowser = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
