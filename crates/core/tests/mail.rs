@@ -1833,3 +1833,129 @@ async fn the_calendar_syncs_with_the_mail_and_is_read_by_the_stretch_of_time() {
     assert_eq!(offline["event"]["subject"], "Dentist");
     assert_eq!(offline["description_complete"], false);
 }
+
+#[tokio::test]
+async fn reminders_come_due_with_no_network_and_can_be_put_off_or_dismissed() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    let main = f.graph.default_calendar();
+    let at = |minutes: i64| {
+        jiff::Timestamp::now()
+            .checked_add(jiff::Span::new().minutes(minutes))
+            .unwrap()
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    };
+    // In ten minutes, with the usual quarter of an hour's notice: due.
+    let soon = f
+        .graph
+        .add_event(&main, FakeEvent::new("Soon", &at(10), &at(70)));
+    // In two hours: not yet. And one that began two days ago: too late to matter.
+    f.graph
+        .add_event(&main, FakeEvent::new("Later", &at(120), &at(180)));
+    f.graph.add_event(
+        &main,
+        FakeEvent::new("Long gone", &at(-2 * 24 * 60), &at(-2 * 24 * 60 + 30)),
+    );
+    // One with no reminder set, and one cancelled.
+    let mut quiet = FakeEvent::new("Quiet", &at(5), &at(65));
+    quiet.reminder_minutes = None;
+    f.graph.add_event(&main, quiet);
+    let mut off = FakeEvent::new("Off", &at(5), &at(65));
+    off.is_cancelled = true;
+    f.graph.add_event(&main, off);
+    // Started five minutes ago and still going: still due.
+    let running = f
+        .graph
+        .add_event(&main, FakeEvent::new("Running", &at(-5), &at(55)));
+    f.sync().await;
+
+    // From here on the server cannot be reached.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 500));
+    let due = || async {
+        let listed = f
+            .run(
+                "calendar.reminders.due",
+                json!({ "time_zone": "Australia/Brisbane" }),
+            )
+            .await;
+        listed["reminders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["event"]["subject"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(due().await, ["Running", "Soon"]);
+    let first = f.run("calendar.reminders.due", json!({})).await["reminders"][1].clone();
+    assert!((8..=10).contains(&first["starts_in_minutes"].as_i64().unwrap()));
+
+    f.run(
+        "calendar.reminders.snooze",
+        json!({ "event_id": soon, "minutes": 5 }),
+    )
+    .await;
+    assert_eq!(due().await, ["Running"]);
+    // When the five minutes have passed it is back.
+    let later = f
+        .run("calendar.reminders.due", json!({ "now": at(6) }))
+        .await;
+    assert_eq!(later["reminders"].as_array().unwrap().len(), 2);
+
+    f.run("calendar.reminders.dismiss", json!({ "event_id": running }))
+        .await;
+    assert!(due().await.is_empty());
+}
+
+#[tokio::test]
+async fn an_all_day_event_reminds_before_its_own_midnight_where_the_person_is() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    let main = f.graph.default_calendar();
+    // All day on a day a week from now, with a quarter of an hour's notice.
+    let day = jiff::Timestamp::now()
+        .checked_add(jiff::Span::new().hours(24 * 7))
+        .unwrap()
+        .strftime("%Y-%m-%d")
+        .to_string();
+    let next = jiff::Timestamp::now()
+        .checked_add(jiff::Span::new().hours(24 * 8))
+        .unwrap()
+        .strftime("%Y-%m-%d")
+        .to_string();
+    f.graph.add_event(
+        &main,
+        FakeEvent::new(
+            "Birthday",
+            &format!("{day}T00:00:00Z"),
+            &format!("{next}T00:00:00Z"),
+        )
+        .all_day(),
+    );
+    f.sync().await;
+    let f = &f;
+    let due_at = |now: String| async move {
+        f.run(
+            "calendar.reminders.due",
+            json!({ "time_zone": "Australia/Brisbane", "now": now }),
+        )
+        .await["reminders"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+
+    // Midnight in Brisbane is 14:00 UTC the day before. Ten minutes before
+    // that it is due; an hour before, not yet; and at midnight UTC, which is
+    // ten in the morning there, it began hours ago and is still shown.
+    let before = jiff::Timestamp::now()
+        .checked_add(jiff::Span::new().hours(24 * 6))
+        .unwrap()
+        .strftime("%Y-%m-%d")
+        .to_string();
+    assert_eq!(due_at(format!("{before}T12:50:00Z")).await, 0);
+    assert_eq!(due_at(format!("{before}T13:50:00Z")).await, 1);
+    assert_eq!(due_at(format!("{day}T00:00:00Z")).await, 1);
+}

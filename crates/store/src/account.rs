@@ -280,6 +280,15 @@ const STEPS: &[&str] = &[
     CREATE INDEX events_by_time ON events (start_at, end_at);
     CREATE INDEX events_by_calendar ON events (calendar_id, generation);
 ",
+    "
+    -- What has been done about an event's reminder on this computer.
+    CREATE TABLE reminders (
+        event_id TEXT PRIMARY KEY NOT NULL,
+        dismissed INTEGER NOT NULL DEFAULT 0,
+        -- UTC. Until then it is not shown again.
+        snoozed_until TEXT
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

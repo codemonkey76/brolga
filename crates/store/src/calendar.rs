@@ -317,6 +317,60 @@ impl AccountDb {
             .optional()?)
     }
 
+    /// The events with a reminder set that start between two moments in
+    /// UTC, on calendars that are shown, each with what has been done about
+    /// its reminder here: whether it was dismissed, and until when it was
+    /// put off. Cancelled events remind of nothing.
+    pub fn events_with_reminders(
+        &self,
+        after: &str,
+        before: &str,
+    ) -> Result<Vec<(EventRow, bool, Option<String>)>, StoreError> {
+        let connection = self.connection();
+        let columns = EVENT_COLUMNS
+            .split(", ")
+            .map(|column| format!("e.{}", column.trim()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = connection.prepare(&format!(
+            "SELECT {columns}, coalesce(r.dismissed, 0), r.snoozed_until
+             FROM events e LEFT JOIN reminders r ON r.event_id = e.id
+             WHERE e.start_at >= ?1 AND e.start_at < ?2 AND e.reminder_minutes IS NOT NULL
+               AND e.is_cancelled = 0 AND e.kind <> 'seriesMaster'
+               AND e.calendar_id IN (SELECT id FROM calendars WHERE shown = 1)
+             ORDER BY e.start_at, e.id"
+        ))?;
+        let found = statement
+            .query_map(params![after, before], |row| {
+                Ok((read_event(row)?, row.get(25)?, row.get(26)?))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(found)
+    }
+
+    /// Have done with an event's reminder.
+    pub fn dismiss_reminder(&self, event_id: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "INSERT INTO reminders (event_id, dismissed) VALUES (?1, 1)
+             ON CONFLICT (event_id) DO UPDATE SET dismissed = 1",
+            [event_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Put an event's reminder off until a moment in UTC.
+    pub fn snooze_reminder(&self, event_id: &str, until: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "INSERT INTO reminders (event_id, snoozed_until) VALUES (?1, ?2)
+             ON CONFLICT (event_id) DO UPDATE SET snoozed_until = ?2, dismissed = 0",
+            params![event_id, until],
+        )?;
+
+        Ok(())
+    }
+
     pub fn event_count(&self) -> Result<u32, StoreError> {
         Ok(self
             .connection()
