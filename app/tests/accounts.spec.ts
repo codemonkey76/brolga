@@ -241,6 +241,17 @@ test("a shared mailbox is added by its address, read in Mail, and removed", asyn
     await picker.selectOption({ label: "↳ support@example.test (shared)" });
     await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.folders.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test" });
 
+    // Its folders are beside the account's own, whichever of the two is shown, and opening one of them goes to that mailbox.
+    const folders = page.getByRole("navigation", { name: "Folders" });
+    await expect(folders.getByRole("list", { name: "robin@example.test" }).getByRole("button", { name: "Inbox" })).toBeVisible();
+    await picker.selectOption({ label: "robin@example.test" });
+    const theirs = folders.getByRole("list", { name: "support@example.test" });
+    await expect(theirs.getByRole("button", { name: "Inbox" })).toBeVisible();
+    await picture(page, "shared-mailbox-folders");
+    await theirs.getByRole("button", { name: "Archive" }).click();
+    await expect(picker).toHaveValue("tenant-1.robin~support@example.test");
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.messages.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test", folder_id: "archive" });
+
     await page.getByRole("button", { name: "Accounts" }).click();
     await page.getByRole("button", { name: "Shared mailboxes" }).click();
     await page.getByRole("button", { name: "Remove support@example.test" }).click();

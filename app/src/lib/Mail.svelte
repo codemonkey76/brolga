@@ -417,8 +417,30 @@
         }
     }
 
+    /** The other mailboxes that go with the one shown: its account, and those shared with it. Each has its folders beside this one's. */
+    let beside = $state<{ mailbox: Account; folders: Folder[]; before: boolean }[]>([]);
+
+    async function loadBeside() {
+        const here = accounts.findIndex((each) => each.id === accountId);
+        const mine = accounts[here];
+        if (!mine) return;
+        const root = mine.shared_with ?? mine.id;
+        const family = accounts.map((each, index) => ({ each, index })).filter(({ each }) => (each.shared_with ?? each.id) === root && each.id !== mine.id);
+        const found = await Promise.all(
+            family.map(async ({ each, index }) => ({ mailbox: each, folders: await listFolders(each.id).catch(() => []), before: index < here })),
+        );
+        if (accountId === mine.id) beside = found;
+    }
+
+    /** Open a folder of another mailbox: that mailbox becomes the one shown. */
+    async function showIn(mailbox: Account, folder: string) {
+        await chooseAccount(mailbox.id);
+        await showFolder(folder);
+    }
+
     async function loadFolders() {
         if (!accountId) return;
+        loadBeside();
         folders = await listFolders(accountId);
         if (!folders.some((f) => f.id === folderId)) {
             const inbox = folders.find((f) => f.well_known === "inbox") ?? folders[0];
@@ -719,6 +741,27 @@
             <p class="account" title={account.username}>{account.username}</p>
         {/if}
 
+        {#snippet others(before: boolean)}
+            {#each beside.filter((each) => each.before === before && each.folders.length > 0) as each (each.mailbox.id)}
+                <h2 class="mailbox" id="beside-{each.mailbox.id}" title={each.mailbox.username}>{each.mailbox.username}</h2>
+                <ul aria-labelledby="beside-{each.mailbox.id}">
+                    {#each each.folders as folder (folder.id)}
+                        {@const Shape = FOLDER_ICONS[folder.well_known ?? ""] ?? FolderIcon}
+                        <li style:padding-left="{(folder.depth ?? 0) * 0.9}rem">
+                            <span class="twist"></span>
+                            <button type="button" class="folder" onclick={() => showIn(each.mailbox, folder.id)}>
+                                <Shape size={15} aria-hidden="true" />
+                                <span class="name">{folder.name}</span>
+                                {#if folder.unread > 0}<span class="count" aria-label="{folder.unread} unread">{folder.unread}</span>{/if}
+                            </button>
+                        </li>
+                    {/each}
+                </ul>
+            {/each}
+        {/snippet}
+
+        {@render others(true)}
+
         {#if drafts.length > 0}
             <h2 id="drafts-heading">Being written</h2>
             <ul aria-labelledby="drafts-heading">
@@ -779,6 +822,8 @@
                 {@render row(each.folder, each.parent, each.open, each.folder.depth)}
             {/each}
         </ul>
+
+        {@render others(false)}
     </nav>
 
     <div class="list">
@@ -946,6 +991,20 @@
         letter-spacing: 0.04em;
         text-transform: uppercase;
         color: var(--muted);
+    }
+
+    h2.mailbox {
+        /* It hides what overflows, so it would otherwise be squeezed to nothing in a full list. */
+        flex: none;
+        margin-top: 0.6rem;
+        padding-top: 0.5rem;
+        border-top: 1px solid var(--line);
+        font-size: 0.8rem;
+        letter-spacing: 0;
+        text-transform: none;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     h2.unseen {
