@@ -44,9 +44,11 @@
         accounts: Account[];
         /** A day to open on, when the calendar is come to for one. */
         startOn?: Date | null;
+        /** Open on a new event being written. */
+        writing?: boolean;
     }
 
-    let { accounts, startOn = null }: Props = $props();
+    let { accounts, startOn = null, writing = false }: Props = $props();
 
     const VIEWS: { id: View; name: string }[] = [
         { id: "day", name: "Day" },
@@ -86,7 +88,8 @@
     /** What is being asked of a series: how much of it to change, or to delete. */
     let asking = $state<"change" | "delete" | null>(null);
     /** An event is being made (`new`) or the selected one changed (`change`). */
-    let editing = $state<"new" | "change" | null>(null);
+    // svelte-ignore state_referenced_locally
+    let editing = $state<"new" | "change" | null>(writing ? "new" : null);
     /** True once Delete has been pressed once, and it is being asked whether to. */
     let sure = $state(false);
 

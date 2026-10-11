@@ -1350,11 +1350,15 @@ async fn rooms(mailboxes: Arc<Mailboxes>, args: Rooms) -> Result<Value, CommandE
         .trim()
         .to_lowercase();
 
-    let all = mailbox
-        .graph
-        .rooms()
-        .await
-        .map_err(|e| not_known(e, "list meeting rooms"))?;
+    let all = mailbox.graph.rooms().await.map_err(|e| match e {
+        // "List place objects" needs Place.Read.All, which a person cannot
+        // give for themselves (SOURCES.md).
+        brolga_graph::GraphError::Refused { status: 403, .. } => failed(
+            "Your organisation has not allowed Brolga to list its meeting rooms: that needs an administrator's approval. \
+             A room can still be invited by its address, like a person.",
+        ),
+        e => not_known(e, "list meeting rooms"),
+    })?;
     let words = |room: &Value, name: &str| room[name].as_str().unwrap_or_default().to_owned();
     let mut found: Vec<Value> = all
         .iter()

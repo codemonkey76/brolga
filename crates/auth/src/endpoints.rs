@@ -19,8 +19,11 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     // Meeting times suggested by the server ("user: findMeetingTimes"), and
     // the calendars other people have shared or delegated.
     "Calendars.ReadWrite.Shared",
-    // The organisation's meeting rooms ("List place objects").
-    "Place.Read.All",
+    // The organisation's meeting rooms ("List place objects") need
+    // `Place.Read.All`, which only an administrator can give. It is not
+    // asked for here, or nobody else could sign in at all: where an
+    // administrator has approved it for the organisation, every token
+    // carries it anyway, and rooms can be listed.
     // Personal contacts, and looking people up in the organisation.
     "Contacts.ReadWrite",
     "People.Read",

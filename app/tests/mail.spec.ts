@@ -202,6 +202,40 @@ test("a mailto link clicked elsewhere starts a message with what it names, and s
     expect(await sent(page)).toEqual([]);
 });
 
+test("the palette lists what the window does with its keys, and does what is chosen", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Commands" });
+    await expect(palette.getByRole("option").first()).toContainText("Go to Mail");
+    await palette.getByRole("combobox").fill("all reply");
+    await expect(palette.getByRole("option")).toHaveCount(1);
+    await expect(palette.getByRole("option")).toContainText("Ctrl+Shift+R");
+    await picture(page, "palette");
+    await page.keyboard.press("Enter");
+
+    await expect(palette).toHaveCount(0);
+    await expect(page.getByRole("form", { name: "Reply to all" })).toBeVisible();
+});
+
+test("the keys step through messages, and go to a new meeting and the address book", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+    const heading = page.getByRole("region", { name: "Message" }).getByRole("heading");
+    await expect(heading).toHaveText("Budget review moved to Thursday");
+
+    await page.keyboard.press("Control+.");
+    await expect(heading).not.toHaveText("Budget review moved to Thursday");
+    await page.keyboard.press("Control+,");
+    await expect(heading).toHaveText("Budget review moved to Thursday");
+
+    await page.keyboard.press("Control+Shift+Q");
+    await expect(page.getByRole("form", { name: "New event" })).toBeVisible();
+    await page.keyboard.press("Control+Shift+B");
+    await expect(page.getByRole("button", { name: "People" })).toHaveAttribute("aria-current", "true");
+});
+
 test("a sync that fails says why and leaves the mail on screen", async ({ page }) => {
     const why = "robin@example.test needs to sign in again. Your sign-in has expired or was revoked.";
     await withCore(page, { accounts: [robin], mail: inbox, syncFails: why });

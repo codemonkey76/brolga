@@ -46,6 +46,10 @@ const screens: Record<string, (page: Page) => Promise<void>> = {
         for (const each of ["Rules", "Categories", "Calendar sharing"]) await page.getByRole("button", { name: each, exact: true }).first().click();
         await expect(page.getByRole("list", { name: "Accounts" })).toBeVisible();
     },
+    "the palette": async (page) => {
+        await page.keyboard.press("Control+k");
+        await expect(page.getByRole("dialog", { name: "Commands" })).toBeVisible();
+    },
     agents: async (page) => {
         await page.getByRole("button", { name: "Agents" }).click();
     },

@@ -9,7 +9,9 @@
     import Reminders from "./lib/Reminders.svelte";
     import Mail from "./lib/Mail.svelte";
     import NewMail from "./lib/NewMail.svelte";
+    import Palette, { type Action } from "./lib/Palette.svelte";
     import People from "./lib/People.svelte";
+    import { tick } from "svelte";
 
     type View = "mail" | "calendar" | "people" | "accounts" | "agents";
 
@@ -66,12 +68,66 @@
         if (first) view = "mail";
     }
 
+    /** The calendar is to open on a new event being written. */
+    let newEvent = $state(false);
+    let palette = $state(false);
+
+    function go(to: View) {
+        if (to !== "accounts" && to !== "agents" && accounts.length === 0) return;
+        newEvent = false;
+        view = to;
+    }
+
+    function meeting() {
+        if (accounts.length === 0) return;
+        // Made afresh, so that it opens on a new event even from the calendar itself.
+        view = "accounts";
+        tick().then(() => {
+            newEvent = true;
+            view = "calendar";
+        });
+    }
+
+    /** Press a key for the screen that is showing, once it is. */
+    const press = (to: View, key: string, with_: { ctrl?: boolean; shift?: boolean } = {}) => () => {
+        if (view !== to) go(to);
+        tick().then(() => window.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: with_.ctrl, shiftKey: with_.shift, bubbles: true })));
+    };
+
+    /** Everything the window does by a key, for the palette to list and to do. */
+    const actions: Action[] = [
+        { title: "Go to Mail", keys: "Ctrl+1", run: () => go("mail") },
+        { title: "Go to Calendar", keys: "Ctrl+2", run: () => go("calendar") },
+        { title: "Go to People (address book)", keys: "Ctrl+3 or Ctrl+Shift+B", run: () => go("people") },
+        { title: "Go to Accounts", keys: "", run: () => go("accounts") },
+        { title: "Go to Agents", keys: "", run: () => go("agents") },
+        { title: "New message", keys: "Ctrl+N", run: press("mail", "n", { ctrl: true }) },
+        { title: "New meeting", keys: "Ctrl+Shift+Q", run: meeting },
+        { title: "Reply", keys: "Ctrl+R", run: press("mail", "r", { ctrl: true }) },
+        { title: "Reply all", keys: "Ctrl+Shift+R", run: press("mail", "r", { ctrl: true, shift: true }) },
+        { title: "Forward", keys: "Ctrl+F", run: press("mail", "f", { ctrl: true }) },
+        { title: "Delete the message", keys: "Delete", run: press("mail", "Delete") },
+        { title: "Archive the message", keys: "Backspace", run: press("mail", "Backspace") },
+        { title: "Move the message to a folder", keys: "Ctrl+Shift+V", run: press("mail", "v", { ctrl: true, shift: true }) },
+        { title: "Mark as read", keys: "Ctrl+Q", run: press("mail", "q", { ctrl: true }) },
+        { title: "Mark as unread", keys: "Ctrl+U", run: press("mail", "u", { ctrl: true }) },
+        { title: "Flag or clear the flag", keys: "Insert", run: press("mail", "Insert") },
+        { title: "Next message", keys: "Ctrl+.", run: press("mail", ".", { ctrl: true }) },
+        { title: "Previous message", keys: "Ctrl+,", run: press("mail", ",", { ctrl: true }) },
+        { title: "Search mail", keys: "Ctrl+E or F3", run: press("mail", "F3") },
+        { title: "Undo", keys: "Ctrl+Z", run: press("mail", "z", { ctrl: true }) },
+        { title: "Sync now", keys: "F9", run: () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "F9", bubbles: true })) },
+        { title: "Calendar: go to today", keys: "T", run: press("calendar", "t") },
+    ];
+
     function keydown(event: KeyboardEvent) {
         if (!(event.ctrlKey || event.metaKey)) return;
-        if (event.key === "1" && accounts.length > 0) view = "mail";
-        else if (event.key === "2" && accounts.length > 0) view = "calendar";
-        else if (event.key === "3" && accounts.length > 0) view = "people";
-        else if (event.key === ",") view = "accounts";
+        const key = event.key.toLowerCase();
+        if (key === "k") palette = !palette;
+        else if (key === "1") go("mail");
+        else if (key === "2") go("calendar");
+        else if (key === "3" || (event.shiftKey && key === "b")) go("people");
+        else if (event.shiftKey && key === "q") meeting();
         else return;
         event.preventDefault();
     }
@@ -79,6 +135,9 @@
 
 <svelte:window onkeydown={keydown} />
 
+{#if palette}
+    <Palette {actions} onClose={() => (palette = false)} />
+{/if}
 <Questions />
 <Reminders {accounts} onOpen={() => (view = "calendar")} />
 <NewMail {accounts} fetched={view === "mail" || view === "calendar"} />
@@ -89,7 +148,7 @@
             <MailIcon size={20} aria-hidden="true" />
             <span>Mail</span>
         </button>
-        <button type="button" class:current={view === "calendar"} aria-current={view === "calendar"} disabled={accounts.length === 0} onclick={() => (view = "calendar")} title="Calendar (Ctrl+2)">
+        <button type="button" class:current={view === "calendar"} aria-current={view === "calendar"} disabled={accounts.length === 0} onclick={() => go("calendar")} title="Calendar (Ctrl+2)">
             <CalendarDays size={20} aria-hidden="true" />
             <span>Calendar</span>
         </button>
@@ -97,7 +156,7 @@
             <Users size={20} aria-hidden="true" />
             <span>People</span>
         </button>
-        <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Accounts (Ctrl+,)">
+        <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Accounts">
             <CircleUser size={20} aria-hidden="true" />
             <span>Accounts</span>
         </button>
@@ -121,7 +180,7 @@
                 }}
             />
         {:else if view === "calendar" && accounts.length > 0}
-            <Calendar accounts={mailboxes(accounts, shared, true)} startOn={calendarDay} />
+            <Calendar accounts={mailboxes(accounts, shared, true)} startOn={calendarDay} writing={newEvent} />
         {:else if view === "people" && accounts.length > 0}
             <People {accounts} />
         {:else if view === "agents"}

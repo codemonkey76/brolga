@@ -3069,6 +3069,21 @@ async fn rooms_are_found_with_which_are_free_and_the_server_suggests_times() {
         FakeEvent::new("Dentist", "2027-09-01T01:00:00Z", "2027-09-01T01:30:00Z"),
     );
     f.sync().await;
+
+    // Listing rooms needs a permission only an administrator can give, so
+    // it is not asked for at sign-in. Until one has, it says so.
+    let refused = f
+        .registry
+        .execute("calendar.rooms.list", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("administrator's approval"), "{refused}");
+    // Once one has, the next sign-in's tokens carry it, unasked.
+    f.identity.admin_grants(&["Place.Read.All"]);
+    let id = f.run("accounts.list", json!({})).await["accounts"][0]["id"].clone();
+    f.run("accounts.sign_in", json!({ "account_id": id })).await;
+
     let names = |found: &Value| -> Vec<(String, Value)> {
         found["rooms"]
             .as_array()

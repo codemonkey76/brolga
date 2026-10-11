@@ -93,7 +93,7 @@
     {/if}
     <select
         aria-label="Move to folder"
-        title="Move to a folder"
+        title="Move to a folder (Ctrl+Shift+V)"
         disabled={none}
         value=""
         onchange={(event) => {

@@ -48,6 +48,9 @@ struct Inner {
     /// Every query the authorize endpoint was opened with.
     authorize_requests: Vec<HashMap<String, String>>,
     expires_in: Option<u64>,
+    /// Permissions an administrator has given the app for everyone. Every
+    /// token carries them, asked for or not, as a real one does.
+    admin_granted: Vec<String>,
 }
 
 type Shared = Arc<Mutex<Inner>>;
@@ -112,6 +115,14 @@ impl FakeIdentity {
     }
 
     /// Issue access tokens that last this many seconds, not the usual hour.
+    /// An administrator approves these permissions for the whole
+    /// organisation: tokens issued from now on carry them.
+    pub fn admin_grants(&self, scopes: &[&str]) {
+        if let Ok(mut inner) = self.shared.lock() {
+            inner.admin_granted = scopes.iter().map(|s| (*s).to_owned()).collect();
+        }
+    }
+
     pub fn access_tokens_last(&self, seconds: u64) {
         lock(&self.shared).expires_in = Some(seconds);
     }
@@ -310,9 +321,11 @@ fn issue(inner: &mut Inner, from: &str) -> Response {
     inner.refresh_tokens.push(refresh.clone());
     let scope = inner.scopes.get(from).cloned().unwrap_or_default();
     inner.scopes.insert(refresh.clone(), scope.clone());
+    let admin_granted = inner.admin_granted.clone();
     let granted: Vec<&str> = scope
         .split_whitespace()
         .filter(|s| !["openid", "profile", "offline_access"].contains(s))
+        .chain(admin_granted.iter().map(String::as_str))
         .collect();
 
     let claims = json!({

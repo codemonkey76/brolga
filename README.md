@@ -5,7 +5,7 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 7 is built; milestones 5, 6 and 7 await their checks.** An Outlook PST or OST file is read into an archive kept on this computer, which is read and searched beside your accounts; the file is only ever read. Contacts sync and can be changed, and people can be looked up in your organisation. A shared mailbox is added by its address, read and replied from like any other, and mail can be sent under its name; its calendar comes with it, and calendars other people have shared say whose they are. Inbox rules and the list of categories are read and changed on the Accounts screen. Contacts are read from and written to vCard files, a sender's name brings up a card about them, and your main calendar is shared from the Accounts screen. Mail is
+**Status: milestones 0 to 7 are built, and milestone 8 (hardening) is under way; milestones 5, 6 and 7 await their checks on a real mailbox.** An Outlook PST or OST file is read into an archive kept on this computer, which is read and searched beside your accounts; the file is only ever read. Contacts sync and can be changed, and people can be looked up in your organisation. A shared mailbox is added by its address, read and replied from like any other, and mail can be sent under its name; its calendar comes with it, and calendars other people have shared say whose they are. Inbox rules and the list of categories are read and changed on the Accounts screen. Contacts are read from and written to vCard files, a sender's name brings up a card about them, and your main calendar is shared from the Accounts screen. Mail is
 built: sync, read, search, mark, flag, categorise, move, archive and delete
 with undo, and write, reply, forward and send with formatting, attachments and
 a signature. So is the calendar: day, work week, week, month and agenda across
@@ -52,6 +52,7 @@ are taken by the frontend's own tests (`SCREENSHOTS=1 bun run test` in `app/`),
 with a stand-in for the core behind the window, so they show what the tests
 check.
 
+- [Using Brolga](docs/using.md), and [for administrators](docs/admins.md)
 - [The build spec](docs/build-spec.pdf)
 - [Rules for contributors and agents](AGENTS.md)
 - [Sources consulted](SOURCES.md)

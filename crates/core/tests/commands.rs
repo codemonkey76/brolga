@@ -53,6 +53,8 @@ fn core_with_mail(
 #[tokio::test]
 async fn every_command_is_described_and_its_examples_run() {
     let identity = FakeIdentity::start().await.unwrap();
+    // An organisation whose administrator has let Brolga list its rooms.
+    identity.admin_grants(&["Place.Read.All"]);
     let graph = FakeGraph::start().await.unwrap();
     graph.add_message(
         &graph.folder_id("inbox"),

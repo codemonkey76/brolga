@@ -688,6 +688,19 @@
         } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
             event.preventDefault();
             write("new");
+        } else if ((event.ctrlKey || event.metaKey) && (event.key === "." || event.key === ",")) {
+            // The next message, or the one before: as the arrow keys do in the list.
+            event.preventDefault();
+            document.querySelector('[role="listbox"][aria-label="Messages"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: event.key === "." ? "ArrowDown" : "ArrowUp", bubbles: true }));
+        } else if (opened && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "v") {
+            event.preventDefault();
+            const move = document.querySelector<HTMLSelectElement>('select[aria-label="Move to folder"]');
+            move?.focus();
+            try {
+                move?.showPicker();
+            } catch {
+                // Focused, then, to be opened with the keyboard.
+            }
         } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
             event.preventDefault();
             write(event.shiftKey ? "reply_all" : "reply");
