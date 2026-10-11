@@ -168,6 +168,8 @@ export interface FakeCore {
     arrives?: FakeMail[];
     /** The words the next sync fails with. */
     syncFails?: string;
+    /** What agents have asked for, the latest first. */
+    agentLog?: { at: string; client: string; command: string; args: unknown; outcome: string; detail: string }[];
     /** Why automatic replies cannot be read, if they cannot. */
     repliesRefused?: string;
     /** The files the file dialog says were chosen. Left out, it is dismissed. */
@@ -405,6 +407,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     note: "",
                 };
             },
+            "app.agent_log.list": () => ({ entries: core.agentLog ?? [] }),
             "mail.signature.get": () => signature,
             "mail.signature.set": (args) => {
                 signature = { text: args.text as string, on_replies: (args.on_replies as boolean) ?? signature.on_replies };

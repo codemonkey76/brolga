@@ -6,8 +6,11 @@
 //! client over the control channel (attached).
 
 mod backend;
+mod policy;
 mod server;
 mod tools;
 
 pub use backend::Backend;
+pub use brolga_commands::Access;
+pub use policy::Policy;
 pub use server::{McpServer, ServeError, serve_stdio};

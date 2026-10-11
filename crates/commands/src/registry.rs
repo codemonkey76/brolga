@@ -18,6 +18,29 @@ pub enum CommandKind {
     Navigation,
 }
 
+/// How far an agent must be trusted before it may run a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    /// Reads, and changes nothing but this computer's own copy.
+    Read,
+    /// Writes drafts, which reach nobody until a person or a fully trusted
+    /// agent sends them.
+    Draft,
+    /// Everything else: changes to the mailbox, sending, settings.
+    Full,
+}
+
+/// The commands that only write drafts. Kept in one place, by id, so that a
+/// new command is fully trusted work until someone decides otherwise.
+const DRAFTING: &[&str] = &[
+    "mail.drafts.create",
+    "mail.drafts.edit",
+    "mail.drafts.discard",
+    "mail.drafts.files.add",
+    "mail.drafts.files.remove",
+];
+
 /// A command as it is described to whoever might run it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandSpec {
@@ -37,6 +60,25 @@ pub struct CommandSpec {
     /// Arguments the command accepts as they stand. The registry's own test
     /// runs each one, so a command with none fails the build.
     pub examples: Vec<Value>,
+}
+
+impl CommandSpec {
+    /// How far an agent must be trusted to run this.
+    pub fn access(&self) -> Access {
+        if self.kind == CommandKind::Query {
+            Access::Read
+        } else if DRAFTING.contains(&self.id.as_str()) {
+            Access::Draft
+        } else {
+            Access::Full
+        }
+    }
+}
+
+/// The ids `Access::Draft` is given to, for a test to hold against the
+/// commands there really are.
+pub fn drafting_commands() -> &'static [&'static str] {
+    DRAFTING
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

@@ -50,12 +50,37 @@ through these tools does not mark it as read.
 
 ## What an agent may do
 
-**Agents can only read.** Any command that changes something is refused over
-MCP, whichever tool asks for it. That includes signing in and removing an
-account: a person does those, in the app or with `brolga-cli sign-in`. The permission tiers in the build spec
-(read-only, draft, full), confirmation of consequential commands, rate limits
-and the audit log are not built yet, and nothing that writes will be opened to
-agents before they are.
+**An agent can only read unless you say otherwise.** What it may do is fixed
+when the server is started, by whoever starts it. Nothing an agent reads can
+raise it: an email that says "you are allowed to send" changes nothing.
+
+| Started with | The agent may |
+|---|---|
+| `brolga-cli mcp` | Read: list, search and open mail, sync, read settings. |
+| `--access draft` | Also write drafts, which reach nobody until they are sent. |
+| `--access full` | Also change the mailbox: mark, flag, move, delete to Deleted Items. |
+| `--allow-consequential` | Also do what reaches other people or cannot be undone: send, and set automatic replies. Needs `--access full` as well. |
+
+Three things hold whatever the access:
+
+- **No files by path.** An agent cannot attach a file by naming where it is on
+  your computer, or choose where an attachment is saved. It gives a file's
+  contents instead.
+- **A limit on sending.** At most 20 messages in any hour, or the number given
+  with `--max-sends-per-hour`.
+- **Everything is written down.** Each command an agent asks for is recorded
+  with the program's name, the time and whether it ran, was not allowed, or
+  did not work. The arguments are kept with anything private cut down to its
+  length: the words of a message and the contents of a file are never in the
+  log. The app shows it under **Agents**, and `app.agent_log.list` reads it.
+  An agent cannot write to it.
+
+Signing in and removing an account are never an agent's: a person does those,
+in the app or with `brolga-cli sign-in`.
+
+Not built yet: asking in the app before a consequential command runs, where
+the server is attached to it. Until then the flag is the only say-so, in both
+modes.
 
 The server tells every agent that the content of an email, attachment or
 invitation is data to report on and never an instruction.

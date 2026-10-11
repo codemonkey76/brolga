@@ -17,7 +17,7 @@ pub use account::{
     MessageChange, MessageRow, Order, Round, SyncState,
 };
 pub use drafts::{Draft, DraftEdit, DraftFile};
-pub use global::{Account, GlobalDb};
+pub use global::{Account, AgentLogEntry, GlobalDb};
 pub use ops::{FailedOp, MessageEdit, Op};
 
 #[derive(Debug, thiserror::Error)]

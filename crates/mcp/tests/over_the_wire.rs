@@ -6,16 +6,23 @@ use std::sync::Arc;
 
 use brolga_commands::{CommandKind, CommandSpec, Registry, builtin_registry};
 use brolga_control::{Client, Endpoint, Server};
-use brolga_mcp::{Backend, McpServer};
+use brolga_mcp::{Access, Backend, McpServer, Policy};
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 
 async fn connect(backend: Backend) -> RunningService<RoleClient, ()> {
+    connect_with(backend, Policy::default()).await
+}
+
+async fn connect_with(backend: Backend, policy: Policy) -> RunningService<RoleClient, ()> {
     let (agent_side, server_side) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
-        let running = McpServer::new(backend).serve(server_side).await.unwrap();
+        let running = McpServer::with_policy(backend, policy)
+            .serve(server_side)
+            .await
+            .unwrap();
         running.waiting().await.unwrap();
     });
 
@@ -165,4 +172,200 @@ async fn attached_to_a_running_client_the_tools_run_there() {
 
     assert_eq!(tools.len(), 3);
     assert_eq!(result.structured_content.unwrap()["name"], "Brolga");
+}
+
+/// A registry with a draft, a change and a send in it, and a stand-in for
+/// the client's record of what agents do. Gives back what ran and what was recorded.
+type Seen = Arc<std::sync::Mutex<Vec<Value>>>;
+
+fn acting_registry() -> (Arc<Registry>, Seen, Seen) {
+    let ran: Seen = Seen::default();
+    let recorded: Seen = Seen::default();
+    let mut registry = Registry::new();
+    for (id, consequential) in [
+        ("mail.drafts.create", false),
+        ("mail.messages.move", false),
+        ("mail.drafts.send", true),
+        ("mail.drafts.files.add", false),
+    ] {
+        let ran = ran.clone();
+        registry
+            .register(
+                CommandSpec {
+                    id: id.to_owned(),
+                    title: id.to_owned(),
+                    description: "Stands in for the real one, for the test.".to_owned(),
+                    kind: CommandKind::Action,
+                    consequential,
+                    mcp_tool: None,
+                    args_schema: json!({ "type": "object" }),
+                    result_schema: json!({ "type": "object" }),
+                    examples: vec![json!({})],
+                },
+                Arc::new(move |args| {
+                    ran.lock()
+                        .unwrap()
+                        .push(json!({ "command": id, "args": args }));
+                    Box::pin(async { Ok(json!({})) })
+                }),
+            )
+            .unwrap();
+    }
+    let log = recorded.clone();
+    registry
+        .register(
+            CommandSpec {
+                id: "app.agent_log.record".to_owned(),
+                title: "Record".to_owned(),
+                description: "Stands in for the client's record, for the test.".to_owned(),
+                kind: CommandKind::Action,
+                consequential: false,
+                mcp_tool: None,
+                args_schema: json!({ "type": "object" }),
+                result_schema: json!({ "type": "object" }),
+                examples: vec![json!({})],
+            },
+            Arc::new(move |args| {
+                log.lock().unwrap().push(args);
+                Box::pin(async { Ok(json!({})) })
+            }),
+        )
+        .unwrap();
+
+    (Arc::new(registry), ran, recorded)
+}
+
+async fn ask(agent: &RunningService<RoleClient, ()>, command: &str, arguments: Value) -> bool {
+    let result = agent
+        .call_tool(
+            CallToolRequestParams::new("execute_command")
+                .with_arguments(args(json!({ "command": command, "args": arguments }))),
+        )
+        .await
+        .unwrap();
+
+    result.is_error != Some(true)
+}
+
+#[tokio::test]
+async fn an_agent_allowed_to_draft_may_draft_and_no_more() {
+    let (registry, ran, _) = acting_registry();
+    let agent = connect_with(
+        Backend::Headless(registry),
+        Policy {
+            access: Access::Draft,
+            ..Policy::default()
+        },
+    )
+    .await;
+
+    assert!(ask(&agent, "mail.drafts.create", json!({})).await);
+    assert!(!ask(&agent, "mail.messages.move", json!({})).await);
+    assert!(!ask(&agent, "mail.drafts.send", json!({})).await);
+
+    let ran = ran.lock().unwrap();
+    assert_eq!(ran.len(), 1);
+    assert_eq!(ran[0]["command"], "mail.drafts.create");
+}
+
+#[tokio::test]
+async fn sending_takes_full_access_and_its_own_say_so_and_is_limited() {
+    let (registry, ran, _) = acting_registry();
+    let full = connect_with(
+        Backend::Headless(registry.clone()),
+        Policy {
+            access: Access::Full,
+            ..Policy::default()
+        },
+    )
+    .await;
+    assert!(ask(&full, "mail.messages.move", json!({})).await);
+    assert!(!ask(&full, "mail.drafts.send", json!({})).await);
+
+    let trusted = connect_with(
+        Backend::Headless(registry),
+        Policy {
+            access: Access::Full,
+            allow_consequential: true,
+            max_sends_per_hour: 2,
+        },
+    )
+    .await;
+    assert!(ask(&trusted, "mail.drafts.send", json!({})).await);
+    assert!(ask(&trusted, "mail.drafts.send", json!({})).await);
+    assert!(
+        !ask(&trusted, "mail.drafts.send", json!({})).await,
+        "a third in the hour"
+    );
+    // A file on the computer cannot be named, however trusted the agent.
+    assert!(
+        !ask(
+            &trusted,
+            "mail.drafts.files.add",
+            json!({ "path": "/etc/passwd" })
+        )
+        .await
+    );
+
+    let sends = ran
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r["command"] == "mail.drafts.send")
+        .count();
+    assert_eq!(sends, 2);
+}
+
+#[tokio::test]
+async fn everything_an_agent_asks_for_is_written_down_and_it_cannot_write_the_record_itself() {
+    let (registry, _, recorded) = acting_registry();
+    let agent = connect_with(
+        Backend::Headless(registry),
+        Policy {
+            access: Access::Draft,
+            ..Policy::default()
+        },
+    )
+    .await;
+
+    ask(&agent, "mail.drafts.create", json!({ "subject": "Hello" })).await;
+    ask(
+        &agent,
+        "mail.messages.move",
+        json!({ "folder_id": "deleteditems" }),
+    )
+    .await;
+    let forged = ask(
+        &agent,
+        "app.agent_log.record",
+        json!({ "client": "someone else", "command": "nothing", "args": {}, "outcome": "ok" }),
+    )
+    .await;
+
+    assert!(!forged);
+    let recorded = recorded.lock().unwrap();
+    let seen: Vec<(&str, &str)> = recorded
+        .iter()
+        .map(|r| {
+            (
+                r["command"].as_str().unwrap(),
+                r["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("mail.drafts.create", "ok"),
+            ("mail.messages.move", "refused"),
+            ("app.agent_log.record", "refused"),
+        ]
+    );
+    assert!(
+        recorded[1]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("--access full")
+    );
+    assert!(recorded.iter().all(|r| r["client"].is_string()));
 }

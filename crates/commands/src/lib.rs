@@ -10,4 +10,7 @@ mod builtin;
 mod registry;
 
 pub use builtin::builtin_registry;
-pub use registry::{CommandError, CommandKind, CommandSpec, Handler, Registry, RegistryError};
+pub use registry::{
+    Access, CommandError, CommandKind, CommandSpec, Handler, Registry, RegistryError,
+    drafting_commands,
+};

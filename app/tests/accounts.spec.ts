@@ -154,3 +154,38 @@ test("a sign-in from before automatic replies says to sign in again", async ({ p
     await expect(page.getByRole("alert")).toContainText("Sign in to the account again");
     await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
 });
+
+test("what agents have asked for is shown, with what was turned away", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        agentLog: [
+            {
+                at: "2026-10-09T05:02:00Z",
+                client: "claude-code",
+                command: "mail.drafts.send",
+                args: { draft_id: "draft-3" },
+                outcome: "refused",
+                detail: "`mail.drafts.send` reaches other people or cannot be undone, so it needs the user's say-so.",
+            },
+            { at: "2026-10-09T05:01:00Z", client: "claude-code", command: "mail.drafts.create", args: { subject: "[14 characters]" }, outcome: "ok", detail: "" },
+            { at: "2026-10-09T05:00:00Z", client: "claude-code", command: "mail.search", args: { query: "[7 characters]" }, outcome: "ok", detail: "" },
+        ],
+    });
+    await page.getByRole("button", { name: "Agents" }).click();
+
+    const rows = page.getByRole("row");
+    await expect(rows).toHaveCount(4);
+    await expect(rows.nth(1)).toContainText("mail.drafts.send");
+    await expect(rows.nth(1)).toContainText("Not allowed");
+    await expect(rows.nth(1)).toContainText("needs the user's say-so");
+    await expect(rows.nth(2)).toContainText("Ran");
+    await expect(rows.nth(3)).toContainText("[7 characters]");
+    await picture(page, "agents");
+});
+
+test("with nothing asked yet, the agents screen says so", async ({ page }) => {
+    await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "Agents" }).click();
+
+    await expect(page.getByText("No agent has asked for anything yet.")).toBeVisible();
+});

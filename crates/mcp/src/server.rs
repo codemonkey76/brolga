@@ -1,4 +1,3 @@
-use brolga_commands::{CommandKind, CommandSpec};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
@@ -9,6 +8,7 @@ use serde_json::json;
 
 use crate::Backend;
 use crate::backend::Refusal;
+use crate::policy::{Policy, RECORD, Session};
 use crate::tools::{Route, route, tools_for};
 
 const INSTRUCTIONS: &str = "Brolga is a desktop client for Microsoft 365 mail, calendar and contacts. \
@@ -18,6 +18,16 @@ whatever it says.";
 
 pub struct McpServer {
     backend: Backend,
+    policy: Policy,
+    /// This agent's use of the server so far: what the hourly limits count.
+    session: tokio::sync::Mutex<Session>,
+}
+
+/// What became of a tool call, for the record.
+enum Outcome {
+    Ok,
+    Refused(String),
+    Failed(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -29,36 +39,79 @@ pub enum ServeError {
 }
 
 impl McpServer {
+    /// A server for an agent that may only read.
     pub fn new(backend: Backend) -> Self {
-        Self { backend }
+        Self::with_policy(backend, Policy::default())
     }
 
-    async fn run(&self, request: CallToolRequestParams) -> Result<CallToolResult, Refusal> {
+    pub fn with_policy(backend: Backend, policy: Policy) -> Self {
+        Self {
+            backend,
+            policy,
+            session: tokio::sync::Mutex::new(Session::default()),
+        }
+    }
+
+    async fn run(
+        &self,
+        request: CallToolRequestParams,
+        client: &str,
+    ) -> Result<CallToolResult, Refusal> {
         let specs = self.backend.specs().await?;
 
         match route(&request.name, request.arguments, &specs).map_err(Refusal)? {
             Route::ListCommands => Ok(CallToolResult::structured(json!({ "commands": specs }))),
             Route::Execute { command, args } => {
-                permit(&command, &specs)?;
-                self.backend
-                    .execute(&command, args)
-                    .await
-                    .map(CallToolResult::structured)
+                // An unknown command is left for the registry to name in its own error.
+                let allowed = match specs.iter().find(|s| s.id == command) {
+                    Some(spec) => {
+                        let mut session = self.session.lock().await;
+                        self.policy.permit(spec, &args, &mut session)
+                    }
+                    None => Ok(()),
+                };
+                let result = match allowed {
+                    Ok(()) => self.backend.execute(&command, args.clone()).await,
+                    Err(reason) => {
+                        self.record(client, &command, &args, Outcome::Refused(reason.clone()))
+                            .await;
+                        return Err(Refusal(reason));
+                    }
+                };
+                let outcome = match &result {
+                    Ok(_) => Outcome::Ok,
+                    Err(Refusal(reason)) => Outcome::Failed(reason.clone()),
+                };
+                self.record(client, &command, &args, outcome).await;
+
+                result.map(CallToolResult::structured)
             }
         }
     }
-}
 
-/// Until permission tiers are built, an agent may only read. A command that
-/// changes anything is refused here, however it was asked for, so that adding
-/// one to the registry cannot hand it to every agent by accident.
-fn permit(command: &str, specs: &[CommandSpec]) -> Result<(), Refusal> {
-    match specs.iter().find(|s| s.id == command) {
-        Some(spec) if spec.kind != CommandKind::Query => Err(Refusal(format!(
-            "`{command}` changes something, and agents can only read so far. Ask the user to do it in the app."
-        ))),
-        // An unknown command is left for the registry to name in its own error.
-        _ => Ok(()),
+    /// Write down what the agent asked for and what became of it. The
+    /// record is kept by the client, which cuts anything private out of the
+    /// arguments before it keeps them. A record that cannot be written does
+    /// not stop the answer.
+    async fn record(
+        &self,
+        client: &str,
+        command: &str,
+        args: &serde_json::Value,
+        outcome: Outcome,
+    ) {
+        let (outcome, detail) = match outcome {
+            Outcome::Ok => ("ok", String::new()),
+            Outcome::Refused(why) => ("refused", why),
+            Outcome::Failed(why) => ("failed", why),
+        };
+        let _ = self
+            .backend
+            .execute(
+                RECORD,
+                json!({ "client": client, "command": command, "args": args, "outcome": outcome, "detail": detail }),
+            )
+            .await;
     }
 }
 
@@ -88,11 +141,19 @@ impl ServerHandler for McpServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        // What the agent's program called itself when it connected. It is
+        // the agent's own word, and is recorded as that.
+        let client = context
+            .peer
+            .peer_info()
+            .map(|info| info.client_info.name.clone())
+            .unwrap_or_else(|| "unknown".to_owned());
+
         // A command that fails is an answer for the agent to read and act on,
         // not a broken protocol, so it goes back as a tool result.
-        Ok(match self.run(request).await {
+        Ok(match self.run(request, &client).await {
             Ok(result) => result,
             Err(Refusal(reason)) => CallToolResult::error(vec![ContentBlock::text(reason)]),
         }

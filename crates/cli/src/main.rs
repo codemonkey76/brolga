@@ -11,7 +11,7 @@ use brolga_auth::Authority;
 use brolga_commands::CommandSpec;
 use brolga_control::{Client, default_endpoint};
 use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID, keep_synced};
-use brolga_mcp::{Backend, McpServer, serve_stdio};
+use brolga_mcp::{Access, Backend, McpServer, Policy, serve_stdio};
 use brolga_platform::{SystemSecrets, data_dir, downloads_dir, open_in_browser};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -60,7 +60,25 @@ enum Command {
         /// Only work through the running app, so it shows what the agent does. Fails if the app is not running.
         #[arg(long)]
         connect: bool,
+        /// How far the agent is trusted: `read` (the default) lets it read mail and nothing else;
+        /// `draft` lets it also write drafts, which reach nobody until sent; `full` lets it change the mailbox.
+        #[arg(long, default_value = "read")]
+        access: AgentAccess,
+        /// Let the agent run commands that reach other people or cannot be undone, such as sending.
+        /// Without this they are refused whatever the access.
+        #[arg(long)]
+        allow_consequential: bool,
+        /// The most messages the agent may send in any hour.
+        #[arg(long, default_value_t = 20)]
+        max_sends_per_hour: u32,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum AgentAccess {
+    Read,
+    Draft,
+    Full,
 }
 
 /// A failure, as the words to print and the code to exit with.
@@ -132,17 +150,34 @@ async fn run(command: Command) -> Result<(), Failure> {
             };
             print(&added)
         }
-        Command::Mcp { connect } => {
-            let server = McpServer::new(match backend(connect).await? {
-                Where::Here(registry) => {
-                    // With no app running there is no window keeping the
-                    // mail current, so it is done here for as long as the
-                    // server runs.
-                    tokio::spawn(keep_synced(registry.clone(), SYNC_EVERY));
-                    Backend::Headless(registry)
-                }
-                Where::App(client) => Backend::attached(client),
-            });
+        Command::Mcp {
+            connect,
+            access,
+            allow_consequential,
+            max_sends_per_hour,
+        } => {
+            let policy = Policy {
+                access: match access {
+                    AgentAccess::Read => Access::Read,
+                    AgentAccess::Draft => Access::Draft,
+                    AgentAccess::Full => Access::Full,
+                },
+                allow_consequential,
+                max_sends_per_hour,
+            };
+            let server = McpServer::with_policy(
+                match backend(connect).await? {
+                    Where::Here(registry) => {
+                        // With no app running there is no window keeping the
+                        // mail current, so it is done here for as long as the
+                        // server runs.
+                        tokio::spawn(keep_synced(registry.clone(), SYNC_EVERY));
+                        Backend::Headless(registry)
+                    }
+                    Where::App(client) => Backend::attached(client),
+                },
+                policy,
+            );
             serve_stdio(server).await.map_err(failed)
         }
     }

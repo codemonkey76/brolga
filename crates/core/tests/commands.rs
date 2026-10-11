@@ -318,3 +318,30 @@ async fn the_client_id_is_typed_once_and_remembered_for_the_next_account() {
         .unwrap();
     assert_eq!(options().await["needs_client_id"], false);
 }
+
+#[tokio::test]
+async fn the_commands_an_agent_may_draft_with_are_real_and_are_all_drafting() {
+    let identity = FakeIdentity::start().await.unwrap();
+    let registry = core(&identity, Some(CLIENT_ID)).registry();
+
+    for id in brolga_commands::drafting_commands() {
+        let spec = registry
+            .spec(id)
+            .unwrap_or_else(|| panic!("`{id}` is not a command"));
+        assert_eq!(spec.access(), brolga_commands::Access::Draft);
+        assert!(!spec.consequential, "`{id}` reaches other people");
+    }
+    // What reaches other people is never let through as drafting or reading.
+    for spec in registry.specs().filter(|s| s.consequential) {
+        assert_eq!(
+            spec.access(),
+            brolga_commands::Access::Full,
+            "`{}`",
+            spec.id
+        );
+    }
+    assert_eq!(
+        registry.spec("mail.sync").unwrap().access(),
+        brolga_commands::Access::Read
+    );
+}

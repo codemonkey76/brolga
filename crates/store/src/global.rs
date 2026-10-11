@@ -30,7 +30,37 @@ const STEPS: &[&str] = &[
         value TEXT NOT NULL
     ) STRICT;
 ",
+    "
+    -- Every command an agent asked for, whether or not it was let run.
+    CREATE TABLE agent_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        client TEXT NOT NULL,
+        command TEXT NOT NULL,
+        -- The arguments with anything long or private cut out.
+        args TEXT NOT NULL,
+        -- ok, refused or failed.
+        outcome TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+",
 ];
+
+/// A command an agent asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLogEntry {
+    /// UTC. Set when it is written.
+    #[serde(default)]
+    pub at: String,
+    /// What the agent's program called itself.
+    pub client: String,
+    pub command: String,
+    /// JSON, with anything long or private cut out.
+    pub args: String,
+    /// `ok`, `refused` (not allowed to) or `failed` (allowed, and it did not work).
+    pub outcome: String,
+    pub detail: String,
+}
 
 /// A signed-in Microsoft 365 account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +172,44 @@ impl GlobalDb {
         Ok(self
             .account(&account.id)?
             .unwrap_or_else(|| account.clone()))
+    }
+
+    /// Write down a command an agent asked for. The log keeps the most
+    /// recent five thousand.
+    pub fn log_agent_command(&self, entry: &AgentLogEntry) -> Result<(), StoreError> {
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO agent_log (client, command, args, outcome, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![entry.client, entry.command, entry.args, entry.outcome, entry.detail],
+        )?;
+        connection.execute(
+            "DELETE FROM agent_log WHERE id <= (SELECT max(id) FROM agent_log) - 5000",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    /// What agents have asked for, the latest first.
+    pub fn agent_log(&self, limit: u32) -> Result<Vec<AgentLogEntry>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT at, client, command, args, outcome, detail FROM agent_log ORDER BY id DESC LIMIT ?1",
+        )?;
+        let entries = statement
+            .query_map([limit], |row| {
+                Ok(AgentLogEntry {
+                    at: row.get(0)?,
+                    client: row.get(1)?,
+                    command: row.get(2)?,
+                    args: row.get(3)?,
+                    outcome: row.get(4)?,
+                    detail: row.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(entries)
     }
 
     /// The client ID the last successful sign-in used, if there has been one.

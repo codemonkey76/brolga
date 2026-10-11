@@ -1,9 +1,10 @@
 <script lang="ts">
     import { type Account, listAccounts } from "./lib/accounts";
     import Accounts from "./lib/Accounts.svelte";
+    import Agents from "./lib/Agents.svelte";
     import Mail from "./lib/Mail.svelte";
 
-    type View = "mail" | "accounts";
+    type View = "mail" | "accounts" | "agents";
 
     let accounts = $state<Account[]>([]);
     let view = $state<View>("accounts");
@@ -43,6 +44,9 @@
         <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Accounts (Ctrl+,)">
             Accounts
         </button>
+        <button type="button" class:current={view === "agents"} aria-current={view === "agents"} onclick={() => (view = "agents")} title="What AI agents have asked for">
+            Agents
+        </button>
     </nav>
 
     <main>
@@ -50,6 +54,8 @@
             <p class="muted starting" role="status">Starting…</p>
         {:else if view === "mail" && accounts.length > 0}
             <Mail {accounts} />
+        {:else if view === "agents"}
+            <div class="scroll"><Agents /></div>
         {:else}
             <div class="scroll"><Accounts onChanged={changed} /></div>
         {/if}

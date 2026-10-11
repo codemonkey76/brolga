@@ -8,6 +8,7 @@
 
 mod account_commands;
 mod action_commands;
+mod agent_commands;
 mod draft_commands;
 mod link_commands;
 mod mail_commands;
@@ -91,6 +92,7 @@ impl Core {
             Some(folder) => GlobalDb::open(&folder.join("global.db"))?,
             None => GlobalDb::in_memory()?,
         });
+        let global = db.clone();
         let accounts = Arc::new(Accounts::new(
             db,
             options.secrets,
@@ -107,6 +109,7 @@ impl Core {
         let images = Arc::new(remote_images::RemoteImages::new(
             options.fetch_images_from_private_hosts,
         ));
+        agent_commands::register(&mut registry, global)?;
         action_commands::register(&mut registry, mailboxes.clone())?;
         draft_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;
