@@ -5,10 +5,13 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 3 nearly done.** You can sign in, sync a mailbox, read and
-search it, mark, flag, move, archive and delete messages with undo, and write,
-reply, forward and send with formatting, attachments and a signature. It has
-been run against a real Microsoft 365 mailbox. There is no calendar yet.
+**Status: milestone 3 built, awaiting its last check.** You can sign in, sync
+a mailbox, read and search it, mark, flag, categorise, move, archive and delete
+messages with undo, and write, reply, forward and send with formatting,
+attachments and a signature. Drafts are kept in the mailbox as they are
+written. It has been run against a real Microsoft 365 mailbox. What is left is
+checking that mail written here looks right in Outlook and Gmail. There is no
+calendar yet.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 

@@ -40,6 +40,8 @@ export interface FakeMail {
     has_attachments: boolean;
     /** The conversation it belongs to. Left out, it is one of its own. */
     conversation?: string;
+    /** A draft, in the mailbox's Drafts folder. */
+    is_draft?: boolean;
     attachments?: { id: string; name: string; content_type: string; size: number; is_inline: boolean; kind: string }[];
     /** HTML as the core would hand it over: already cleaned. */
     body: string;
@@ -263,7 +265,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             cc: [],
             received_at: m.received_at,
             is_read: m.is_read,
-            is_draft: false,
+            is_draft: m.is_draft ?? false,
             has_attachments: m.has_attachments,
             importance: "normal",
             flag_status: flags.get(m.id) ?? "notFlagged",
@@ -439,6 +441,31 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 if (found) found.files = (found.files as { id: number }[]).filter((each) => each.id !== args.file_id);
                 return { removed: true };
             },
+            "mail.drafts.open": (args) => {
+                const here = drafts.find((each) => each.server_id === args.message_id);
+                if (here) return { draft: here };
+                const m = mail.find((each) => each.id === args.message_id);
+                if (!m) throw { code: "failed", message: "This draft is not on this computer yet, and could not be fetched now." };
+                const taken = {
+                    id: `draft-${drafts.length + sent.length + 1}`,
+                    server_id: m.id,
+                    kind: "new",
+                    message_id: null,
+                    to: [{ name: "Jo Nguyen", address: "jo.nguyen@example.test" }],
+                    cc: [],
+                    bcc: [],
+                    subject: m.subject,
+                    body: m.body,
+                    format: "html",
+                    state: "editing",
+                    error: null,
+                    on_server: true,
+                    files: [],
+                };
+                drafts.unshift(taken);
+                return { draft: taken };
+            },
+            "app.outbox.flush": () => ({ sent: 0, waiting: 0, refused: 0, drafts_saved: 0 }),
             "mail.drafts.list": () => ({ drafts }),
             "mail.drafts.discard": (args) => {
                 const at = drafts.findIndex((each) => each.id === args.draft_id);

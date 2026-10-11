@@ -64,6 +64,18 @@ async fn every_command_is_described_and_its_examples_run() {
         )
         .attach("notes.txt", "text/plain", b"Some notes."),
     );
+    // A draft written in some other mail program, for `mail.drafts.open`.
+    let mut elsewhere = FakeMessage::new(
+        "Half written",
+        "Robin Example",
+        "robin@example.test",
+        "2026-10-02T09:00:00Z",
+    );
+    elsewhere.is_draft = true;
+    assert_eq!(
+        graph.add_message(&graph.folder_id("drafts"), elsewhere),
+        "message-000009"
+    );
     let registry = core_with_mail(&identity, Some(&graph), Some(CLIENT_ID)).registry();
     // The mail examples need an account with mail in it, which no example
     // can arrange for itself.

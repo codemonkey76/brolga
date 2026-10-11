@@ -205,6 +205,17 @@ async fn outbox(mailboxes: Arc<Mailboxes>) -> Result<Value, CommandError> {
     Ok(json!({ "accounts": accounts }))
 }
 
+/// Send what is queued now, and wait for it. The window asks this when a
+/// draft is put aside, so its copy in the mailbox is not minutes behind.
+async fn flush(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let drained = mailbox.outbox.drain().await.map_err(failed)?;
+
+    Ok(json!({
+        "sent": drained.sent, "waiting": drained.waiting, "refused": drained.refused, "drafts_saved": drained.saved
+    }))
+}
+
 async fn dismiss(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
     let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
     mailbox.db.dismiss_failed_ops().map_err(failed)?;
@@ -513,6 +524,36 @@ pub(crate) fn register(
             examples: vec![json!({})],
         },
         handler(&mailboxes, |mailboxes, _: serde_json::Map<String, Value>| outbox(mailboxes)),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "app.outbox.flush".to_owned(),
+            title: "Send what is waiting".to_owned(),
+            description: "Send now whatever is waiting to go to Microsoft 365, and bring the mailbox's Drafts folder level with the drafts here, \
+                          without waiting for the next sync. It does only what was already queued, and says how much of it went."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id() },
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "sent": { "type": "integer" },
+                    "waiting": { "type": "integer" },
+                    "refused": { "type": "integer" },
+                    "drafts_saved": { "type": "integer" }
+                },
+                "required": ["sent", "waiting", "refused", "drafts_saved"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, flush),
     )?;
 
     registry.register(

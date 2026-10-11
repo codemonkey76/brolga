@@ -32,6 +32,8 @@ export interface Message {
     cc: Person[];
     received_at: string;
     is_read: boolean;
+    /** Still being written: it opens to be carried on with, not to be read. */
+    is_draft?: boolean;
     has_attachments: boolean;
     importance: string;
     flag_status: string;
@@ -186,6 +188,13 @@ export const createDraft = async (account_id: string, kind: Draft["kind"], forma
 
 export const editDraft = (account_id: string, draft_id: string, change: Partial<Pick<Draft, "to" | "cc" | "bcc" | "subject" | "body" | "format">>) =>
     execute<{ draft: Draft }>("mail.drafts.edit", { account_id, draft_id, ...change });
+
+/** Carry on with a draft that is in the mailbox's Drafts folder. */
+export const openDraft = async (account_id: string, message_id: string) =>
+    (await execute<{ draft: Draft }>("mail.drafts.open", { account_id, message_id })).draft;
+
+/** Send what is waiting now, and bring the mailbox's Drafts folder level with the drafts here. */
+export const flushOutbox = (account_id: string) => execute("app.outbox.flush", { account_id });
 
 export const listDrafts = async (account_id: string) => (await execute<{ drafts: Draft[] }>("mail.drafts.list", { account_id })).drafts;
 

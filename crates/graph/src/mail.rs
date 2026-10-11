@@ -112,6 +112,7 @@ pub struct Message {
     pub from: Option<Recipient>,
     pub to_recipients: Option<Vec<Recipient>>,
     pub cc_recipients: Option<Vec<Recipient>>,
+    pub bcc_recipients: Option<Vec<Recipient>>,
     pub received_date_time: Option<String>,
     pub sent_date_time: Option<String>,
     pub is_read: Option<bool>,

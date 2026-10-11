@@ -211,6 +211,14 @@ const STEPS: &[&str] = &[
     -- Whether a draft's body is plain words (text) or formatted (html).
     ALTER TABLE drafts ADD COLUMN format TEXT NOT NULL DEFAULT 'text';
 ",
+    "
+    -- A draft is kept on the server too, so it shows in other mail
+    -- programs. `rev` counts its changes here; `server_rev` is the count the
+    -- server's copy was last brought up to, and -1 where it has none.
+    ALTER TABLE drafts ADD COLUMN rev INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE drafts ADD COLUMN server_rev INTEGER NOT NULL DEFAULT -1;
+    CREATE INDEX drafts_by_server ON drafts (server_id);
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -116,6 +116,12 @@ fn file_shown(file: &DraftFile) -> Value {
 }
 
 #[derive(Deserialize)]
+struct OpenDraft {
+    account_id: Option<String>,
+    message_id: String,
+}
+
+#[derive(Deserialize)]
 struct Suggest {
     account_id: Option<String>,
     typed: String,
@@ -252,6 +258,7 @@ fn shown(mailbox: &Mailbox, draft: &Draft) -> Value {
         "state": draft.state,
         "error": draft.error,
         "updated_at": draft.updated_at,
+        "on_server": draft.server_id.is_some(),
         "files": files,
     })
 }
@@ -542,8 +549,94 @@ async fn list(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, Command
 
 async fn discard(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let server_id = mailbox
+        .db
+        .draft(&args.draft_id)
+        .map_err(failed)?
+        .and_then(|draft| draft.server_id);
+    let discarded = mailbox.db.discard_draft(&args.draft_id).map_err(failed)?;
 
-    Ok(json!({ "discarded": mailbox.db.discard_draft(&args.draft_id).map_err(failed)? }))
+    // Its copy on the server goes too, to Deleted Items as anything
+    // deleted does. Through the outbox, so it happens offline as well; and
+    // straight to the server where the copy has not been synced down yet.
+    if let (true, Some(server_id)) = (discarded, server_id)
+        && let Some(deleted) = mailbox.db.folder_id("deleteditems").map_err(failed)?
+    {
+        let action = mailbox.db.new_action().map_err(failed)?;
+        let queued = mailbox
+            .db
+            .queue_edit(
+                &action,
+                std::slice::from_ref(&server_id),
+                &brolga_store::MessageEdit::Move(deleted),
+            )
+            .map_err(failed)?;
+        let sending = mailbox.clone();
+        tokio::spawn(async move {
+            if queued == 0 {
+                let _ = sending.graph.move_message(&server_id, "deleteditems").await;
+            }
+            let _ = sending.outbox.drain().await;
+        });
+    }
+
+    Ok(json!({ "discarded": discarded }))
+}
+
+/// Carry on with a draft that is in the mailbox's Drafts folder: the one
+/// already here for it, or else a copy taken from the server now.
+async fn open_draft(mailboxes: Arc<Mailboxes>, args: OpenDraft) -> Result<Value, CommandError> {
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    if let Some(here) = mailbox
+        .db
+        .draft_for_message(&args.message_id)
+        .map_err(failed)?
+    {
+        return Ok(json!({ "draft": shown(&mailbox, &here) }));
+    }
+
+    let server = mailbox.graph.draft(&args.message_id).await.map_err(|e| {
+        failed(format!(
+            "This draft is not on this computer yet, and could not be fetched now. {e}"
+        ))
+    })?;
+    if server.is_draft == Some(false) {
+        return Err(failed("That message is not a draft."));
+    }
+    let people = |list: Option<Vec<brolga_graph::Recipient>>| {
+        let list: Vec<Value> = list
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|each| {
+                let address = each.email_address.address?;
+                Some(json!({ "name": each.email_address.name, "address": address }))
+            })
+            .collect();
+        Value::Array(list).to_string()
+    };
+    // What was written elsewhere is cleaned like any other mail before it
+    // is kept, and is formatted whatever it was written as.
+    let body = server.body.map(|body| {
+        if body.content_type.eq_ignore_ascii_case("html") {
+            brolga_mail::sanitise_html(&body.content, brolga_mail::RemoteContent::Blocked).html
+        } else {
+            brolga_mail::text_to_paragraphs(&body.content)
+        }
+    });
+    let content = DraftEdit {
+        to_recipients: Some(people(server.to_recipients)),
+        cc_recipients: Some(people(server.cc_recipients)),
+        bcc_recipients: Some(people(server.bcc_recipients)),
+        subject: server.subject,
+        body,
+        format: Some("html".to_owned()),
+    };
+    let draft = mailbox
+        .db
+        .adopt_draft(&args.message_id, &content)
+        .map_err(failed)?;
+
+    Ok(json!({ "draft": shown(&mailbox, &draft) }))
 }
 
 async fn send(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
@@ -638,6 +731,7 @@ fn draft_schema() -> Value {
             "state": { "enum": ["editing", "queued", "failed"], "description": "queued: waiting to be sent. failed: Microsoft 365 would not send it; `error` says why." },
             "error": { "type": ["string", "null"] },
             "updated_at": { "type": "integer", "description": "Seconds since 1970." },
+            "on_server": { "type": "boolean", "description": "It has a copy in the mailbox's Drafts folder, so other mail programs show it." },
             "files": { "type": "array", "items": file_schema(), "description": "The files attached, without their contents." }
         },
         "required": ["id", "kind", "to", "cc", "bcc", "subject", "body", "state"]
@@ -826,6 +920,30 @@ pub(crate) fn register(
             examples: vec![json!({ "draft_id": "draft-1", "body": "A better first line." })],
         },
         handler(&mailboxes, edit),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.drafts.open".to_owned(),
+            title: "Carry on with a draft".to_owned(),
+            description: "Take up a draft that is in the mailbox's Drafts folder, by its message id, to change or send it: the draft already here for it, \
+                          or a copy fetched now if it was written in another mail program. Formatting this client does not keep, such as fonts and colours, \
+                          is lost from a draft written elsewhere once it is changed here."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id(), "message_id": { "type": "string" } },
+                "required": ["message_id"],
+                "additionalProperties": false
+            }),
+            result_schema: one_draft(),
+            // The draft the command tests leave in the fake mailbox's Drafts folder.
+            examples: vec![json!({ "message_id": "message-000009" })],
+        },
+        handler(&mailboxes, open_draft),
     )?;
 
     registry.register(

@@ -915,3 +915,45 @@ test("a message is given categories, shown in their colours, and that can be und
     await expect(first.getByLabel("Category Clients")).toHaveCount(0);
     await expect(pane.getByLabel("This message's categories")).toHaveCount(0);
 });
+
+test("a draft in the Drafts folder opens to be carried on with, and is saved to the mailbox when put aside", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: [
+            ...inbox,
+            {
+                id: "d1",
+                folder_id: "drafts",
+                is_draft: true,
+                subject: "Started in Outlook",
+                preview: "Dear Jo,",
+                from: { name: "Robin Example", address: "robin@example.test" },
+                received_at: "2026-10-09T02:00:00Z",
+                is_read: true,
+                has_attachments: false,
+                body: "<p>Dear <b>Jo</b>,</p>",
+            },
+        ],
+    });
+    await folder(page, "Drafts").click();
+    await messages(page).getByRole("option").first().click();
+
+    const form = page.getByRole("form", { name: "New message" });
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Started in Outlook");
+    await expect(form.getByRole("combobox", { name: "To" })).toHaveValue("Jo Nguyen <jo.nguyen@example.test>");
+    await expect(form.getByRole("textbox", { name: "Message" }).locator("b")).toHaveText("Jo");
+    // It is not shown as a message to read, with Reply and the rest.
+    await expect(page.getByRole("button", { name: "Reply", exact: true })).toHaveCount(0);
+
+    await form.getByRole("textbox", { name: "Message" }).click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" see you Friday.");
+    await page.keyboard.press("Escape");
+
+    await expect(form).toHaveCount(0);
+    await expect.poll(async () => (await ran(page)).some((r) => r.command === "app.outbox.flush")).toBe(true);
+    // Opened again from the folder, it is the same draft with what was added.
+    await messages(page).getByRole("option").first().click();
+    await expect(form.getByRole("textbox", { name: "Message" })).toContainText("see you Friday.");
+    await expect(page.getByRole("list", { name: "Being written" }).getByRole("button")).toHaveCount(1);
+});

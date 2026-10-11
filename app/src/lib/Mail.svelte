@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Account } from "./accounts";
     import { chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, deletePermanently, dismissRefused, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type View, createDraft, deletePermanently, dismissRefused, flushOutbox, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -93,6 +93,13 @@
         await loadDrafts();
         // Sending happens in the background: look again shortly for it having gone, or come back.
         if (how === "sent") setTimeout(loadDrafts, 1_500);
+        // A draft put aside is saved to the mailbox now, so that other mail
+        // programs have it; then the list is drawn again, for Drafts may have changed.
+        if (accountId && how !== "sent") {
+            flushOutbox(accountId)
+                .then(refresh)
+                .catch(() => {});
+        }
     }
 
     /** The categories the mailbox has, to show each in its colour and to choose from. */
@@ -445,6 +452,17 @@
 
     /** Choose a line of the list. For a conversation, its other messages are fetched to read beside it. */
     async function open(message: Message) {
+        // A draft is opened to be carried on with, wherever it was started.
+        if (message.is_draft && accountId) {
+            selectedId = message.id;
+            try {
+                writing = await openDraft(accountId, message.id);
+                await loadDrafts();
+            } catch (failure) {
+                problem = say(failure);
+            }
+            return;
+        }
         selectedId = message.id;
         thread = [];
         const reading = read(message);

@@ -107,7 +107,8 @@ async fn queued_changes_reach_the_server() {
         Drained {
             sent: 3,
             waiting: 0,
-            refused: 0
+            refused: 0,
+            saved: 0
         }
     );
     assert!(f.read_on_server(&f.ids[0]) && f.read_on_server(&f.ids[1]));
@@ -132,7 +133,8 @@ async fn a_change_that_cannot_be_sent_now_waits_and_goes_later() {
         Drained {
             sent: 0,
             waiting: 1,
-            refused: 0
+            refused: 0,
+            saved: 0
         }
     );
     // It still shows as read here, and is still owed to the server.
@@ -182,7 +184,8 @@ async fn a_change_the_server_refuses_is_taken_back_and_reported() {
         Drained {
             sent: 1,
             waiting: 0,
-            refused: 1
+            refused: 1,
+            saved: 0
         }
     );
     assert!(!f.read_here(&f.ids[0]));
@@ -224,7 +227,8 @@ async fn a_change_to_a_message_since_deleted_is_let_go() {
         Drained {
             sent: 1,
             waiting: 0,
-            refused: 0
+            refused: 0,
+            saved: 0
         }
     );
     assert!(f.db.outbox().unwrap().1.is_empty());
@@ -257,7 +261,8 @@ async fn a_move_whose_answer_was_lost_is_not_made_twice() {
         Drained {
             sent: 0,
             waiting: 1,
-            refused: 0
+            refused: 0,
+            saved: 0
         }
     );
 
@@ -335,7 +340,8 @@ async fn a_message_is_not_sent_twice_when_the_answer_to_sending_is_lost() {
         Drained {
             sent: 0,
             waiting: 1,
-            refused: 0
+            refused: 0,
+            saved: 0
         }
     );
     assert_eq!(f.db.queued_drafts().unwrap().len(), 1);
@@ -486,4 +492,74 @@ async fn a_large_file_goes_up_in_pieces_and_arrives_whole() {
         "the file did not arrive as it left"
     );
     assert_eq!(sent.attachments[1].content, b"Small.");
+}
+
+#[tokio::test]
+async fn a_draft_being_written_is_kept_on_the_server_and_brought_up_to_date() {
+    let f = fixture().await;
+    let drafts = f.graph.folder_id("drafts");
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 1);
+    let on_server = |subject: &str| {
+        f.graph
+            .messages()
+            .values()
+            .filter(|(folder, s, _)| *folder == drafts && s == subject)
+            .count()
+    };
+    assert_eq!(on_server("Lunch"), 1);
+    // Nothing has changed, so nothing is sent again.
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 0);
+
+    let change = DraftEdit {
+        subject: Some("Lunch on Friday".to_owned()),
+        ..DraftEdit::default()
+    };
+    f.db.edit_draft(&draft.id, &change).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 1);
+    assert_eq!((on_server("Lunch"), on_server("Lunch on Friday")), (0, 1));
+    assert_eq!(f.graph.drafts_created(), 1, "a second copy was made");
+
+    // Sent, it is the same message that goes, and nothing is left in Drafts.
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.sent()[0].subject, "Lunch on Friday");
+    assert_eq!(on_server("Lunch on Friday"), 0);
+    assert_eq!(f.graph.drafts_created(), 1);
+}
+
+#[tokio::test]
+async fn a_draft_thrown_away_elsewhere_is_still_here_and_can_still_be_sent() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.outbox.drain().await.unwrap();
+    let server_id = f.db.draft(&draft.id).unwrap().unwrap().server_id.unwrap();
+
+    // Deleted in another mail program.
+    f.graph.delete_message(&server_id);
+    let change = DraftEdit {
+        body: Some("Still wanted.".to_owned()),
+        ..DraftEdit::default()
+    };
+    f.db.edit_draft(&draft.id, &change).unwrap();
+    f.outbox.drain().await.unwrap();
+    assert_eq!(
+        f.db.draft(&draft.id).unwrap().unwrap().body,
+        "Still wanted."
+    );
+
+    f.db.queue_draft(&draft.id).unwrap();
+    let mut passes = 0;
+    while f.graph.sent().is_empty() {
+        f.outbox.drain().await.unwrap();
+        passes += 1;
+        assert!(passes < 5, "never sent");
+    }
+    assert!(f.graph.sent()[0].body_html.contains("Still wanted."));
+    assert_eq!(f.graph.sent().len(), 1);
 }

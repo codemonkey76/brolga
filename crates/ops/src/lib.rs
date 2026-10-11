@@ -26,6 +26,8 @@ pub struct Drained {
     pub waiting: u32,
     /// The server will not take these. Each was taken back on this computer.
     pub refused: u32,
+    /// Drafts whose copy on the server was brought up to date.
+    pub saved: u32,
 }
 
 /// Sends one account's queued changes.
@@ -82,6 +84,8 @@ impl Outbox {
             }
         }
 
+        drained.saved = self.save_drafts().await?;
+
         for draft in self.db.queued_drafts()? {
             match self.send_draft(&draft).await {
                 Ok(()) => {
@@ -118,6 +122,34 @@ impl Outbox {
             return Ok(());
         }
 
+        let server_id = match self.put_on_server(draft).await {
+            Ok(server_id) => server_id,
+            // The server's copy has gone: thrown away in another mail
+            // program, most likely. The message is still wanted, so it is
+            // made again and sent from there.
+            Err(GraphError::Refused { status: 404, .. }) if draft.server_id.is_some() => {
+                self.db
+                    .draft_unlinked(&draft.id)
+                    .map_err(|e| GraphError::Decode(e.to_string()))?;
+                let mut fresh = draft.clone();
+                fresh.server_id = None;
+                fresh.quoted = None;
+                self.put_on_server(&fresh).await?
+            }
+            Err(other) => return Err(other),
+        };
+
+        self.attach_files(draft, &server_id).await?;
+
+        self.db
+            .draft_send_tried(&draft.id)
+            .map_err(|e| GraphError::Decode(e.to_string()))?;
+        self.graph.send_draft(&server_id).await
+    }
+
+    /// Bring the server's copy of a draft up to what is here, making it
+    /// first if there is none. Gives back its id there.
+    async fn put_on_server(&self, draft: &Draft) -> Result<String, GraphError> {
         let (server_id, quoted) = match &draft.server_id {
             Some(server_id) => (server_id.clone(), draft.quoted.clone()),
             None => {
@@ -159,12 +191,31 @@ impl Outbox {
         });
         self.graph.update_message(&server_id, &content).await?;
 
-        self.attach_files(draft, &server_id).await?;
+        Ok(server_id)
+    }
 
-        self.db
-            .draft_send_tried(&draft.id)
-            .map_err(|e| GraphError::Decode(e.to_string()))?;
-        self.graph.send_draft(&server_id).await
+    /// Keep the server's Drafts folder level with what is being written
+    /// here, so a draft shows in other mail programs. A draft that cannot
+    /// be saved there now is saved at the next pass; it is safe here
+    /// meanwhile. Gives back how many were saved.
+    async fn save_drafts(&self) -> Result<u32, StoreError> {
+        let mut saved = 0;
+        for draft in self.db.drafts_to_upload()? {
+            match self.put_on_server(&draft).await {
+                Ok(_) => {
+                    self.db.draft_uploaded(&draft.id, draft.rev)?;
+                    saved += 1;
+                }
+                // The server's copy has gone. The words are still here, and
+                // get a new copy at the next pass.
+                Err(GraphError::Refused { status: 404, .. }) if draft.server_id.is_some() => {
+                    self.db.draft_unlinked(&draft.id)?;
+                }
+                Err(_) => {}
+            }
+        }
+
+        Ok(saved)
     }
 
     /// Put a draft's files on the server's copy of it, each once. Attaching

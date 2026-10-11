@@ -37,6 +37,11 @@ pub struct Draft {
     pub quoted: Option<String>,
     /// A request to send has gone out and may have reached the server.
     pub send_tried: bool,
+    /// How many times it has been changed here.
+    pub rev: i64,
+    /// The count the server's copy was last brought up to; -1 where the
+    /// server has none.
+    pub server_rev: i64,
 }
 
 /// A file attached to a draft, without its contents.
@@ -66,7 +71,7 @@ pub struct DraftEdit {
 }
 
 const COLUMNS: &str = "id, kind, source_id, to_recipients, cc_recipients, bcc_recipients, subject, body, state, \
-                       error, updated_at, server_id, quoted, send_tried, format";
+                       error, updated_at, server_id, quoted, send_tried, format, rev, server_rev";
 
 fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
     Ok(Draft {
@@ -85,6 +90,8 @@ fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
         quoted: row.get(12)?,
         send_tried: row.get(13)?,
         format: row.get(14)?,
+        rev: row.get(15)?,
+        server_rev: row.get(16)?,
     })
 }
 
@@ -161,6 +168,7 @@ impl AccountDb {
                  subject = coalesce(?5, subject),
                  body = coalesce(?6, body),
                  format = coalesce(?7, format),
+                 rev = rev + 1,
                  state = 'editing', error = NULL, updated_at = unixepoch()
              WHERE id = ?1 AND state <> 'queued'",
             params![
@@ -326,6 +334,67 @@ impl AccountDb {
         Ok(drafts)
     }
 
+    /// The drafts whose copy on the server is behind what is here, or that
+    /// have none yet. One with nothing in it is not worth a copy.
+    pub fn drafts_to_upload(&self) -> Result<Vec<Draft>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(&format!(
+            "SELECT {COLUMNS} FROM drafts
+             WHERE state = 'editing' AND rev <> server_rev
+               AND (server_id IS NOT NULL OR subject <> '' OR trim(body) <> ''
+                    OR to_recipients <> '[]' OR cc_recipients <> '[]' OR bcc_recipients <> '[]')
+             ORDER BY seq"
+        ))?;
+        let drafts = statement.query_map([], read)?.collect::<Result<_, _>>()?;
+
+        Ok(drafts)
+    }
+
+    /// The server's copy is now as the draft was at this count of changes.
+    /// Changes made since leave it still to be uploaded.
+    pub fn draft_uploaded(&self, id: &str, rev: i64) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE drafts SET server_rev = ?2 WHERE id = ?1",
+            params![id, rev],
+        )?;
+
+        Ok(())
+    }
+
+    /// The draft that is this message on the server, if one is.
+    pub fn draft_for_message(&self, server_id: &str) -> Result<Option<Draft>, StoreError> {
+        Ok(self
+            .connection()
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM drafts WHERE server_id = ?1"),
+                [server_id],
+                read,
+            )
+            .optional()?)
+    }
+
+    /// Take up a draft that was written elsewhere and is on the server, to
+    /// carry on with it here. It starts level with the server's copy.
+    pub fn adopt_draft(&self, server_id: &str, content: &DraftEdit) -> Result<Draft, StoreError> {
+        let draft = self.create_draft("new", None, content)?;
+        self.connection().execute(
+            "UPDATE drafts SET server_id = ?2, server_rev = rev WHERE id = ?1",
+            params![draft.id, server_id],
+        )?;
+
+        Ok(self.draft(&draft.id)?.unwrap_or(draft))
+    }
+
+    /// The server's copy is gone. The draft carries on here without one.
+    pub fn draft_unlinked(&self, id: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE drafts SET server_id = NULL, quoted = NULL, server_rev = -1, send_tried = 0 WHERE id = ?1",
+            [id],
+        )?;
+
+        Ok(())
+    }
+
     /// The draft now exists on the server.
     pub fn draft_on_server(
         &self,
@@ -432,6 +501,55 @@ mod tests {
         db.queue_draft(&draft.id).unwrap();
         db.draft_send_tried(&draft.id).unwrap();
         assert!(!db.unqueue_draft(&draft.id).unwrap());
+    }
+
+    #[test]
+    fn a_draft_is_due_for_the_server_when_it_has_changed_since_it_went() {
+        let db = AccountDb::in_memory().unwrap();
+        let empty = db.create_draft("new", None, &DraftEdit::default()).unwrap();
+        let draft = db.create_draft("new", None, &start("One")).unwrap();
+        let due = || -> Vec<String> {
+            db.drafts_to_upload()
+                .unwrap()
+                .into_iter()
+                .map(|d| d.id)
+                .collect()
+        };
+
+        // A draft with nothing in it is not worth a copy.
+        assert_eq!(due(), std::slice::from_ref(&draft.id));
+        assert!(!due().contains(&empty.id));
+
+        db.draft_on_server(&draft.id, "server-1", None).unwrap();
+        db.draft_uploaded(&draft.id, 0).unwrap();
+        assert!(due().is_empty());
+
+        // Changed while an upload of the older words was on its way: still due.
+        db.edit_draft(&draft.id, &start("Two")).unwrap();
+        db.edit_draft(&draft.id, &start("Three")).unwrap();
+        db.draft_uploaded(&draft.id, 1).unwrap();
+        assert_eq!(due(), std::slice::from_ref(&draft.id));
+        db.draft_uploaded(&draft.id, 2).unwrap();
+        assert!(due().is_empty());
+
+        assert_eq!(
+            db.draft_for_message("server-1").unwrap().unwrap().id,
+            draft.id
+        );
+        db.draft_unlinked(&draft.id).unwrap();
+        assert!(db.draft_for_message("server-1").unwrap().is_none());
+        assert_eq!(due(), [draft.id]);
+    }
+
+    #[test]
+    fn a_draft_written_elsewhere_is_taken_up_level_with_the_server() {
+        let db = AccountDb::in_memory().unwrap();
+
+        let adopted = db.adopt_draft("server-9", &start("From Outlook")).unwrap();
+
+        assert_eq!(adopted.server_id.as_deref(), Some("server-9"));
+        assert_eq!(adopted.body, "From Outlook");
+        assert!(db.drafts_to_upload().unwrap().is_empty());
     }
 
     #[test]

@@ -37,6 +37,7 @@ const DRAFTING: &[&str] = &[
     "mail.drafts.create",
     "mail.drafts.edit",
     "mail.drafts.discard",
+    "mail.drafts.open",
     "mail.drafts.files.add",
     "mail.drafts.files.remove",
 ];

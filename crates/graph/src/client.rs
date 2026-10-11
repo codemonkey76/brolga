@@ -394,6 +394,17 @@ impl GraphClient {
         Ok(())
     }
 
+    /// A draft whole, as it is on the server: its subject, its body and
+    /// everyone it is addressed to, the blind copies included.
+    pub async fn draft(&self, message_id: &str) -> Result<Message, GraphError> {
+        let url = format!(
+            "{}/me/messages/{message_id}?$select=id,subject,body,toRecipients,ccRecipients,bccRecipients,isDraft",
+            self.base
+        );
+
+        decode(&self.get(&url, None).await?)
+    }
+
     /// Whether a message is still a draft. Nothing if it is no longer there.
     pub async fn is_draft(&self, message_id: &str) -> Result<Option<bool>, GraphError> {
         let url = format!("{}/me/messages/{message_id}?$select=id,isDraft", self.base);

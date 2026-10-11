@@ -1418,3 +1418,123 @@ async fn categories_are_listed_set_and_undone() {
         .fail_next(std::iter::repeat_n(Fault::Unavailable, 20));
     assert_eq!(f.run("mail.categories.list", json!({})).await, known);
 }
+
+#[tokio::test]
+async fn a_draft_is_kept_in_the_mailbox_while_it_is_written_and_leaves_it_when_discarded() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let drafts = f.graph.folder_id("drafts");
+    let in_drafts = || {
+        f.graph
+            .messages()
+            .values()
+            .filter(|(folder, _, _)| *folder == drafts)
+            .map(|(_, subject, _)| subject.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Plan", "body": "First thoughts." }),
+        )
+        .await["draft"]
+        .clone();
+    assert_eq!(draft["on_server"], false);
+
+    let flushed = f.run("app.outbox.flush", json!({})).await;
+    assert_eq!(flushed["drafts_saved"], 1);
+    assert_eq!(in_drafts(), ["Plan"]);
+
+    // Synced down, the copy in Drafts opens as the same draft, not a second one.
+    f.sync().await;
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": drafts }))
+        .await;
+    let opened = f
+        .run(
+            "mail.drafts.open",
+            json!({ "message_id": listed["messages"][0]["id"] }),
+        )
+        .await;
+    assert_eq!(opened["draft"]["id"], draft["id"]);
+    assert_eq!(opened["draft"]["on_server"], true);
+    assert_eq!(
+        f.run("mail.drafts.list", json!({})).await["drafts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    f.run("mail.drafts.discard", json!({ "draft_id": draft["id"] }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["queued"] != 0 {
+        f.sync().await;
+    }
+    assert!(in_drafts().is_empty());
+    assert_eq!(
+        f.graph
+            .messages()
+            .values()
+            .filter(|(folder, _, _)| *folder == f.graph.folder_id("deleteditems"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_draft_written_in_another_mail_program_is_taken_up_changed_and_sent() {
+    let f = Fixture::signed_in().await;
+    let mut elsewhere = message("From Outlook", "Robin Example", "2026-10-02T09:00:00Z")
+        .body("<p style=\"color:red\">Dear <b>Jo</b>,</p><script>evil()</script>");
+    elsewhere.is_draft = true;
+    elsewhere.to = vec![("Jo".to_owned(), "jo@example.test".to_owned())];
+    elsewhere.bcc = vec![("Al".to_owned(), "al@example.test".to_owned())];
+    let id = f.graph.add_message(&f.graph.folder_id("drafts"), elsewhere);
+    f.sync().await;
+
+    let draft = f.run("mail.drafts.open", json!({ "message_id": id })).await["draft"].clone();
+
+    assert_eq!(draft["subject"], "From Outlook");
+    assert_eq!(draft["to"][0]["address"], "jo@example.test");
+    assert_eq!(draft["bcc"][0]["address"], "al@example.test");
+    assert_eq!(draft["format"], "html");
+    let body = draft["body"].as_str().unwrap();
+    assert!(
+        body.contains("<b>Jo</b>") && !body.contains("script") && !body.contains("style"),
+        "{body}"
+    );
+
+    // Untouched, it is not written back over what the other program made.
+    assert_eq!(
+        f.run("app.outbox.flush", json!({})).await["drafts_saved"],
+        0
+    );
+
+    f.run(
+        "mail.drafts.edit",
+        json!({ "draft_id": draft["id"], "body": "<p>Dear Jo, see you Friday.</p>" }),
+    )
+    .await;
+    f.run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+    let sent = f.graph.sent();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].body_html.contains("see you Friday"));
+    assert_eq!(
+        sent[0].bcc,
+        [("Al".to_owned(), "al@example.test".to_owned())]
+    );
+    // It was the server's own draft that went, not a copy of it.
+    assert_eq!(f.graph.drafts_created(), 0);
+    assert!(
+        !f.graph
+            .messages()
+            .values()
+            .any(|(folder, _, _)| *folder == f.graph.folder_id("drafts"))
+    );
+}
