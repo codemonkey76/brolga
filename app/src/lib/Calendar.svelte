@@ -2,6 +2,7 @@
     import type { Account } from "./accounts";
     import Agenda from "./Agenda.svelte";
     import {
+        type Answer,
         type Calendar,
         type CalendarEvent,
         type View,
@@ -9,6 +10,7 @@
         calendarColour,
         daysOf,
         getEvent,
+        respond,
         listCalendars,
         listEvents,
         sameDay,
@@ -21,6 +23,7 @@
     import { execute, say } from "./commands";
     import { openLink } from "./mail";
     import MonthGrid from "./MonthGrid.svelte";
+    import Rsvp from "./Rsvp.svelte";
     import TimeGrid from "./TimeGrid.svelte";
 
     interface Props {
@@ -145,6 +148,16 @@
         } catch {
             // What the list knows of it is still shown.
         }
+    }
+
+    /** Answer the invitation that is open. A failure is for the buttons to say. */
+    async function answer(given: Answer, comment: string, tell: boolean) {
+        const event = selected;
+        if (!accountId || !event) return;
+        const result = await respond(accountId, event.id, given, comment, tell);
+        // A declined meeting leaves the calendar.
+        if (selected?.id === event.id) selected = given === "decline" ? null : { ...event, response: result.response };
+        await load();
     }
 
     async function toggle(calendar: Calendar) {
@@ -291,6 +304,9 @@
             </p>
             {#if selected.organizer.name || selected.organizer.address}
                 <p class="small">Organised by {selected.organizer.name || selected.organizer.address}{SAID[selected.response] && !selected.is_organizer ? ` · ${SAID[selected.response]}` : ""}</p>
+            {/if}
+            {#if !selected.is_organizer && !selected.is_cancelled && ["notResponded", "accepted", "tentativelyAccepted", "declined"].includes(selected.response)}
+                <Rsvp response={selected.response} onAnswer={answer} />
             {/if}
             {#if selected.attendees.length > 0}
                 <h3>People</h3>

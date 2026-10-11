@@ -1,5 +1,7 @@
 <script lang="ts">
     import { CalendarDays } from "@lucide/svelte";
+    import type { Answer } from "./calendar";
+    import Rsvp from "./Rsvp.svelte";
     import { type Attachment, type Category, type Message, type Opened, categoryColour, size, when, who } from "./mail";
 
     interface Props {
@@ -18,6 +20,8 @@
         onSave: (attachment: Attachment, ask?: boolean) => void;
         /** Show a day in the calendar. */
         onCalendar: (day: Date) => void;
+        /** Answer the invitation the message is. */
+        onAnswer: (answer: Answer, comment: string, tell: boolean) => Promise<void>;
         /** The mailbox's categories, for the colour of each. */
         categories: Category[];
         /** Always show this sender's remote pictures, or stop. */
@@ -26,7 +30,7 @@
         onOpenLink: (url: string) => void;
     }
 
-    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onCalendar, categories, onShowImages, onOpenLink }: Props = $props();
+    let { opened, loading, problem, imagesShown, thread, onRead, attachments, saved, onSave, onTrust, onCalendar, onAnswer, categories, onShowImages, onOpenLink }: Props = $props();
     let frame = $state<HTMLIFrameElement>();
 
     const MEETING: Record<string, string> = {
@@ -223,6 +227,9 @@
                             <p class="muted">Nothing else in your calendar then.</p>
                         {/if}
                         {#if meeting.response && ANSWERED[meeting.response]}<p class="muted">{ANSWERED[meeting.response]}.</p>{/if}
+                        {#if meeting.event_id}
+                            <Rsvp response={meeting.response} {onAnswer} />
+                        {/if}
                     {/if}
                 </div>
                 {#if meeting.start}

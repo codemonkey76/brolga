@@ -61,6 +61,10 @@ struct Inner {
     lose_next_attachment_answer: bool,
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
+    /// The next answer to an invitation is taken, and the caller is not told.
+    lose_next_response_answer: bool,
+    /// Every answer to an invitation: (event, answer, comment, organiser told).
+    responses: Vec<(String, String, String, bool)>,
     automatic_replies: Option<Value>,
     calendars: Option<calendar::Calendars>,
     /// Large files on their way up, by session.
@@ -115,6 +119,10 @@ impl FakeGraph {
                 get(calendar_view),
             )
             .route("/v1.0/me/events/{event}", get(one_event))
+            .route(
+                "/v1.0/me/events/{event}/{action}",
+                axum::routing::post(event_action),
+            )
             .route(
                 "/v1.0/me/mailboxSettings",
                 axum::routing::patch(update_mailbox_settings),
@@ -259,6 +267,15 @@ impl FakeGraph {
 
     /// The next move is made, but the answer to it is an error: the case
     /// of a request that reached the server and an answer that did not come back.
+    pub fn lose_next_response_answer(&self) {
+        lock(&self.shared).lose_next_response_answer = true;
+    }
+
+    /// Every answer to an invitation so far: (event, answer, comment, organiser told).
+    pub fn responses(&self) -> Vec<(String, String, String, bool)> {
+        lock(&self.shared).responses.clone()
+    }
+
     pub fn lose_next_move_answer(&self) {
         lock(&self.shared).lose_next_move_answer = true;
     }
@@ -576,6 +593,50 @@ async fn require_token(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// "event: accept", "event: tentativelyAccept" and "event: decline"
+/// (SOURCES.md): 202 and nothing else. The organiser cannot answer their
+/// own meeting.
+async fn event_action(
+    State(shared): State<Shared>,
+    Path((event, action)): Path<(String, String)>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    if !["accept", "tentativelyAccept", "decline"].contains(&action.as_str()) {
+        return error(
+            StatusCode::NOT_FOUND,
+            "BadRequest",
+            "There is no such action.",
+        );
+    }
+    let mut inner = lock(&shared);
+    match inner.calendars().respond(&event, &action) {
+        Ok(()) => {}
+        Err("organizer") => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "ErrorInvalidRequest",
+                "Your request can't be completed. You can't respond to this meeting because you're the meeting organizer.",
+            );
+        }
+        Err(_) => {
+            return error(
+                StatusCode::NOT_FOUND,
+                "ErrorItemNotFound",
+                "The specified object was not found in the store.",
+            );
+        }
+    }
+    let told = body["sendResponse"].as_bool().unwrap_or(true);
+    let comment = body["comment"].as_str().unwrap_or_default().to_owned();
+    inner.responses.push((event, action, comment, told));
+    if std::mem::take(&mut inner.lose_next_response_answer) {
+        // Answered, and the caller never hears of it.
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
+
+    StatusCode::ACCEPTED.into_response()
 }
 
 async fn calendars(State(shared): State<Shared>) -> Response {

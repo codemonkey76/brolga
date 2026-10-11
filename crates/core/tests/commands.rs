@@ -76,6 +76,19 @@ async fn every_command_is_described_and_its_examples_run() {
         ),
         "event-0001"
     );
+    // A meeting someone else called, for `calendar.events.respond`.
+    assert_eq!(
+        graph.add_event(
+            &graph.default_calendar(),
+            brolga_fake_graph::FakeEvent::new(
+                "Budget review",
+                "2026-10-21T01:00:00Z",
+                "2026-10-21T02:00:00Z"
+            )
+            .invited_by("Sam Taylor", "sam@example.test"),
+        ),
+        "event-0002"
+    );
     // A draft written in some other mail program, for `mail.drafts.open`.
     let mut elsewhere = FakeMessage::new(
         "Half written",

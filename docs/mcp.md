@@ -41,6 +41,7 @@ argument `mcp`.
 | `list_calendars` | An account's calendars, with their colours and whether each is shown. |
 | `list_events` | The events that overlap a stretch of time, each occurrence of a repeating event on its own. |
 | `get_event` | One event, with its description. |
+| `respond_to_event` | Accept, tentatively accept or decline an invitation. Consequential: the organiser is sent the answer. |
 | `get_sync_status` | For each account: syncing or not, needing sign-in or not, how much is on this computer and when it was last brought up to date. |
 | `list_commands` | Every command, with its id, description and argument schema. |
 | `execute_command` | Run any command by id. |

@@ -5,14 +5,14 @@ for Linux first, with Windows and macOS from the same code. It talks to
 Microsoft Graph only, and everything it can do is also available to AI agents
 through an MCP server, a command line and a local control channel.
 
-**Status: milestone 4 built, awaiting its check.** Mail is built: sync, read,
-search, mark, flag, categorise, move, archive and delete with undo, and write,
-reply, forward and send with formatting, attachments and a signature. The
-calendar can be read: day, work week, week, month and agenda, across your
-calendars, with reminders, and invitations in mail read as invitations. It
-has been run against a real Microsoft 365 mailbox. Events cannot be made,
-changed or answered yet. What is left of this milestone is checking repeating
-events against a real calendar.
+**Status: milestone 5 under way.** Mail is built: sync, read, search, mark,
+flag, categorise, move, archive and delete with undo, and write, reply,
+forward and send with formatting, attachments and a signature. The calendar
+can be read: day, work week, week, month and agenda, across your calendars,
+with reminders. Invitations read as invitations and can be accepted,
+tentatively accepted or declined, from the message or the calendar. It has
+been run against a real Microsoft 365 mailbox. Events cannot be made or
+changed yet.
 
 ![The mail window: folders, the message list and a message open in the reading pane](docs/screenshots/mail.png)
 

@@ -263,7 +263,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             is_cancelled: e.is_cancelled ?? false,
             is_organizer: false,
             organizer: { name: "Sam Taylor", address: "sam.taylor@example.test" },
-            response: "accepted",
+            response: e.response ?? "accepted",
             kind: "singleInstance",
             series_id: null,
             categories: [],
@@ -484,6 +484,16 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "calendar.reminders.snooze": (args) => {
                 done.set(args.event_id, Date.now() + (args.minutes as number) * 60_000);
                 return { snoozed_until: "" };
+            },
+            "calendar.events.respond": (args) => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, and the answer was not taken. Nothing was sent; try again." };
+                const given = { accept: "accepted", tentative: "tentativelyAccepted", decline: "declined" }[args.response as string];
+                const at = (core.events ?? []).findIndex((each) => each.id === args.event_id);
+                if (at < 0) throw { code: "failed", message: "There is no such event on this computer." };
+                if (args.response === "decline") core.events?.splice(at, 1);
+                else (core.events ?? [])[at].response = given;
+                for (const m of mail) if (m.meeting && m.meeting.event_id === args.event_id) m.meeting.response = given;
+                return { response: given, organizer_told: args.send_response !== false };
             },
             "calendar.events.get": (args) => {
                 const found = (core.events ?? []).find((each) => each.id === args.event_id);
@@ -738,6 +748,8 @@ export interface FakeEvent {
     join_url?: string;
     attendees?: { name: string; address: string; kind: string; response: string }[];
     description?: string;
+    /** The owner's own answer. Left out, the meeting has been accepted. */
+    response?: string;
 }
 
 /**

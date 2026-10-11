@@ -2044,3 +2044,150 @@ async fn an_invitation_reads_as_one_with_when_where_and_what_else_is_on() {
     assert_eq!(offline["kind"], "invitation");
     assert_eq!(offline["start"], at("04:00"));
 }
+
+#[tokio::test]
+async fn an_invitation_is_answered_once_and_the_calendar_follows() {
+    use brolga_fake_graph::FakeEvent;
+    let f = Fixture::signed_in().await;
+    let main = f.graph.default_calendar();
+    let day = jiff::Timestamp::now()
+        .checked_add(jiff::Span::new().hours(24 * 10))
+        .unwrap()
+        .strftime("%Y-%m-%d")
+        .to_string();
+    let meeting = |subject: &str, hour: u8| {
+        FakeEvent::new(
+            subject,
+            &format!("{day}T{hour:02}:00:00Z"),
+            &format!("{day}T{:02}:00:00Z", hour + 1),
+        )
+        .invited_by("Sam Taylor", "sam@example.test")
+    };
+    let review = f.graph.add_event(&main, meeting("Budget review", 1));
+    let lunch = f.graph.add_event(&main, meeting("Team lunch", 3));
+    let offsite = f.graph.add_event(&main, meeting("Offsite", 5));
+    let own = f.graph.add_event(
+        &main,
+        FakeEvent::new(
+            "Dentist",
+            &format!("{day}T07:00:00Z"),
+            &format!("{day}T08:00:00Z"),
+        ),
+    );
+    f.sync().await;
+    let answer_of = |id: String| async {
+        let id = id;
+        f.registry
+            .execute("calendar.events.get", json!({ "event_id": id }))
+            .await
+            .map(|found| found["event"]["response"].clone())
+    };
+
+    // Accepted, with a word to the organiser.
+    let accepted = f
+        .run(
+            "calendar.events.respond",
+            json!({ "event_id": review, "response": "accept", "comment": "See you there" }),
+        )
+        .await;
+    assert_eq!(accepted["response"], "accepted");
+    assert_eq!(accepted["organizer_told"], true);
+    assert_eq!(answer_of(review.clone()).await.unwrap(), "accepted");
+
+    // Tentative, without telling the organiser.
+    f.run(
+        "calendar.events.respond",
+        json!({ "event_id": lunch, "response": "tentative", "send_response": false }),
+    )
+    .await;
+    assert_eq!(
+        answer_of(lunch.clone()).await.unwrap(),
+        "tentativelyAccepted"
+    );
+
+    // Declined: it leaves the calendar, here at once and still after a sync.
+    f.run(
+        "calendar.events.respond",
+        json!({ "event_id": offsite, "response": "decline" }),
+    )
+    .await;
+    assert!(answer_of(offsite.clone()).await.is_err());
+    f.sync().await;
+    assert!(answer_of(offsite.clone()).await.is_err());
+    assert_eq!(answer_of(review.clone()).await.unwrap(), "accepted");
+
+    assert_eq!(
+        f.graph.responses(),
+        [
+            (
+                review.clone(),
+                "accept".to_owned(),
+                "See you there".to_owned(),
+                true
+            ),
+            (
+                lunch.clone(),
+                "tentativelyAccept".to_owned(),
+                String::new(),
+                false
+            ),
+            (offsite, "decline".to_owned(), String::new(), true),
+        ]
+    );
+
+    // One's own meeting has no invitation to answer, and nothing is asked of the server.
+    let refused = f
+        .registry
+        .execute(
+            "calendar.events.respond",
+            json!({ "event_id": own, "response": "accept" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("your own meeting"),
+        "{refused}"
+    );
+    // A comment has nowhere to go if the organiser is not told.
+    assert!(
+        f.registry
+            .execute(
+                "calendar.events.respond",
+                json!({ "event_id": lunch, "response": "accept", "comment": "Hi", "send_response": false }),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(f.graph.responses().len(), 3);
+
+    // The answer is taken but the reply is lost: it is found to have been
+    // taken, and the organiser is not sent a second one.
+    f.graph.lose_next_response_answer();
+    let lost = f
+        .run(
+            "calendar.events.respond",
+            json!({ "event_id": lunch, "response": "accept" }),
+        )
+        .await;
+    assert_eq!(lost["response"], "accepted");
+    assert_eq!(f.graph.responses().len(), 4);
+
+    // Out of reach altogether: nothing is changed here, and it says so.
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 40));
+    let offline = f
+        .registry
+        .execute(
+            "calendar.events.respond",
+            json!({ "event_id": review, "response": "decline" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        offline.to_string().contains("could not be reached"),
+        "{offline}"
+    );
+    f.graph.clear_faults();
+    assert_eq!(answer_of(review).await.unwrap(), "accepted");
+    assert_eq!(f.graph.responses().len(), 4);
+}

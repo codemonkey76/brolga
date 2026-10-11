@@ -283,6 +283,26 @@ impl AccountDb {
         Ok(())
     }
 
+    /// The owner's own answer to an invitation, as just given. The next
+    /// sync replaces it with what the server says.
+    pub fn set_event_response(&self, id: &str, response: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE events SET response = ?2 WHERE id = ?1",
+            params![id, response],
+        )?;
+
+        Ok(())
+    }
+
+    /// Take an event out of this computer's copy: it was declined, and the
+    /// server takes a declined event out of the calendar.
+    pub fn forget_event(&self, id: &str) -> Result<(), StoreError> {
+        self.connection()
+            .execute("DELETE FROM events WHERE id = ?1", [id])?;
+
+        Ok(())
+    }
+
     /// The events that overlap the time from `after` up to `before`, both
     /// in UTC, earliest first. With `only_shown`, those of the calendars
     /// that are shown.

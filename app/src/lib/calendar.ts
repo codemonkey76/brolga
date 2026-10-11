@@ -44,6 +44,18 @@ export const listEvents = async (account_id: string, start: Date, end: Date) =>
 export const getEvent = (account_id: string, event_id: string) =>
     execute<{ event: CalendarEvent; description: string; description_complete: boolean }>("calendar.events.get", { account_id, event_id });
 
+export type Answer = "accept" | "tentative" | "decline";
+
+/** Answer an invitation. The organiser is sent the answer unless `send_response` is false. */
+export const respond = (account_id: string, event_id: string, response: Answer, comment: string, send_response: boolean) =>
+    execute<{ response: string; organizer_told: boolean }>("calendar.events.respond", {
+        account_id,
+        event_id,
+        response,
+        send_response,
+        ...(comment ? { comment } : {}),
+    });
+
 export const showCalendar = (account_id: string, calendar_id: string, shown: boolean) =>
     execute("calendar.calendars.set_shown", { account_id, calendar_id, shown });
 

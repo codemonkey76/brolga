@@ -1,4 +1,4 @@
-//! The commands for reading the calendar.
+//! The commands for the calendar.
 //!
 //! Everything is read from this computer's copy, as last synced. Times go
 //! out in UTC with the zone each event was made in beside them; it is for
@@ -341,6 +341,105 @@ async fn event(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandErr
     }))
 }
 
+#[derive(Deserialize)]
+struct Respond {
+    account_id: Option<String>,
+    event_id: String,
+    response: String,
+    comment: Option<String>,
+    send_response: Option<bool>,
+}
+
+/// Answer an invitation. It is done at once and not queued: an answer is
+/// mail to the organiser, and is not sent later behind the owner's back.
+///
+/// Where the request goes unanswered it may or may not have been taken, so
+/// the event is read back before anything is said: a second request would
+/// send the organiser a second answer.
+async fn respond(mailboxes: Arc<Mailboxes>, args: Respond) -> Result<Value, CommandError> {
+    let (action, response) = match args.response.as_str() {
+        "accept" => ("accept", "accepted"),
+        "tentative" => ("tentativelyAccept", "tentativelyAccepted"),
+        "decline" => ("decline", "declined"),
+        other => {
+            return Err(failed(format!(
+                "`{other}` is not an answer: use accept, tentative or decline."
+            )));
+        }
+    };
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let row = mailbox
+        .db
+        .event(&args.event_id)
+        .map_err(failed)?
+        .ok_or_else(|| {
+            failed(format!(
+                "There is no event `{}` on this computer.",
+                args.event_id
+            ))
+        })?;
+    if row.is_organizer {
+        return Err(failed(
+            "This is your own meeting: there is no invitation to answer.",
+        ));
+    }
+    let told = args.send_response.unwrap_or(true);
+    let comment = args.comment.unwrap_or_default();
+    if !told && !comment.trim().is_empty() {
+        return Err(failed(
+            "A comment goes to the organiser with the answer: it cannot be given with send_response false.",
+        ));
+    }
+
+    let asked = mailbox
+        .graph
+        .respond_to_event(&args.event_id, action, comment.trim(), told)
+        .await;
+    if let Err(error) = asked {
+        if !error.is_transient() {
+            return Err(failed(error));
+        }
+        // No answer came back. What the server now says of the event
+        // settles whether the request was taken.
+        let taken = match mailbox.graph.event(&args.event_id).await {
+            Ok(now) => {
+                now.response_status
+                    .and_then(|status| status.response)
+                    .as_deref()
+                    == Some(response)
+            }
+            // A declined event is gone from the calendar.
+            Err(brolga_graph::GraphError::Refused { status: 404, .. }) => action == "decline",
+            Err(_) => {
+                return Err(failed(
+                    "Microsoft 365 could not be reached, so it is not known whether the answer was taken. \
+                     Sync, look at the event, and answer again only if it still shows as not answered.",
+                ));
+            }
+        };
+        if !taken {
+            return Err(failed(
+                "Microsoft 365 could not be reached, and the answer was not taken. Nothing was sent; try again.",
+            ));
+        }
+    }
+
+    // A declined event leaves the calendar, there and so here.
+    if action == "decline" {
+        mailbox.db.forget_event(&args.event_id).map_err(failed)?;
+    } else {
+        mailbox
+            .db
+            .set_event_response(&args.event_id, response)
+            .map_err(failed)?;
+    }
+
+    Ok(json!({ "response": response, "organizer_told": told }))
+}
+
 async fn set_shown(mailboxes: Arc<Mailboxes>, args: Shown) -> Result<Value, CommandError> {
     let account = mailboxes
         .account(args.account_id.as_deref())
@@ -497,6 +596,42 @@ pub(crate) fn register(
             examples: vec![json!({ "event_id": "event-0001" })],
         },
         handler(&mailboxes, event),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "calendar.events.respond".to_owned(),
+            title: "Answer an invitation".to_owned(),
+            description: "Accept, tentatively accept or decline a meeting someone else called. Unless send_response is false \
+                          the organiser is sent the answer by mail, with the comment if one is given. A declined meeting is \
+                          taken out of the calendar. It needs Microsoft 365 to be in reach, and cannot be undone: answer again to change it."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: Some("respond_to_event".to_owned()),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "event_id": { "type": "string", "description": "From calendar.events.list, or the event_id of a meeting invitation read with mail.messages.get." },
+                    "response": { "enum": ["accept", "tentative", "decline"] },
+                    "comment": { "type": "string", "maxLength": 2000, "description": "Words to the organiser, sent with the answer." },
+                    "send_response": { "type": "boolean", "description": "False answers without telling the organiser. Default true." }
+                },
+                "required": ["event_id", "response"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "response": { "enum": ["accepted", "tentativelyAccepted", "declined"] },
+                    "organizer_told": { "type": "boolean" }
+                },
+                "required": ["response", "organizer_told"]
+            }),
+            examples: vec![json!({ "event_id": "event-0002", "response": "tentative", "send_response": false })],
+        },
+        handler(&mailboxes, respond),
     )?;
 
     registry.register(

@@ -272,3 +272,86 @@ test("a cancellation and an answer each say what they are", async ({ page }) => 
     // An answer is not an invitation: there is nothing to say about clashes.
     await expect(card).not.toContainText("calendar then");
 });
+
+const invitation = {
+    id: "inv",
+    folder_id: "inbox",
+    subject: "Budget review",
+    preview: "Please join the budget review.",
+    from: { name: "Sam Taylor", address: "sam.taylor@example.test" },
+    received_at: "2026-10-09T05:00:00Z",
+    is_read: false,
+    has_attachments: false,
+    body: "<p>Please join the budget review.</p>",
+    meeting: {
+        kind: "invitation",
+        start: "2026-10-14T04:00:00Z",
+        end: "2026-10-14T05:00:00Z",
+        is_all_day: false,
+        location: "Harbour Room",
+        event_id: "e2",
+        response: "notResponded",
+        conflicts: [],
+        complete: true,
+    },
+};
+const unanswered = week.map((each) => (each.id === "e2" ? { ...each, response: "notResponded" } : each));
+
+test("an invitation is answered from the message, with a note to the organiser", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));
+    await withCore(page, { accounts: [robin], events: unanswered, mail: [invitation, ...inbox] });
+    await page.getByRole("listbox", { name: "Messages" }).getByRole("option").first().click();
+    const card = page.getByRole("region", { name: "Meeting" });
+    const answers = card.getByRole("group", { name: "Answer the invitation" });
+
+    await answers.getByText("Options").click();
+    await answers.getByRole("textbox", { name: "Note to the organiser" }).fill("I may be five minutes late");
+    await answers.getByRole("button", { name: "Accept" }).click();
+
+    await expect(card).toContainText("You accepted");
+    await expect(answers.getByRole("button", { name: "Accept" })).toHaveAttribute("aria-pressed", "true");
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.respond").at(-1)?.args).toMatchObject({
+        event_id: "e2",
+        response: "accept",
+        comment: "I may be five minutes late",
+        send_response: true,
+    });
+    if (process.env.SCREENSHOTS) await page.screenshot({ path: "../docs/screenshots/invitation.png" });
+
+    // Declined, it has left the calendar, and there is nothing more to answer.
+    await answers.getByRole("button", { name: "Decline" }).click();
+    await expect(card).toContainText("You declined");
+    await expect(answers).toHaveCount(0);
+});
+
+test("an answer that cannot be sent says so and changes nothing", async ({ page }) => {
+    await withCore(page, { accounts: [robin], events: unanswered, mail: [invitation], offline: true });
+    await page.getByRole("listbox", { name: "Messages" }).getByRole("option").first().click();
+    const card = page.getByRole("region", { name: "Meeting" });
+
+    await card.getByRole("button", { name: "Accept" }).click();
+    await expect(card.getByRole("alert")).toContainText("could not be reached");
+    await expect(card).not.toContainText("You accepted");
+    await expect(card.getByRole("button", { name: "Accept" })).toBeEnabled();
+});
+
+test("an invitation is answered from the calendar, quietly, and a declined one goes", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: unanswered });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    const calendar = page.getByRole("region", { name: "Calendar" });
+    await calendar.getByRole("button", { name: /Budget review/ }).click();
+    const panel = page.getByRole("complementary", { name: "Event" });
+    const answers = panel.getByRole("group", { name: "Answer the invitation" });
+
+    await answers.getByText("Options").click();
+    await answers.getByRole("checkbox", { name: "Tell the organiser" }).uncheck();
+    await expect(answers.getByRole("textbox", { name: "Note to the organiser" })).toBeDisabled();
+    await answers.getByRole("button", { name: "Tentative" }).click();
+    await expect(answers.getByRole("button", { name: "Tentative" })).toHaveAttribute("aria-pressed", "true");
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.respond").at(-1)?.args).toMatchObject({ response: "tentative", send_response: false });
+
+    await answers.getByRole("button", { name: "Decline" }).click();
+    await expect(panel).toHaveCount(0);
+    await expect(calendar.getByRole("button", { name: /Budget review/ })).toHaveCount(0);
+});

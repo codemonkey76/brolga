@@ -164,6 +164,27 @@ impl GraphClient {
         decode(&self.get(&url, None).await?)
     }
 
+    /// Answer an invitation ("event: accept", "event: tentativelyAccept"
+    /// and "event: decline", SOURCES.md). `answer` is the last part of the
+    /// address: `accept`, `tentativelyAccept` or `decline`. With
+    /// `send_response` the organiser is sent the answer, with the comment.
+    ///
+    /// Not safe to repeat blindly: a second request sends a second answer.
+    pub async fn respond_to_event(
+        &self,
+        event_id: &str,
+        answer: &str,
+        comment: &str,
+        send_response: bool,
+    ) -> Result<(), GraphError> {
+        let url = format!("{}/me/events/{event_id}/{answer}", self.base);
+        let body = serde_json::json!({ "comment": comment, "sendResponse": send_response });
+        self.send(reqwest::Method::POST, &url, None, Some(&body), false)
+            .await?;
+
+        Ok(())
+    }
+
     /// The id of one of the folders every mailbox has, by its well-known
     /// name. Nothing if this mailbox has no such folder.
     pub async fn well_known_folder(&self, name: &str) -> Result<Option<String>, GraphError> {

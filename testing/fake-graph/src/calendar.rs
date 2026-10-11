@@ -39,6 +39,12 @@ pub struct FakeEvent {
     pub cancelled_days: Vec<String>,
     /// Occurrences that were moved: the day one fell on, and its new start and end in UTC.
     pub moved: Vec<(String, String, String)>,
+    /// Who called the meeting, `(name, address)`, where it was not the
+    /// owner of the mailbox.
+    pub organizer: Option<(String, String)>,
+    /// The owner's answer to it: `notResponded`, `accepted`,
+    /// `tentativelyAccepted` or `declined`.
+    pub response: String,
 }
 
 impl FakeEvent {
@@ -57,6 +63,8 @@ impl FakeEvent {
             series: None,
             cancelled_days: Vec::new(),
             moved: Vec::new(),
+            organizer: None,
+            response: "notResponded".to_owned(),
         }
     }
 
@@ -70,6 +78,13 @@ impl FakeEvent {
 
     pub fn all_day(mut self) -> Self {
         self.is_all_day = true;
+        self
+    }
+
+    /// Make it a meeting someone else called, not yet answered.
+    pub fn invited_by(mut self, name: &str, address: &str) -> Self {
+        self.organizer = Some((name.to_owned(), address.to_owned()));
+        self.show_as = "tentative".to_owned();
         self
     }
 
@@ -203,6 +218,32 @@ impl Calendars {
         }
     }
 
+    /// Answer an invitation ("event: accept" and its fellows): `Err` says
+    /// why not. A declined event leaves the calendar.
+    pub fn respond(&mut self, id: &str, answer: &str) -> Result<(), &'static str> {
+        let own = id.split('.').next().unwrap_or(id).to_owned();
+        let Some(stored) = self.events.get_mut(&own).filter(|stored| !stored.deleted) else {
+            return Err("ErrorItemNotFound");
+        };
+        if stored.event.organizer.is_none() {
+            return Err("organizer");
+        }
+        match answer {
+            "accept" => {
+                stored.event.response = "accepted".to_owned();
+                stored.event.show_as = "busy".to_owned();
+            }
+            "tentativelyAccept" => stored.event.response = "tentativelyAccepted".to_owned(),
+            _ => {
+                stored.event.response = "declined".to_owned();
+                stored.deleted = true;
+            }
+        }
+        self.touched(&own);
+
+        Ok(())
+    }
+
     pub fn expire_tokens(&mut self) {
         self.epoch += 1;
     }
@@ -248,10 +289,13 @@ impl Calendars {
                 "showAs": event.show_as,
                 "sensitivity": "normal",
                 "isCancelled": event.is_cancelled,
-                "isOrganizer": true,
-                "organizer": { "emailAddress": { "name": "Robin Example", "address": "robin@example.test" } },
+                "isOrganizer": event.organizer.is_none(),
+                "organizer": { "emailAddress": match &event.organizer {
+                    Some((name, address)) => json!({ "name": name, "address": address }),
+                    None => json!({ "name": "Robin Example", "address": "robin@example.test" }),
+                } },
                 "attendees": [],
-                "responseStatus": { "response": "organizer" },
+                "responseStatus": { "response": if event.organizer.is_some() { event.response.as_str() } else { "organizer" } },
                 "type": kind,
                 "seriesMasterId": if kind == "singleInstance" { Value::Null } else { json!(id) },
                 "categories": [],
