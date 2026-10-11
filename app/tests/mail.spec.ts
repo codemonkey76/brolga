@@ -70,8 +70,10 @@ test("a link opens in the browser, never in the app", async ({ page }) => {
     await expect.poll(async () => (await ran(page)).find((r) => r.command === "app.open_link")?.args).toEqual({
         url: "https://example.test/agenda",
     });
-    // The app is still the app.
+    // The app is still the app, and the message is still there to read.
     await expect(page.getByRole("navigation", { name: "Folders" })).toBeVisible();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await expect(body(page).getByRole("link", { name: "here" })).toBeVisible();
     expect(page.url()).toBe("http://localhost:4173/");
 });
 
