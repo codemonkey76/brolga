@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash } from "@lucide/svelte";
+    import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash, X } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { type Asked, chooseSavePath, say } from "./commands";
     import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, SEARCH_MOST, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
@@ -520,16 +520,24 @@
     const notJunk = () => within === "junkemail" && moveTo("inbox", "Moved to the inbox");
     const archive = () => within !== "archive" && folders.some((f) => f.well_known === "archive") && moveTo("archive", "Archived");
 
+    /** The changes Microsoft 365 would not take, in words, until the notice of them is closed. */
+    let refusal = $state<string | null>(null);
+
     /** Tell of any change Microsoft 365 would not take. Each has already been put back. */
     async function tellOfRefusals() {
         const of = accountId;
         if (!of) return;
         const refused = await refusedChanges(of);
-        if (refused.length === 0 || accountId !== of) return;
+        if (accountId !== of) return;
         const first = refused[0];
         const others = refused.length > 1 ? `, and ${refused.length - 1} more` : "";
-        problem = `Microsoft 365 would not change the ${first.change} of “${first.subject || "(No subject)"}”${others}, so it has been put back. ${first.error}`;
-        await dismissRefused(accountId);
+        refusal = first ? `Microsoft 365 would not change the ${first.change} of “${first.subject || "(No subject)"}”${others}, so it has been put back. ${first.error}` : null;
+    }
+
+    /** The notice has been read and closed: only now does the core forget what was refused. */
+    function refusalSeen() {
+        refusal = null;
+        if (accountId) dismissRefused(accountId).catch((failure) => (problem = say(failure)));
     }
 
     /** How the list is laid out. This window's business only. */
@@ -594,6 +602,9 @@
     let readingProblem = $state<string | null>(null);
     let imagesShown = $state(false);
     let syncing = $state(false);
+    /** Why the last sync failed. It goes when a sync next works, or when it is dismissed. */
+    let syncProblem = $state<string | null>(null);
+    /** Why something else that was asked for could not be done. It stays until it is dismissed. */
     let problem = $state<string | null>(null);
     let searchBox = $state<HTMLInputElement>();
 
@@ -1033,7 +1044,6 @@
     async function sync() {
         if (syncing) return;
         syncing = true;
-        problem = null;
         // A first sync of a large mailbox takes minutes. What has arrived so
         // far is shown as it comes, not held back until the last of it.
         const showing = setInterval(async () => {
@@ -1047,13 +1057,13 @@
         try {
             const results = await syncNow();
             const failed = results.find((r) => r.account_id === accountId && !r.ok) ?? results.find((r) => !r.ok);
-            if (failed) problem = failed.error;
+            syncProblem = failed ? failed.error : null;
             await loadFolders();
             await refresh();
             if (!failed) await tellOfRefusals();
             await loadDrafts();
         } catch (failure) {
-            problem = say(failure);
+            syncProblem = say(failure);
         } finally {
             clearInterval(showing);
             syncing = false;
@@ -1167,6 +1177,7 @@
         categories = [];
         drafts = [];
         problem = null;
+        refusal = null;
         readingProblem = null;
         reads += 1;
         opening = false;
@@ -1338,9 +1349,15 @@
             </select>
         </div>
 
-        {#if problem}
-            <p class="problem" role="alert">{problem}</p>
-        {/if}
+        {#snippet wrong(words: string, dismiss: () => void)}
+            <p class="problem" role="alert">
+                <span>{words}</span>
+                <button type="button" aria-label="Dismiss" title="Dismiss" onclick={dismiss}><X size={14} aria-hidden="true" /></button>
+            </p>
+        {/snippet}
+        {#if syncProblem}{@render wrong(syncProblem, () => (syncProblem = null))}{/if}
+        {#if refusal}{@render wrong(refusal, refusalSeen)}{/if}
+        {#if problem}{@render wrong(problem, () => (problem = null))}{/if}
 
         <p class="heading">
             {#if searching}
@@ -1746,8 +1763,26 @@
     .problem {
         margin: 0.5rem;
         padding: 0.5rem 0.75rem;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
         border-radius: 0.4rem;
         background: color-mix(in srgb, var(--danger) 12%, var(--surface));
         font-size: 0.85rem;
+    }
+
+    .problem span {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .problem button {
+        flex: none;
+        display: grid;
+        place-items: center;
+        padding: 0.15rem;
+        border: 0;
+        background: none;
+        color: inherit;
     }
 </style>

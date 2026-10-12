@@ -660,10 +660,24 @@ test("a change Microsoft 365 refuses is told of, once", async ({ page }) => {
         refused: [{ message_id: "m3", subject: "Invoice 2041 attached", change: "flag", error: "This message cannot be changed." }],
     });
 
-    const told = page.getByRole("alert");
-    await expect(told).toContainText("would not change the flag of “Invoice 2041 attached”");
-    await expect(told).toContainText("it has been put back");
-    expect((await ran(page)).some((r) => r.command === "app.outbox.dismiss_refused")).toBe(true);
+    const notice = page.getByRole("alert");
+    await expect(notice).toContainText("would not change the flag of “Invoice 2041 attached”");
+    await expect(notice).toContainText("it has been put back");
+    // It is not forgotten until it has been seen: another sync leaves it there.
+    const syncs = await asked(page, "mail.sync");
+    await page.keyboard.press("F9");
+    await expect.poll(() => asked(page, "mail.sync")).toBe(syncs + 1);
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    await expect(notice).toContainText("would not change the flag");
+    expect(await asked(page, "app.outbox.dismiss_refused")).toBe(0);
+
+    await notice.getByRole("button", { name: "Dismiss" }).click();
+    await expect(notice).toHaveCount(0);
+    expect(await asked(page, "app.outbox.dismiss_refused")).toBe(1);
+    await page.keyboard.press("F9");
+    await expect.poll(() => asked(page, "mail.sync")).toBe(syncs + 2);
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    await expect(notice).toHaveCount(0);
 });
 
 test("deleting moves the message away, opens the next, and can be undone", async ({ page }) => {
@@ -1940,4 +1954,34 @@ test("the calendar opens on a meeting's day when asked to from its message, and 
     await page.getByRole("button", { name: "Mail", exact: true }).click();
     await page.getByRole("button", { name: "Calendar", exact: true }).click();
     await expect(heading).toHaveText(/5 Oct – 9 Oct 2026|Oct 5 – Oct 9 2026/);
+});
+
+test("what went wrong stays in sight through a sync until it is dismissed, and a failed sync's notice goes with the next good one", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const sync = page.getByRole("button", { name: "Sync", exact: true });
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await expect(sync).toBeEnabled();
+    await told(page, "failAfter", "mail.messages.move", 0, "The message could not be moved.");
+    await told(page, "failAfter", "mail.sync", 0, "Microsoft 365 could not be reached.");
+
+    await page.keyboard.press("Delete");
+    const moved = page.getByRole("alert").filter({ hasText: "The message could not be moved." });
+    await expect(moved).toBeVisible();
+    await page.keyboard.press("F9");
+    const unsynced = page.getByRole("alert").filter({ hasText: "Microsoft 365 could not be reached." });
+    await expect(unsynced).toBeVisible();
+    await expect(moved).toBeVisible();
+
+    await told(page, "mend", "mail.sync");
+    await expect(sync).toBeEnabled();
+    const syncs = await asked(page, "mail.sync");
+    await page.keyboard.press("F9");
+    await expect.poll(() => asked(page, "mail.sync")).toBe(syncs + 1);
+    await expect(unsynced).toHaveCount(0);
+    await expect(moved).toBeVisible();
+
+    await moved.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page.getByRole("alert")).toHaveCount(0);
 });
