@@ -107,8 +107,25 @@ fn notify(app: tauri::AppHandle, title: String, body: String) {
         .notification()
         .builder()
         .title(short(title, 120))
-        .body(short(body, 240))
+        .body(notification_body(&short(body, 240)))
         .show();
+}
+
+/// A notification's words as the desktop is to be given them. On Linux
+/// the body may be read as markup (the Desktop Notifications Specification
+/// lets a notification server take `<b>`, `<a href>` and `<img>` there),
+/// and these are a stranger's words, an invitation's place among them. So
+/// what would be markup is written out as the characters it is. Windows
+/// and macOS show a body as it stands.
+fn notification_body(words: &str) -> String {
+    if cfg!(target_os = "linux") {
+        words
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    } else {
+        words.to_owned()
+    }
 }
 
 /// A newer Brolga that has been found, kept so that it can be put in when
@@ -502,4 +519,25 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notification_body;
+
+    #[test]
+    fn a_notifications_words_are_never_markup_to_the_desktop() {
+        let place = "<a href=\"https://elsewhere.test\">Room 4</a> & <img src=\"x\"> <b>now</b>";
+
+        let shown = notification_body(place);
+
+        if cfg!(target_os = "linux") {
+            assert!(!shown.contains('<') && !shown.contains('>'), "{shown}");
+            assert!(shown.starts_with("&lt;a href="), "{shown}");
+            assert!(shown.contains(" &amp; "), "{shown}");
+        } else {
+            assert_eq!(shown, place);
+        }
+        assert_eq!(notification_body("Dentist at 10:00"), "Dentist at 10:00");
+    }
 }
