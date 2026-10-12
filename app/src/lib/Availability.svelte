@@ -22,31 +22,39 @@
     let found = $state<FreeBusy | null>(null);
     let problem = $state<string | null>(null);
     let looking = $state(false);
+    /** Bumped with each look, so that an answer to an earlier one is not shown over a later one's. */
+    let looks = 0;
 
     const midnight = $derived(new Date(`${day}T00:00`));
     const STATUS = ["free", "tentative", "busy", "away"];
 
     async function look() {
-        looking = true;
+        const mine = ++looks;
         problem = null;
         try {
             const start = midnight;
             const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
-            found = await freeBusy(accountId, people, start, end, SLOT, Math.max(SLOT, minutes));
+            const got = await freeBusy(accountId, people, start, end, SLOT, Math.max(SLOT, minutes));
+            if (mine === looks) found = got;
         } catch (failure) {
+            if (mine !== looks) return;
             found = null;
             problem = failure && typeof failure === "object" && "message" in failure ? String(failure.message) : String(failure);
         } finally {
-            looking = false;
+            if (mine === looks) looking = false;
         }
     }
 
-    // Asked again whenever who is asked about or the day changes.
+    // Asked again whenever who is asked about or the day changes, once it has stopped changing for a moment:
+    // an address being typed reads as one several letters before it is finished.
     $effect(() => {
         void people.join(",");
         void day;
         void minutes;
-        if (!Number.isNaN(+midnight) && people.length > 0) look();
+        if (Number.isNaN(+midnight) || people.length === 0) return;
+        looking = true;
+        const waiting = setTimeout(look, 300);
+        return () => clearTimeout(waiting);
     });
 
     /** The slots of the working day, each with where it is in the day's view. */

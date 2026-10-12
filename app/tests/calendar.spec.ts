@@ -1087,3 +1087,24 @@ test("a reminder that could not be dismissed is shown again, and one within two 
     await reminders.getByRole("button", { name: "Dismiss" }).click();
     await expect(reminders).toHaveCount(0);
 });
+
+test("when people are free is looked up once an address has been typed, not at each letter of it", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:00:00Z"));
+    await withCore(page, { accounts: [robin], events: [] });
+    await page.getByRole("button", { name: "Calendar" }).click();
+    await page.getByRole("button", { name: "New event" }).click();
+    const form = page.getByRole("form", { name: "New event" });
+    const looked = async () => (await ran(page)).filter((r) => r.command === "calendar.free_busy").length;
+
+    await form.getByRole("combobox", { name: "Invite" }).fill("sam.taylor@example.test");
+    await form.getByRole("button", { name: "See when people are free" }).click();
+    await expect(form.getByRole("region", { name: "Availability" }).getByRole("row", { name: /^sam/ })).toBeVisible();
+    expect(await looked()).toBe(1);
+
+    // From ".t" on this reads as an address, four letters running.
+    await form.getByRole("combobox", { name: "Invite" }).press("End");
+    await form.getByRole("combobox", { name: "Invite" }).pressSequentially(", jo@example.test");
+    await expect(form.getByRole("region", { name: "Availability" }).getByRole("row", { name: /^jo/ })).toBeVisible();
+    expect(await looked()).toBe(2);
+    expect((await ran(page)).filter((r) => r.command === "calendar.free_busy").at(-1)?.args.people).toEqual(["robin@example.test", "sam.taylor@example.test", "jo@example.test"]);
+});
