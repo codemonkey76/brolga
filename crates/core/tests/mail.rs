@@ -5267,8 +5267,11 @@ async fn an_attachment_is_listed_with_the_name_it_is_saved_under_and_whether_tha
             json!({ "message_id": id, "attachment_id": first }),
         )
         .await;
-    assert!(
-        saved["path"].as_str().unwrap().ends_with("/invoice.exe"),
+    assert_eq!(
+        std::path::Path::new(saved["path"].as_str().unwrap())
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("invoice.exe"),
         "{saved}"
     );
 }
