@@ -744,6 +744,11 @@ test("an event is dragged to another time and day, and stretched by its foot", a
     const moved = await centre(/Focus/);
     await dragBy({ x: moved.x, y: moved.box.y + moved.box.height - 2 }, 0, 24);
     expect((await updates()).at(-1)).toMatchObject({ event_id: "m1", start: "2026-10-15T14:30", end: "2026-10-15T16:00" });
+    // The click after that is a click: the event it is on opens.
+    await calendar.getByRole("button", { name: /Theirs/ }).click();
+    await expect(page.getByRole("complementary", { name: "Event" }).getByRole("heading", { level: 2 })).toHaveText("Theirs");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("complementary", { name: "Event" })).toHaveCount(0);
 
     // A meeting with people invited is asked about before anyone is told.
     const meeting = await centre(/Kick-off/);

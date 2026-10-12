@@ -28,6 +28,8 @@
     let columns: HTMLDivElement[] = $state([]);
 
     function hold(pointer: PointerEvent, event: CalendarEvent, day: number, from: number, to: number, resize: boolean) {
+        // A press is the start of something new, whatever the last drag left behind.
+        dragged = false;
         // Only an event that lies within one day, and that may be changed.
         const { start, end } = span(event);
         if (pointer.button !== 0 || !onMove || !movable(event) || !sameDay(start, new Date(+end - 1))) return;
@@ -59,7 +61,10 @@
         drag = null;
         held = null;
         if (!done?.moved) return;
+        // The click that ends this drag comes at once, if it comes: a drag by the foot ends on the foot, which is
+        // not clicked. So it is forgotten straight after, and no later click is taken for it.
         dragged = true;
+        setTimeout(() => (dragged = false));
         const day = days[done.day];
         const at = (minutes: number) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, minutes);
         const was = span(done.event);
