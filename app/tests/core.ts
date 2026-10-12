@@ -204,6 +204,8 @@ export interface FakeCore {
     archives?: { id: string; name: string; source: string; state: string; messages: number; messages_done: number | null; messages_total: number | null; skipped: number; error: string | null }[];
     /** The inbox's rules, as `mail.rules.list` gives them, less the sentence. */
     rules?: Record<string, unknown>[];
+    /** How automatic replies are set to begin with, where that is not off. */
+    replies?: Record<string, unknown>;
     /** Why automatic replies cannot be read, if they cannot. */
     repliesRefused?: string;
     /** The files the file dialog says were chosen. Left out, it is dismissed. */
@@ -377,6 +379,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             external_audience: "nobody",
             start: null,
             end: null,
+            ...(core.replies ?? {}),
         };
         const when = (time: unknown) => (time ? { date_time: String(time).replace("Z", ""), time_zone: "UTC" } : null);
         const acted = (ids: unknown, apply: (m: (typeof mail)[number]) => (() => void) | null) => {

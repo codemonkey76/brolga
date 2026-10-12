@@ -798,3 +798,24 @@ test("on a dark window the dot of a colour has a ring, so that a dark one is see
     await page.emulateMedia({ colorScheme: "light" });
     await expect(dot).toHaveCSS("box-shadow", "none");
 });
+
+test("automatic replies scheduled by another zone's clock show when that is here, and are kept as they are", async ({ page }) => {
+    // Set elsewhere, in London's time: an hour ahead of UTC until the last Sunday of October.
+    const replies = {
+        status: "scheduled",
+        internal_message: "Away.",
+        start: { date_time: "2026-10-20T08:00:00.0000000", time_zone: "Europe/London" },
+        end: { date_time: "2026-10-26T17:30:00.0000000", time_zone: "Europe/London" },
+    };
+    await withCore(page, { accounts: [robin], replies });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Automatic replies" }).click();
+    const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
+
+    await expect(form.getByLabel("From", { exact: true })).toHaveValue("2026-10-20T17:00");
+    await expect(form.getByLabel("Until", { exact: true })).toHaveValue("2026-10-27T03:30");
+    // Something else is changed, and the times go back as the moments they were.
+    await form.getByLabel("To people in your organisation").fill("Away until Monday.");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.automatic_replies.set")?.args).toMatchObject({ start: "2026-10-20T07:00:00Z", end: "2026-10-26T17:30:00Z" });
+});
