@@ -494,10 +494,6 @@
         font-size: 0.85rem;
     }
 
-    .danger {
-        color: var(--danger);
-    }
-
     dl {
         display: grid;
         grid-template-columns: 6rem 1fr;

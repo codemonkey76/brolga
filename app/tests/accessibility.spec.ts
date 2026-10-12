@@ -24,6 +24,11 @@ const screens: Record<string, (page: Page) => Promise<void>> = {
         await page.getByRole("button", { name: "New message" }).click();
         await expect(page.getByRole("textbox", { name: "Subject" })).toBeVisible();
     },
+    "a message about to be thrown away": async (page) => {
+        await page.getByRole("button", { name: "New message" }).click();
+        await page.getByRole("button", { name: "Discard" }).click();
+        await expect(page.getByRole("button", { name: "Discard for good?" })).toBeVisible();
+    },
     "the calendar": async (page) => {
         await page.getByRole("button", { name: "Calendar" }).click();
         await expect(page.getByRole("button", { name: "New event" })).toBeVisible();

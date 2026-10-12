@@ -75,6 +75,10 @@ button.danger {
     color: white;
 }
 
+button.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 85%, black);
+}
+
 button.link {
     align-self: flex-start;
     padding: 0;

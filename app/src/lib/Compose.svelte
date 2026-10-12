@@ -664,9 +664,4 @@
         border-top: 1px solid var(--line);
         font-size: 0.8rem;
     }
-
-    .danger {
-        color: var(--danger);
-        border-color: var(--danger);
-    }
 </style>

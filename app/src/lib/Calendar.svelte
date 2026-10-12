@@ -690,10 +690,6 @@
         font-size: 0.8rem;
     }
 
-    .drop .danger {
-        color: var(--danger);
-    }
-
     .proposal {
         display: block;
         font-size: 0.85rem;
@@ -754,10 +750,6 @@
         align-self: center;
         font-size: 0.85rem;
         font-weight: 600;
-    }
-
-    .tools .danger {
-        color: var(--danger);
     }
 
     .calendar {
