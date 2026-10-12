@@ -1045,3 +1045,20 @@ test.describe("where the week starts on Monday", () => {
         await expect(view.locator(".month").getByRole("button", { name: /day,? / }).first()).toHaveAccessibleName(/Monday,? 28 September/);
     });
 });
+
+test("an invitation says the last day of a meeting of several, and the day one that runs past midnight ends", async ({ page }) => {
+    const days = { ...invitation, id: "days", subject: "Conference", preview: "Three days.", meeting: { ...invitation.meeting, is_all_day: true, start: "2026-10-14T00:00:00Z", end: "2026-10-17T00:00:00Z" } };
+    const late = { ...invitation, id: "late", subject: "Release night", preview: "Into the small hours.", meeting: { ...invitation.meeting, start: "2026-10-14T12:00:00Z", end: "2026-10-14T16:00:00Z" } };
+    const day = { ...invitation, id: "day", subject: "Planning day", preview: "One day.", meeting: { ...invitation.meeting, is_all_day: true, start: "2026-10-14T00:00:00Z", end: "2026-10-15T00:00:00Z" } };
+    await withCore(page, { accounts: [robin], mail: [days, late, day], events: unanswered });
+    const rows = page.getByRole("listbox", { name: "Messages" }).getByRole("option");
+    const card = page.getByRole("region", { name: "Meeting" });
+
+    await rows.filter({ hasText: "Conference" }).click();
+    await expect(card).toContainText("Wed, Oct 14, 2026 to Fri, Oct 16, 2026, all day");
+    // Ten at night until two the next morning, in Brisbane.
+    await rows.filter({ hasText: "Release night" }).click();
+    await expect(card).toContainText(/Wed, Oct 14, 2026, 10:00\s?PM to Thu, Oct 15, 2026, 2:00\s?AM/);
+    await rows.filter({ hasText: "Planning day" }).click();
+    await expect(card).toContainText("Wed, Oct 14, 2026, all day");
+});

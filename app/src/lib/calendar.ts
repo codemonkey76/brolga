@@ -270,7 +270,7 @@ export function step(view: View, anchor: Date, by: 1 | -1): Date {
  * wherever it is seen from, so its dates are read as written and not moved
  * by the zone.
  */
-export function span(event: CalendarEvent): { start: Date; end: Date } {
+export function span(event: Pick<CalendarEvent, "start" | "end" | "is_all_day">): { start: Date; end: Date } {
     if (!event.is_all_day) return { start: new Date(event.start), end: new Date(event.end) };
     const day = (text: string) => {
         const [year, month, date] = text.slice(0, 10).split("-").map(Number);
@@ -290,7 +290,7 @@ export function onDay(event: CalendarEvent, day: Date): boolean {
 export const timeSaid = (date: Date) => date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
 /** A span as a person would say it. */
-export function whenSaid(event: CalendarEvent): string {
+export function whenSaid(event: Pick<CalendarEvent, "start" | "end" | "is_all_day">): string {
     const { start, end } = span(event);
     const day = (date: Date) => date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
     if (event.is_all_day) {

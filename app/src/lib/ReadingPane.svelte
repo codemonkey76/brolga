@@ -1,7 +1,7 @@
 <script lang="ts">
     import ContactCard from "./ContactCard.svelte";
     import { CalendarDays } from "@lucide/svelte";
-    import type { Answer, Proposed } from "./calendar";
+    import { type Answer, type Proposed, whenSaid } from "./calendar";
     import Rsvp from "./Rsvp.svelte";
     import { recolour, sheet } from "./darken";
     import { type Attachment, type Category, type Message, type Opened, categoryColour, size, when, who } from "./mail";
@@ -61,18 +61,12 @@
     };
     const ANSWERED: Record<string, string> = { accepted: "You accepted", tentativelyAccepted: "You accepted tentatively", declined: "You declined" };
 
-    /** When a meeting is, in this computer's own time. An all-day one is read as the days it names. */
-    function meetingWhen(meeting: NonNullable<Opened["meeting"]>): string {
-        if (!meeting.start || !meeting.end) return "";
-        const day: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short", year: "numeric" };
-        if (meeting.is_all_day) {
-            const [year, month, date] = meeting.start.slice(0, 10).split("-").map(Number);
-            return `${new Date(year, month - 1, date).toLocaleDateString(undefined, day)}, all day`;
-        }
-        const time: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
-        const [start, end] = [new Date(meeting.start), new Date(meeting.end)];
-        return `${start.toLocaleDateString(undefined, day)}, ${start.toLocaleTimeString(undefined, time)} to ${end.toLocaleTimeString(undefined, time)}`;
-    }
+    /**
+     * When a meeting is, in this computer's own time, as the calendar says it: an all-day one is read as the days
+     * it names, to its last day, and one that ends on another day says which.
+     */
+    const meetingWhen = (meeting: NonNullable<Opened["meeting"]>) =>
+        meeting.start && meeting.end ? whenSaid({ start: meeting.start, end: meeting.end, is_all_day: meeting.is_all_day ?? false }) : "";
 
 
     /** Where the link under the pointer really goes. */
