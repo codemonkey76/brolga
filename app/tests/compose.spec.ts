@@ -114,3 +114,19 @@ test("someone invited with a comma in their name is still one person when the me
         { address: "jo@example.test", kind: "required" },
     ]);
 });
+
+test("two people suggested with one address are both listed, and the list still changes", async ({ page }) => {
+    const twice = [
+        { name: "Sam Taylor", address: "sam.taylor@example.test" },
+        { name: "Sam (work)", address: "sam.taylor@example.test" },
+        { name: "Jo Nguyen", address: "jo.nguyen@example.test" },
+    ];
+    const form = await newMessage(page, { suggested: twice });
+    const to = form.getByRole("combobox", { name: "To" });
+
+    await to.pressSequentially("sa");
+    await expect(form.getByRole("option")).toHaveText(["Sam Taylor sam.taylor@example.test", "Sam (work) sam.taylor@example.test", "Jo Nguyen jo.nguyen@example.test"]);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(to).toHaveValue("Sam (work) <sam.taylor@example.test>, ");
+});

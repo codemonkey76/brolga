@@ -92,7 +92,8 @@
     />
     {#if offered.length > 0}
         <ul id={listId} role="listbox" aria-label="Suggested people">
-            {#each offered as person, index (person.address)}
+            <!-- Not keyed by address: two people offered may share one. -->
+            {#each offered as person, index}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <li id="{listId}-{index}" role="option" aria-selected={index === at} class:at={index === at} onmousedown={(event) => event.preventDefault()} onclick={() => choose(person)}>
                     {#if person.name}<span class="name">{person.name}</span>{/if}
