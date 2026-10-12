@@ -57,6 +57,26 @@
     /** The message being asked about, once "Delete permanently" has been pressed once. */
     let sureOf = $state<string | null>(null);
     let dayMenu = $state<HTMLDetailsElement>();
+    let tagMenu = $state<HTMLDetailsElement>();
+
+    /** A menu left open is put away by a click anywhere outside it. */
+    function away(event: MouseEvent) {
+        for (const menu of [dayMenu, tagMenu]) {
+            if (menu?.open && !(event.target instanceof Node && menu.contains(event.target))) menu.open = false;
+        }
+    }
+
+    /** Escape puts a menu away, and does nothing else: it is not also a key for the mail. */
+    function escape(event: KeyboardEvent) {
+        if (event.key !== "Escape") return;
+        for (const menu of [dayMenu, tagMenu]) {
+            if (!menu?.open) continue;
+            event.preventDefault();
+            event.stopPropagation();
+            menu.open = false;
+            menu.querySelector("summary")?.focus();
+        }
+    }
     /** What the actions are for. */
     const all = $derived(message ? [message] : several);
     const none = $derived(all.length === 0);
@@ -82,6 +102,8 @@
         onSetFlag("flagged", day);
     }
 </script>
+
+<svelte:window onclick={away} onkeydowncapture={escape} />
 
 <!-- Each button is an icon alone. Its name is there for a screen reader and
      on hover, with the key that does the same. -->
@@ -164,7 +186,7 @@
         </details>
     {/if}
     {#if !none && categories.length > 0}
-        <details class="menu">
+        <details class="menu" bind:this={tagMenu}>
             <summary aria-label="Categories" title="Categories"><Tag size={SIZE} aria-hidden="true" /></summary>
             <ul aria-label="Categories">
                 {#each categories as each (each.name)}

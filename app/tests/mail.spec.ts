@@ -1090,6 +1090,9 @@ test("a message is given categories, shown in their colours, and that can be und
     await expect(first.getByLabel("Category Red category")).toHaveCount(0);
     await expect(first.getByLabel("Category Clients")).toBeVisible();
 
+    // The click on Undo put the menu away.
+    await expect(menu).toBeHidden();
+    await page.getByRole("toolbar", { name: "Message actions" }).locator('summary[aria-label="Categories"]').click();
     await menu.getByRole("checkbox", { name: "Clients" }).uncheck();
     await expect(first.getByLabel("Category Clients")).toHaveCount(0);
     await expect(pane.getByLabel("This message's categories")).toHaveCount(0);
@@ -1432,7 +1435,8 @@ test("several messages are marked, flagged and given a category together, each k
     await expect(rows.nth(1).getByLabel("Flagged")).toBeVisible();
     await expect(rows.nth(2).getByLabel("Flagged")).toBeVisible();
 
-    // The menu is still open. One of the two has it, so the box is neither ticked nor clear.
+    // One of the two has it, so the box is neither ticked nor clear.
+    await actions.locator('summary[aria-label="Categories"]').click();
     await expect(menu.getByRole("checkbox", { name: "Red category" })).toHaveJSProperty("indeterminate", true);
     await menu.getByRole("checkbox", { name: "Clients" }).check();
     await expect(rows.nth(1).getByLabel("Category Clients")).toBeVisible();
@@ -2067,4 +2071,26 @@ test("a line clicked while a message is being written is opened, and marked read
     await form.getByRole("button", { name: "Close" }).click();
     await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Budget review moved to Thursday");
     await expect(first).not.toHaveClass(/unread/);
+});
+
+test("the menus for a day to follow up by and for categories are put away by Escape or a click elsewhere", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const actions = page.getByRole("toolbar", { name: "Message actions" });
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+
+    for (const [summary, list] of [["Categories", "Categories"], ["Flag for…", "Follow up by"]]) {
+        const menu = page.getByRole("list", { name: list });
+        await actions.locator(`summary[aria-label="${summary}"]`).click();
+        await expect(menu).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(menu).toBeHidden();
+
+        await actions.locator(`summary[aria-label="${summary}"]`).click();
+        await expect(menu).toBeVisible();
+        await page.getByRole("region", { name: "Message" }).getByRole("heading").click();
+        await expect(menu).toBeHidden();
+    }
+    // The message is as it was: Escape put a menu away and did nothing else.
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Budget review moved to Thursday");
 });
