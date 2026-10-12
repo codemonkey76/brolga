@@ -103,12 +103,17 @@ impl Accounts {
     }
 
     /// Forget an account and its saved sign-in. True if there was one.
+    ///
+    /// The saved sign-in goes first. If the secret store will not let it
+    /// go, the account stays in the list to be removed another time: taken
+    /// off the list first, it would leave a refresh token that nothing
+    /// points at and nothing would ever delete.
     pub async fn remove(&self, id: &str) -> Result<bool, AccountError> {
-        let removed = self.db.remove_account(id)?;
+        let mut live = self.live.lock().await;
         self.secrets.delete(&secret_key(id))?;
-        self.live.lock().await.remove(id);
+        live.remove(id);
 
-        Ok(removed)
+        Ok(self.db.remove_account(id)?)
     }
 
     /// An access token for this account that is good for at least the next
