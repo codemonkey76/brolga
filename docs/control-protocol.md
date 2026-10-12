@@ -36,7 +36,7 @@ comes back on the answer:
 An answer has either a `result` or an `error`:
 
 ```json
-{"id": 2, "result": {"name": "Brolga", "version": "0.1.6"}}
+{"id": 2, "result": {"name": "Brolga", "version": "0.1.7"}}
 {"id": 3, "error": {"code": "unknown_command", "message": "there is no command called `mail.nothing`"}}
 ```
 

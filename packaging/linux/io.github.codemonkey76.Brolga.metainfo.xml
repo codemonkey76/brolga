@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.7" date="2026-10-12">
+      <description>
+        <p>Mail syncs again: 0.1.5 and 0.1.6 asked Microsoft 365 for something it refuses, and fetched nothing.</p>
+      </description>
+    </release>
     <release version="0.1.6" date="2026-10-12">
       <description>
         <p>A bar along the bottom says what is being fetched, every folder has its newest mail before any is fetched whole, and a newer Brolga is offered and installed from the window.</p>
