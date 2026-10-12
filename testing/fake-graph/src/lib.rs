@@ -758,6 +758,13 @@ impl FakeGraph {
         lock(&self.shared).mailbox.folders()
     }
 
+    /// Write the links to further pages as links to another server, as a
+    /// server that had been got at might: `base` stands where this
+    /// server's own address would.
+    pub fn write_links_to(&self, base: &str) {
+        lock(&self.shared).base = base.trim_end_matches('/').to_owned();
+    }
+
     /// Every request received so far, oldest first, as `GET /v1.0/me`.
     pub fn requests(&self) -> Vec<String> {
         lock(&self.shared).requests.clone()
@@ -850,7 +857,7 @@ async fn other_mailbox(State(shared): State<Shared>, mut request: Request, next:
     else {
         return next.run(request).await;
     };
-    let address = address.to_lowercase();
+    let address = percent_decoded(address).to_lowercase();
     let granted: Vec<String> = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -939,6 +946,31 @@ async fn other_mailbox(State(shared): State<Shared>, mut request: Request, next:
     let mut response = Response::from_parts(parts, body);
     response.headers_mut().remove(header::CONTENT_LENGTH);
     response
+}
+
+/// A part of a path as it was before it was percent-encoded.
+fn percent_decoded(part: &str) -> String {
+    let bytes = part.as_bytes();
+    let mut plain = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let encoded = (bytes[at] == b'%')
+            .then(|| part.get(at + 1..at + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match encoded {
+            Some(byte) => {
+                plain.push(byte);
+                at += 3;
+            }
+            None => {
+                plain.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&plain).into_owned()
 }
 
 async fn require_token(request: Request, next: Next) -> Response {
