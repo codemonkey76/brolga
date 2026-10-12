@@ -701,3 +701,50 @@ async fn a_question_put_to_the_server_comes_back_as_it_was_answered_taken_or_ref
 
     assert!(client.probe("messages").await.is_err());
 }
+
+#[tokio::test]
+async fn messages_answered_or_forwarded_elsewhere_are_marked_a_part_at_a_time_and_then_only_what_changed()
+ {
+    let f = Fixture::new().await;
+    let ids = f.graph.add_messages(&f.inbox, 260);
+    // All but the last ten were answered, in one way or another.
+    for (n, id) in ids.iter().take(250).enumerate() {
+        f.graph
+            .set_last_verb_at(id, 102 + (n % 3) as u32, "2026-01-01T09:00:00Z");
+    }
+    let sync = f.sync(100);
+    sync.sync_all().await.unwrap();
+    let marked = || {
+        f.db.messages(&f.inbox, 0, u32::MAX)
+            .unwrap()
+            .into_iter()
+            .filter(|m| !m.last_action.is_empty())
+            .count()
+    };
+    assert_eq!(marked(), 0, "a folder's sync does not say");
+
+    // One page, and it stops: the rest is for the next sync.
+    assert_eq!(sync.sync_last_actions(1).await.unwrap(), 200);
+    assert_eq!(marked(), 200);
+    // A freshly started Brolga carries on from where that one stopped.
+    assert_eq!(f.sync(100).sync_last_actions(5).await.unwrap(), 50);
+    assert_eq!(marked(), 250);
+    let how = |id: &str| f.db.message(id).unwrap().unwrap().last_action;
+    assert_eq!(
+        (how(&ids[0]), how(&ids[1]), how(&ids[2]), how(&ids[259])),
+        (
+            "replied".to_owned(),
+            "replied_all".to_owned(),
+            "forwarded".to_owned(),
+            String::new()
+        )
+    );
+
+    // After a whole pass, only what has changed since is asked after.
+    f.graph.set_last_verb(&ids[259], 104);
+    let before = f.graph.requests().len();
+    // One request, and the one message given: not the 250 again.
+    assert_eq!(f.sync(100).sync_last_actions(5).await.unwrap(), 1);
+    assert_eq!(f.graph.requests().len(), before + 1);
+    assert_eq!(how(&ids[259]), "forwarded");
+}

@@ -36,6 +36,8 @@ pub struct FakeMessage {
     /// The number of the last thing done with it, where anything has been:
     /// 102 a reply, 103 a reply to all, 104 forwarding it ([MS-OXOMSG]).
     pub last_verb: Option<u32>,
+    /// When that was done, UTC, as `2026-10-01T09:00:00Z`.
+    pub last_verb_at: Option<String>,
     pub is_draft: bool,
     pub categories: Vec<String>,
     /// What it says of a meeting, if it is about one.
@@ -87,6 +89,7 @@ impl FakeMessage {
             flag: "notFlagged".to_owned(),
             flag_due: None,
             last_verb: None,
+            last_verb_at: None,
             is_draft: false,
             categories: Vec::new(),
             meeting: None,
@@ -361,12 +364,31 @@ impl Mailbox {
     }
 
     /// Note that a message has been answered or sent on, as the server does.
-    pub fn set_last_verb(&mut self, id: &str, verb: u32) {
+    pub fn set_last_verb(&mut self, id: &str, verb: u32, at: &str) {
         if let Some(stored) = self.messages.get_mut(id) {
             stored.message.last_verb = Some(verb);
+            stored.message.last_verb_at = Some(at.to_owned());
             let folder = stored.folder.clone();
             self.log_message(&folder, id, false);
         }
+    }
+
+    /// The messages that have been answered or forwarded, each with the
+    /// number that says which, in a settled order: all of them, or those it
+    /// was done to from a moment on.
+    pub fn answered(&self, since: Option<&str>) -> Vec<(String, u32)> {
+        let mut all: Vec<(String, u32)> = self
+            .messages
+            .iter()
+            .filter(|(_, stored)| {
+                since.is_none_or(|since| stored.message.last_verb_at.as_deref() >= Some(since))
+            })
+            .filter_map(|(id, stored)| Some((id.clone(), stored.message.last_verb?)))
+            .filter(|(_, verb)| *verb >= 102)
+            .collect();
+        all.sort();
+
+        all
     }
 
     /// A message's flag, as the server has it.

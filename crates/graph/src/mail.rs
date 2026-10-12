@@ -159,12 +159,19 @@ pub struct ExtendedProperty {
 /// ("Outlook extended properties overview": `{type} {proptag}`). The tag and
 /// what its numbers mean are in [MS-OXOMSG], PidTagLastVerbExecuted.
 ///
-/// A sync does not ask for it. "message: delta" says a delta query takes
-/// `$expand` for messages, but Microsoft 365 refuses this one there (400,
-/// "Parsing OData Select and Expand failed"), and a refused request stops
-/// the whole sync. Until it is fetched some other way no message has it,
-/// and none is marked as answered.
+/// A sync of a folder does not ask for it. "message: delta" says a delta
+/// query takes `$expand` for messages, but Microsoft 365 refuses this one
+/// there (400, "Parsing OData Select and Expand failed"), and a refused
+/// request stops the whole sync. It is asked for on its own, of the
+/// messages that have it, in `GraphClient::last_actions`.
 pub(crate) const LAST_VERB: &str = "Integer 0x1081";
+
+/// The messages that have been answered or forwarded, and the property
+/// beside each, as "Get singleValueLegacyExtendedProperty" shows: a filter
+/// on the property's value cast to a number, and the property expanded.
+/// Tried on a real mailbox with `brolga-cli probe` before it was built on.
+pub(crate) const LAST_VERB_QUERY: &str = "singleValueExtendedProperties/Any(ep: ep/id eq 'Integer 0x1081' and cast(ep/value, Edm.Int32) ge 102)\
+    &$expand=singleValueExtendedProperties($filter=id eq 'Integer 0x1081')";
 
 impl Message {
     /// The number of the last thing done with the message, where the server

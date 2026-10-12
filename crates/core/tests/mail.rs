@@ -4644,3 +4644,30 @@ async fn a_large_pst_imports_within_bounded_memory_and_is_searchable() {
     );
     assert!(!found["messages"].as_array().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_sync_marks_what_was_answered_or_forwarded_elsewhere() {
+    let f = Fixture::signed_in().await;
+    let quote = f.graph.add_message(
+        &f.inbox,
+        message("Quote", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.graph.add_message(
+        &f.inbox,
+        message("Plan", "Sam Taylor", "2026-10-01T08:00:00Z"),
+    );
+    f.graph.set_last_verb(&quote, 103);
+
+    f.sync().await;
+
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": f.inbox }))
+        .await;
+    assert_eq!(
+        (
+            listed["messages"][0]["last_action"].clone(),
+            listed["messages"][1]["last_action"].clone()
+        ),
+        (json!("replied_all"), Value::Null)
+    );
+}

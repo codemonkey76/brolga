@@ -8,7 +8,7 @@
 
     /** What a sync is busy with, as `app.sync.status` says it. */
     interface Now {
-        doing: "sending" | "folders" | "mail" | "bodies" | "calendar" | "contacts";
+        doing: "sending" | "folders" | "mail" | "bodies" | "markers" | "calendar" | "contacts";
         folder?: string;
         fetched?: number | null;
         total?: number | null;
@@ -146,6 +146,8 @@
                 return progress ? `Fetching ${now.folder || "a folder"}: ${count(progress.fetched)} of ${count(progress.total)} messages` : `Checking ${now.folder || "a folder"} for new mail…`;
             case "bodies":
                 return "Fetching recent messages to read offline…";
+            case "markers":
+                return "Checking which messages you have answered…";
             case "calendar":
                 return "Fetching the calendar…";
             case "contacts":

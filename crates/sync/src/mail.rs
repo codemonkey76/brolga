@@ -13,6 +13,13 @@ use crate::SyncError;
 /// sync gives up and reports it. One is ordinary; a stream of them is not.
 const MAX_RESTARTS: u32 = 3;
 
+/// Where the asking after answered and forwarded messages has got to: the
+/// page to ask next while a pass is under way, when that pass began, and
+/// the moment the last finished pass covered up to.
+const ACTIONS_LINK: &str = "last_actions.link";
+const ACTIONS_BEGAN: &str = "last_actions.began";
+const ACTIONS_SINCE: &str = "last_actions.since";
+
 /// What a sync did, for showing progress.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Synced {
@@ -211,6 +218,71 @@ impl MailSync {
         // As for folders: a full pass is followed at once by the round
         // that carries what changed while it ran.
         Ok(round == Round::Finished && !state.reconciling)
+    }
+
+    /// Learn which messages have been answered or forwarded, wherever that
+    /// was done, and mark them. The server does not say so in a folder's
+    /// sync, so it is asked on its own: the first time of the whole mailbox,
+    /// and after that of what has changed since the last time.
+    ///
+    /// At most `pages` pages are fetched in one go. A mailbox with more than
+    /// that carries on from where it stopped at the next sync. Gives back
+    /// how many messages were marked.
+    pub async fn sync_last_actions(&self, pages: u32) -> Result<u32, SyncError> {
+        let mut link = self.db.setting(ACTIONS_LINK)?.filter(|l| !l.is_empty());
+        let since = self.db.setting(ACTIONS_SINCE)?.filter(|s| !s.is_empty());
+        // When this pass began, a little early: what changes while it runs,
+        // or just before, is asked for again by the next.
+        let began = match self.db.setting(ACTIONS_BEGAN)?.filter(|b| !b.is_empty()) {
+            Some(began) if link.is_some() => began,
+            _ => {
+                let began = (jiff::Timestamp::now() - jiff::SignedDuration::from_mins(10))
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string();
+                self.db.set_setting(ACTIONS_BEGAN, &began)?;
+                began
+            }
+        };
+
+        let mut marked = 0;
+        for _ in 0..pages {
+            let page = self
+                .graph
+                .last_actions(link.as_deref(), since.as_deref())
+                .await;
+            let (found, next) = match page {
+                Ok(page) => page,
+                Err(error) => {
+                    // A link the server no longer takes is dropped, and the
+                    // pass begins again next time.
+                    self.db.set_setting(ACTIONS_LINK, "")?;
+                    return Err(error.into());
+                }
+            };
+            for (id, verb) in found {
+                let action = match verb {
+                    102 => "replied",
+                    103 => "replied_all",
+                    104 => "forwarded",
+                    _ => continue,
+                };
+                self.db.mark_last_action(&id, action)?;
+                marked += 1;
+            }
+            match next {
+                Some(next) => {
+                    self.db.set_setting(ACTIONS_LINK, &next)?;
+                    link = Some(next);
+                }
+                None => {
+                    self.db.set_setting(ACTIONS_LINK, "")?;
+                    self.db.set_setting(ACTIONS_SINCE, &began)?;
+                    return Ok(marked);
+                }
+            }
+        }
+
+        Ok(marked)
     }
 
     /// Fetch the bodies of recent messages that are not here yet, newest

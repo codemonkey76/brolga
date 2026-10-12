@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::Semaphore;
 
 use crate::delta::{read_list_page, read_page};
-use crate::mail::{ATTACHMENT_SELECT, FOLDER_SELECT, MESSAGE_SELECT};
+use crate::mail::{ATTACHMENT_SELECT, FOLDER_SELECT, LAST_VERB_QUERY, MESSAGE_SELECT};
 use crate::{
     Attachment, Calendar, DeltaPage, Event, FileAttachment, GraphError, ItemBody, MailFolder,
     Message, RetryPolicy,
@@ -124,6 +124,44 @@ impl GraphClient {
         );
 
         read_page(&self.get(link.unwrap_or(&start), Some(page_size)).await?)
+    }
+
+    /// One page of the mailbox's messages that have been answered or
+    /// forwarded: each one's id and the number that says which ([MS-OXOMSG],
+    /// PidTagLastVerbExecuted), and where the next page is if there is one.
+    /// `since` narrows it to messages changed from that moment on, written
+    /// as `2026-10-01T00:00:00Z`. `link` is where the last page said to go.
+    pub async fn last_actions(
+        &self,
+        link: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<(Vec<(String, u32)>, Option<String>), GraphError> {
+        let changed = since
+            .map(|since| format!("lastModifiedDateTime ge {since} and "))
+            .unwrap_or_default();
+        let start = format!(
+            "{}/me/messages?$select=id&$top=200&$filter={changed}{LAST_VERB_QUERY}",
+            self.base
+        );
+        let page: DeltaPage<Message> =
+            read_list_page(&self.get(link.unwrap_or(&start), None).await?)?;
+        let found = page
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                crate::DeltaItem::Changed(message) => {
+                    let verb = message.last_verb()?;
+                    Some((message.id, verb))
+                }
+                crate::DeltaItem::Removed { .. } => None,
+            })
+            .collect();
+        let next = match page.next {
+            crate::Next::Page(next) => Some(next),
+            crate::Next::Done(_) => None,
+        };
+
+        Ok((found, next))
     }
 
     /// Every calendar the mailbox has ("List calendars", SOURCES.md).

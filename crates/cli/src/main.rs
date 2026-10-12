@@ -259,6 +259,17 @@ fn last_action_probes() -> Vec<(String, String)> {
                 has("ge 102")
             ),
         ),
+        all(
+            "10. What Brolga asks: those changed since the start of the month, with the property, two hundred at a time",
+            format!(
+                "$top=200&$filter=lastModifiedDateTime ge 2026-10-01T00:00:00Z and {}&{EXPAND}",
+                has("ge 102")
+            ),
+        ),
+        all(
+            "11. And the same of the whole mailbox, as it is asked the first time",
+            format!("$top=200&$filter={}&{EXPAND}", has("ge 102")),
+        ),
         (
             "8. A sync of the inbox with the property and nothing else chosen".to_owned(),
             format!("/mailFolders/inbox/messages/delta?{EXPAND}"),

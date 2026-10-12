@@ -16,6 +16,10 @@ use crate::mailboxes::Mailboxes;
 const OFFLINE_DAYS: u64 = 90;
 /// How many bodies one sync downloads. The rest follow on later syncs.
 const BODIES_PER_SYNC: u32 = 200;
+/// How many pages of answered and forwarded messages are asked for in one
+/// sync, two hundred messages to a page. A mailbox with more carries on at
+/// the next.
+const ACTION_PAGES_PER_SYNC: u32 = 25;
 
 /// The date this many days ago, `YYYY-MM-DD`, in UTC.
 fn days_ago(days: u64) -> String {
@@ -210,6 +214,11 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                     .download_bodies(&days_ago(OFFLINE_DAYS), BODIES_PER_SYNC)
                     .await
                     .unwrap_or(0);
+                // And which messages were answered or forwarded elsewhere.
+                // Failing to learn that is not a failed sync either: mail is
+                // only less well marked.
+                mailbox.stage(Some("markers"));
+                let _ = mailbox.sync.sync_last_actions(ACTION_PAGES_PER_SYNC).await;
                 (synced, bodies)
             };
             // And the calendar. Trouble with it is said beside the mail's
@@ -1021,7 +1030,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                     "type": ["object", "null"],
                                     "description": "What a sync running in this copy of Brolga is busy with. Null when none is, or when another copy is doing the syncing.",
                                     "properties": {
-                                        "doing": { "type": "string", "enum": ["sending", "folders", "mail", "bodies", "calendar", "contacts"], "description": "sending: changes made here are going up. folders: the folder list is being read. mail: a folder's messages are being fetched. bodies: recent messages are being fetched whole, to read offline." },
+                                        "doing": { "type": "string", "enum": ["sending", "folders", "mail", "bodies", "markers", "calendar", "contacts"], "description": "sending: changes made here are going up. folders: the folder list is being read. mail: a folder's messages are being fetched. bodies: recent messages are being fetched whole, to read offline. markers: which messages were answered or forwarded is being asked." },
                                         "folder_id": { "type": "string", "description": "With `mail`: the folder being fetched." },
                                         "folder": { "type": "string", "description": "Its name." },
                                         "fetched": { "type": ["integer", "null"], "description": "How many of its messages have been fetched, while it is being fetched whole. Null while it is only being checked for what is new." },

@@ -234,7 +234,10 @@ impl FakeGraph {
                 axum::routing::post(permanent_delete),
             )
             .route("/v1.0/me/messages/{message}/$value", get(message_mime))
-            .route("/v1.0/me/messages", axum::routing::post(create_draft))
+            .route(
+                "/v1.0/me/messages",
+                get(answered_messages).post(create_draft),
+            )
             .route(
                 "/v1.0/me/messages/{message}/attachments/createUploadSession",
                 axum::routing::post(create_upload_session),
@@ -681,7 +684,15 @@ impl FakeGraph {
     /// Note that a message has been answered (102), answered to all (103)
     /// or forwarded (104), as the server does when it is.
     pub fn set_last_verb(&self, message: &str, verb: u32) {
-        lock(&self.shared).mailbox.set_last_verb(message, verb);
+        let now = jiff::Timestamp::now()
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        self.set_last_verb_at(message, verb, &now);
+    }
+
+    /// The same, done at a moment given as `2026-10-01T09:00:00Z`.
+    pub fn set_last_verb_at(&self, message: &str, verb: u32, at: &str) {
+        lock(&self.shared).mailbox.set_last_verb(message, verb, at);
     }
 
     pub fn add_message(&self, folder: &str, message: FakeMessage) -> String {
@@ -1095,6 +1106,65 @@ async fn people_search(
 ) -> Response {
     let typed = query.get("$search").cloned().unwrap_or_default();
     axum::Json(lock(&shared).people.search(&typed)).into_response()
+}
+
+/// The messages that have been answered or forwarded, with the property
+/// that says which beside each ("Get singleValueLegacyExtendedProperty",
+/// SOURCES.md). This is the one question about all of a mailbox's messages
+/// that is answered here, as a real mailbox was seen to answer it: asked any
+/// other way, it is refused. A filter on when a message changed goes by when
+/// that was done to it.
+async fn answered_messages(
+    State(shared): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let named = |part: &str| {
+        query
+            .get(part)
+            .is_some_and(|said| said.contains("Integer 0x1081"))
+    };
+    // A page asked for by the link the last one gave carries the question on.
+    let carried_on = query.contains_key("$skiptoken");
+    if !carried_on && (!named("$filter") || !named("$expand")) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "BadRequest",
+            "This stand-in lists messages only by what was last done with them.",
+        );
+    }
+    let number = |part: &str, or: usize| query.get(part).and_then(|n| n.parse().ok()).unwrap_or(or);
+    let (top, skip) = (number("$top", 10), number("$skiptoken", 0));
+    let inner = lock(&shared);
+    // `lastModifiedDateTime ge 2026-10-01T00:00:00Z and …`
+    let since = query.get("$filter").and_then(|filter| {
+        filter
+            .split_once("lastModifiedDateTime ge ")?
+            .1
+            .split(' ')
+            .next()
+    });
+    let all = inner.mailbox.answered(since);
+    let value: Vec<Value> = all
+        .iter()
+        .skip(skip)
+        .take(top)
+        .map(|(id, verb)| {
+            json!({
+                "id": id,
+                "singleValueExtendedProperties": [{ "id": "Integer 0x1081", "value": verb.to_string() }]
+            })
+        })
+        .collect();
+    let mut page = json!({ "value": value });
+    if skip + top < all.len() {
+        page["@odata.nextLink"] = json!(format!(
+            "{}/me/messages?$top={top}&$skiptoken={}",
+            inner.base,
+            skip + top
+        ));
+    }
+
+    axum::Json(page).into_response()
 }
 
 /// "List users" (SOURCES.md), filtered.
