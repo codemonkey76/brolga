@@ -388,6 +388,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             return { changed: undo.length, undo_id };
         };
         let syncs = 0;
+        let slow: unknown = null;
+        const waiting: (() => void)[] = [];
         const shown = (m: (typeof mail)[number]) => ({
             id: m.id,
             folder_id: m.folder_id,
@@ -458,21 +460,28 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 if (core.syncNeverEnds) return never;
                 return sync();
             },
-            "mail.folders.list": (args) => ({
-                account_id: args.account_id,
-                folders: [
-                    folder("inbox", "Inbox", "inbox"),
-                    folder("drafts", "Drafts", "drafts"),
-                    folder("sent", "Sent Items", "sentitems"),
-                    folder("deleted", "Deleted Items", "deleteditems"),
-                    folder("archive", "Archive", "archive"),
-                    folder("junk", "Junk Email", "junkemail"),
-                    folder("projects", "Projects", null),
-                    folder("harbour", "Harbour upgrade", null, "projects", 1),
-                    folder("surveys", "Surveys", null, "harbour", 2),
-                    folder("website", "Website", null, "projects", 1),
-                ],
-            }),
+            "mail.folders.list": async (args) => {
+                // A shared mailbox's folders are its own: none has the id of one of the account's.
+                const own = String(args.account_id).includes("~") ? "shared-" : "";
+                const answer = {
+                    account_id: args.account_id,
+                    folders: [
+                        folder(`${own}inbox`, "Inbox", "inbox"),
+                        folder(`${own}drafts`, "Drafts", "drafts"),
+                        folder(`${own}sent`, "Sent Items", "sentitems"),
+                        folder(`${own}deleted`, "Deleted Items", "deleteditems"),
+                        folder(`${own}archive`, "Archive", "archive"),
+                        folder(`${own}junk`, "Junk Email", "junkemail"),
+                        folder(`${own}projects`, "Projects", null),
+                        folder(`${own}harbour`, "Harbour upgrade", null, `${own}projects`, 1),
+                        folder(`${own}surveys`, "Surveys", null, `${own}harbour`, 2),
+                        folder(`${own}website`, "Website", null, `${own}projects`, 1),
+                    ],
+                };
+                // A mailbox that is slow to say what folders it has: the answer waits until the test lets it go.
+                if (slow === args.account_id) await new Promise<void>((go) => waiting.push(go));
+                return answer;
+            },
             "mail.folders.set_favourite": (args) => {
                 if (args.favourite) pinned.add(args.folder_id);
                 else pinned.delete(args.folder_id);
@@ -1043,6 +1052,13 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 }),
             ran,
             sent,
+            /** Hold back what this mailbox's folders are, each time it is asked, until `letFoldersGo`. */
+            holdFolders: (account: string) => (slow = account),
+            foldersHeld: () => waiting.length,
+            letFoldersGo: () => {
+                slow = null;
+                waiting.splice(0).forEach((go) => go());
+            },
             __TAURI_INTERNALS__: {
                 invoke: async (name: string, payload: { command: string; args?: Record<string, unknown> }) => {
                     // The save dialog: the place this test says was chosen, or dismissed.

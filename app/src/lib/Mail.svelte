@@ -234,7 +234,7 @@
     async function redraw(change: { is_read?: boolean; flag_status?: string; flag_due?: string | null }, ids: string[]) {
         if (opened && ids.includes(opened.message.id)) opened = { ...opened, message: { ...opened.message, ...change } };
         thread = thread.map((each) => (ids.includes(each.id) ? { ...each, ...change } : each));
-        if (accountId) folders = await listFolders(accountId);
+        await relist();
         if (searching) rows = rows.map((row) => (row && ids.includes(row.id) ? { ...row, ...change } : row));
         else await refresh();
     }
@@ -271,7 +271,7 @@
         try {
             for (const id of ids) await undo(accountId, id);
             await refresh();
-            folders = await listFolders(accountId);
+            await relist();
             // The message being read is drawn again from what the list now says of it.
             const now = rows.find((row) => row && row.id === opened?.message.id);
             if (opened && now) {
@@ -336,7 +336,7 @@
         } else {
             await refresh();
         }
-        folders = await listFolders(accountId);
+        await relist();
         if (stays) return;
         const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
         if (next) {
@@ -475,60 +475,95 @@
     let collapsed = $state<string[]>([]);
     const collapsedKey = (id: string) => `brolga.collapsed.${id}`;
 
-    function recallCollapsed() {
-        collapsed = [];
-        if (!accountId) return;
+    /** What was kept under a name, where it is a list of ids. */
+    function keptIds(key: string): string[] {
         try {
-            const kept: unknown = JSON.parse(localStorage.getItem(collapsedKey(accountId)) ?? "[]");
-            if (Array.isArray(kept)) collapsed = kept.filter((each) => typeof each === "string");
+            const kept: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+            if (Array.isArray(kept)) return kept.filter((each) => typeof each === "string");
         } catch {
-            // Nothing kept, or nowhere to keep it: every folder starts open.
+            // Nothing kept, or nowhere to keep it: everything starts open.
         }
+        return [];
     }
 
-    function toggle(id: string) {
-        collapsed = collapsed.includes(id) ? collapsed.filter((each) => each !== id) : [...collapsed, id];
+    function keep(key: string, ids: string[]) {
         try {
-            if (accountId) localStorage.setItem(collapsedKey(accountId), JSON.stringify(collapsed));
+            localStorage.setItem(key, JSON.stringify(ids));
         } catch {
             // It still works for as long as the window is open.
         }
     }
 
-    /** The tree as it shows: nothing inside a closed folder, and which folders have something inside. */
-    const tree = $derived.by(() => {
+    const without = (ids: string[], id: string) => (ids.includes(id) ? ids.filter((each) => each !== id) : [...ids, id]);
+
+    function recallCollapsed() {
+        collapsed = accountId ? keptIds(collapsedKey(accountId)) : [];
+    }
+
+    function toggle(id: string) {
+        collapsed = without(collapsed, id);
+        if (accountId) keep(collapsedKey(accountId), collapsed);
+    }
+
+    /** A tree as it shows: nothing inside a closed folder, and which folders have something inside. */
+    function treeOf(all: Folder[], closed: string[]) {
         const shown: { folder: Folder; parent: boolean; open: boolean }[] = [];
         let closedAt: number | null = null;
-        folders.forEach((each, index) => {
+        all.forEach((each, index) => {
             if (closedAt !== null && each.depth > closedAt) return;
-            const open = !collapsed.includes(each.id);
+            const open = !closed.includes(each.id);
             closedAt = open ? null : each.depth;
-            shown.push({ folder: each, parent: (folders[index + 1]?.depth ?? 0) > each.depth, open });
+            shown.push({ folder: each, parent: (all[index + 1]?.depth ?? 0) > each.depth, open });
         });
         return shown;
-    });
+    }
+
+    const tree = $derived(treeOf(folders, collapsed));
 
     async function pin(each: Folder) {
         if (!accountId) return;
         try {
             await setFavourite(accountId, each.id, !each.favourite);
-            folders = await listFolders(accountId);
+            await relist();
         } catch (failure) {
             problem = say(failure);
         }
     }
 
-    /** The other mailboxes that go with the one shown: its account, and those shared with it. Each has its folders beside this one's. */
-    let beside = $state<{ mailbox: Account; folders: Folder[]; before: boolean }[]>([]);
+    /**
+     * The other mailboxes that go with the one shown: its account, and those
+     * shared with it. Each has its folders under this one's, closed up as
+     * they were left when it was the one shown.
+     */
+    let beside = $state<{ mailbox: Account; folders: Folder[]; collapsed: string[] }[]>([]);
+
+    /** Mailboxes whose folders are closed up altogether while another is shown. */
+    const SHUT = "brolga.beside.shut";
+    let shut = $state<string[]>(keptIds(SHUT));
+
+    function shutOrOpen(mailbox: string) {
+        shut = without(shut, mailbox);
+        keep(SHUT, shut);
+    }
+
+    /** Close or open a folder of a mailbox that is not the one shown. It is as it was left when that mailbox is shown. */
+    function toggleIn(mailbox: string, id: string) {
+        beside = beside.map((each) => {
+            if (each.mailbox.id !== mailbox) return each;
+            const collapsed = without(each.collapsed, id);
+            keep(collapsedKey(mailbox), collapsed);
+            return { ...each, collapsed };
+        });
+    }
 
     async function loadBeside() {
         const here = accounts.findIndex((each) => each.id === accountId);
         const mine = accounts[here];
         if (!mine) return;
         const root = mine.shared_with ?? mine.id;
-        const family = accounts.map((each, index) => ({ each, index })).filter(({ each }) => (each.shared_with ?? each.id) === root && each.id !== mine.id);
+        const family = accounts.map((each) => ({ each })).filter(({ each }) => (each.shared_with ?? each.id) === root && each.id !== mine.id);
         const found = await Promise.all(
-            family.map(async ({ each, index }) => ({ mailbox: each, folders: await listFolders(each.id).catch(() => []), before: index < here })),
+            family.map(async ({ each }) => ({ mailbox: each, folders: await listFolders(each.id).catch(() => []), collapsed: keptIds(collapsedKey(each.id)) })),
         );
         if (accountId === mine.id) beside = found;
     }
@@ -539,10 +574,24 @@
         await showFolder(folder);
     }
 
+    /**
+     * Ask again what folders the mailbox shown has. An answer that comes
+     * once another mailbox has been chosen is not about the one on screen,
+     * and is left: false is given for it.
+     */
+    async function relist() {
+        const of = accountId;
+        if (!of) return false;
+        const found = await listFolders(of);
+        if (accountId !== of) return false;
+        folders = found;
+        return true;
+    }
+
     async function loadFolders() {
         if (!accountId) return;
         loadBeside();
-        folders = await listFolders(accountId);
+        if (!(await relist())) return;
         if (!folders.some((f) => f.id === folderId)) {
             const inbox = folders.find((f) => f.well_known === "inbox") ?? folders[0];
             if (inbox) await showFolder(inbox.id);
@@ -930,27 +979,6 @@
             <p class="account" title={account.username}>{account.username}</p>
         {/if}
 
-        {#snippet others(before: boolean)}
-            {#each beside.filter((each) => each.before === before && each.folders.length > 0) as each (each.mailbox.id)}
-                <h2 class="mailbox" id="beside-{each.mailbox.id}" title={each.mailbox.username}>{each.mailbox.username}</h2>
-                <ul aria-labelledby="beside-{each.mailbox.id}">
-                    {#each each.folders as folder (folder.id)}
-                        {@const Shape = FOLDER_ICONS[folder.well_known ?? ""] ?? FolderIcon}
-                        <li style:padding-left="{(folder.depth ?? 0) * 0.9}rem">
-                            <span class="twist"></span>
-                            <button type="button" class="folder" onclick={() => showIn(each.mailbox, folder.id)}>
-                                <Shape size={15} aria-hidden="true" />
-                                <span class="name">{folder.name}</span>
-                                {#if folder.unread > 0}<span class="count" aria-label="{folder.unread} unread">{folder.unread}</span>{/if}
-                            </button>
-                        </li>
-                    {/each}
-                </ul>
-            {/each}
-        {/snippet}
-
-        {@render others(true)}
-
         {#if drafts.length > 0}
             <h2 id="drafts-heading">Being written</h2>
             <ul aria-labelledby="drafts-heading">
@@ -1012,7 +1040,35 @@
             {/each}
         </ul>
 
-        {@render others(false)}
+        {#each beside.filter((each) => each.folders.length > 0) as each (each.mailbox.id)}
+            {@const open = !shut.includes(each.mailbox.id)}
+            <h2 class="mailbox" id="beside-{each.mailbox.id}" title={each.mailbox.username}>
+                <button type="button" aria-expanded={open} onclick={() => shutOrOpen(each.mailbox.id)}>
+                    <span class="twist" aria-hidden="true">{open ? "▾" : "▸"}</span>{each.mailbox.username}
+                </button>
+            </h2>
+            {#if open}
+                <ul aria-labelledby="beside-{each.mailbox.id}">
+                    {#each treeOf(each.folders, each.collapsed) as { folder, parent, open: unfolded } (folder.id)}
+                        {@const Shape = FOLDER_ICONS[folder.well_known ?? ""] ?? FolderIcon}
+                        <li style:padding-left="{(folder.depth ?? 0) * 0.9}rem">
+                            {#if parent}
+                                <button type="button" class="twist" aria-expanded={unfolded} aria-label="{unfolded ? 'Collapse' : 'Expand'} {folder.name}" onclick={() => toggleIn(each.mailbox.id, folder.id)}>
+                                    {unfolded ? "▾" : "▸"}
+                                </button>
+                            {:else}
+                                <span class="twist"></span>
+                            {/if}
+                            <button type="button" class="folder" onclick={() => showIn(each.mailbox, folder.id)}>
+                                <Shape size={15} aria-hidden="true" />
+                                <span class="name">{folder.name}</span>
+                                {#if folder.unread > 0}<span class="count" aria-label="{folder.unread} unread">{folder.unread}</span>{/if}
+                            </button>
+                        </li>
+                    {/each}
+                </ul>
+            {/if}
+        {/each}
     </nav>
 
     <div class="list">
@@ -1224,9 +1280,21 @@
         margin-top: 0.6rem;
         padding-top: 0.5rem;
         border-top: 1px solid var(--line);
+        padding-left: 0;
         font-size: 0.8rem;
         letter-spacing: 0;
         text-transform: none;
+    }
+
+    h2.mailbox button {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        padding: 0.2rem 0.4rem 0.2rem 0;
+        font: inherit;
+        font-weight: 600;
+        color: var(--text);
+        text-align: left;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;

@@ -250,13 +250,70 @@ test("a shared mailbox is added by its address, read in Mail, and removed", asyn
     await picture(page, "shared-mailbox-folders");
     await theirs.getByRole("button", { name: "Archive" }).click();
     await expect(picker).toHaveValue("tenant-1.robin~support@example.test");
-    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.messages.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test", folder_id: "archive" });
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.messages.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test", folder_id: "shared-archive" });
 
     await page.getByRole("button", { name: "Accounts" }).click();
     await page.getByRole("button", { name: "Shared mailboxes" }).click();
     await page.getByRole("button", { name: "Remove support@example.test" }).click();
     await page.getByRole("button", { name: "Mail", exact: true }).click();
     await expect(page.getByRole("combobox", { name: "Account" })).toHaveCount(0);
+});
+
+test("the mailbox shown has its folders first, and another's are under them, closed up as they were left", async ({ page }) => {
+    const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
+    await withCore(page, { accounts: [robin], mail: inbox, shared });
+
+    // A folder of the account is closed up while the account is the one shown.
+    const folders = page.getByRole("navigation", { name: "Folders" });
+    const shown = folders.getByRole("list", { name: "Folders" });
+    await shown.getByRole("button", { name: "Collapse Projects" }).click();
+    await expect(shown.getByRole("button", { name: "Harbour upgrade", exact: true })).toHaveCount(0);
+
+    // With the shared mailbox shown, its own folders come first and the account's are under them.
+    await page.getByRole("combobox", { name: "Account" }).selectOption({ label: "↳ support@example.test (shared)" });
+    const mine = folders.getByRole("list", { name: "robin@example.test" });
+    await expect(mine.getByRole("button", { name: "Inbox" })).toBeVisible();
+    const top = await shown.boundingBox();
+    const under = await mine.boundingBox();
+    expect(under!.y).toBeGreaterThan(top!.y + top!.height - 1);
+
+    // What was closed up is still closed, and is opened where it is.
+    await expect(mine.getByRole("button", { name: "Harbour upgrade", exact: true })).toHaveCount(0);
+    await mine.getByRole("button", { name: "Expand Projects" }).click();
+    await expect(mine.getByRole("button", { name: "Harbour upgrade", exact: true })).toBeVisible();
+
+    // The whole of the other mailbox closes up under its name.
+    const name = folders.getByRole("button", { name: "robin@example.test" });
+    await expect(name).toHaveAttribute("aria-expanded", "true");
+    await name.click();
+    await expect(name).toHaveAttribute("aria-expanded", "false");
+    await expect(mine).toHaveCount(0);
+});
+
+test("a shared mailbox's folder stays open when the account's folders are answered late", async ({ page }) => {
+    const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
+    await withCore(page, { accounts: [robin], mail: inbox, shared, syncNeverEnds: true });
+
+    const folders = page.getByRole("navigation", { name: "Folders" });
+    const theirs = folders.getByRole("list", { name: "support@example.test" });
+    await expect(theirs.getByRole("button", { name: "Archive" })).toBeVisible();
+
+    // While it syncs, the account's folders are asked for again and again. One such answer is still on its way...
+    await page.evaluate(() => (window as unknown as { holdFolders: (account: string) => void }).holdFolders("tenant-1.robin"));
+    await expect.poll(() => page.evaluate(() => (window as unknown as { foldersHeld: () => number }).foldersHeld()), { timeout: 10_000 }).toBeGreaterThan(0);
+
+    // ...when a folder of the shared mailbox is opened, and it comes after.
+    await theirs.getByRole("button", { name: "Archive" }).click();
+    const picker = page.getByRole("combobox", { name: "Account" });
+    await expect(picker).toHaveValue("tenant-1.robin~support@example.test");
+    const open = folders.getByRole("list", { name: "Folders" }).getByRole("button", { name: "Archive", exact: true });
+    await expect(open).toHaveAttribute("aria-current", "true");
+    await page.evaluate(() => (window as unknown as { letFoldersGo: () => void }).letFoldersGo());
+
+    // The folder opened is still the one shown, and the account's folders are beside it, not in its place.
+    await expect(folders.getByRole("list", { name: "robin@example.test" }).getByRole("button", { name: "Inbox" })).toBeVisible();
+    await expect(open).toHaveAttribute("aria-current", "true");
+    expect((await ran(page)).filter((r) => r.command === "mail.messages.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test", folder_id: "shared-archive" });
 });
 
 test("a message can be sent under a shared mailbox's name, chosen where it is written", async ({ page }) => {
