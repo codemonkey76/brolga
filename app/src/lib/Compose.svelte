@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Bold, Image, Italic, Link, List, ListOrdered, Paperclip, Send, Underline, X } from "@lucide/svelte";
     import { chooseFiles, say } from "./commands";
-    import { lineOf, peopleOn } from "./people-line";
+    import { isAddress, lineOf, peopleOn } from "./people-line";
     import Recipients from "./Recipients.svelte";
     import { type Draft, type DraftFile, type Person, attachContent, attachFile, base64Of, discardDraft, editDraft, readFile, removeFile, sendDraft, size } from "./mail";
 
@@ -277,13 +277,18 @@
         timer = setTimeout(keep, 800);
     }
 
+    /** The people on a line whose address is whole. The core keeps none of a line with one on it that is not. */
+    const whole = (line: string): Person[] => peopleOn(line).filter((each) => isAddress(each.address));
+    /** What is typed where an address goes and is not one, or not yet. It stays in its box, and is not kept. */
+    const unfinished = $derived([to, cc, bcc].flatMap((line) => peopleOn(line).filter((each) => !isAddress(each.address)).map((each) => each.address)));
+
     /** Keep what is written. True if it was kept. */
     async function keep(): Promise<boolean> {
         clearTimeout(timer);
         if (kept === "kept") return true;
         kept = "keeping";
         try {
-            await editDraft(accountId, start.id, { to: peopleOn(to), cc: peopleOn(cc), bcc: peopleOn(bcc), subject, body, format });
+            await editDraft(accountId, start.id, { to: whole(to), cc: whole(cc), bcc: whole(bcc), subject, body, format });
             await dropUnused();
             if (kept === "keeping") kept = "kept";
             problem = null;
@@ -301,6 +306,10 @@
         sending = true;
         try {
             if (!(await keep())) return;
+            if (unfinished.length > 0) {
+                problem = `\`${unfinished[0]}\` is not an email address. Finish it or take it out before sending.`;
+                return;
+            }
             await sendDraft(accountId, start.id);
             onDone("sent");
         } catch (failure) {
@@ -376,6 +385,9 @@
 
     {#if problem}
         <p class="problem" role="alert">{problem}</p>
+    {/if}
+    {#if kept === "kept" && unfinished.length > 0}
+        <p class="muted unfinished" role="status">`{unfinished[0]}` is not an email address yet, so it is not kept with the draft.</p>
     {/if}
 
     {#if fromChoices.length > 1}
@@ -652,6 +664,14 @@
         padding: 0.5rem 1rem;
         background: color-mix(in srgb, var(--danger) 14%, var(--surface));
         font-size: 0.85rem;
+    }
+
+    .unfinished {
+        flex: none;
+        margin: 0;
+        padding: 0.4rem 1rem;
+        border-bottom: 1px solid var(--line);
+        font-size: 0.8rem;
     }
 
     .quoted {

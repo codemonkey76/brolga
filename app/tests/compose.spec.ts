@@ -143,6 +143,36 @@ test("Enter in a line of the heading goes on to the next, and does not send", as
     expect((await sent(page))[0]).toMatchObject({ subject: "Lunch on Friday", to: [{ name: null, address: "jo@example.test" }] });
 });
 
+test("an address half typed does not stop the rest being kept, and is said before sending", async ({ page }) => {
+    const form = await newMessage(page);
+    const to = form.getByRole("combobox", { name: "To" });
+
+    await to.fill("jo@example.test, sam");
+    await form.getByRole("textbox", { name: "Subject" }).fill("Half addressed");
+    await form.getByRole("textbox", { name: "Message" }).click();
+    await page.keyboard.type("None of this is to be lost.");
+
+    // What can be kept is, and what cannot is said quietly and left where it was typed.
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+    await expect(form.getByText("`sam` is not an email address yet, so it is not kept with the draft.")).toBeVisible();
+    await expect(form.getByRole("alert")).toHaveCount(0);
+    await expect(to).toHaveValue("jo@example.test, sam");
+    expect((await edits(page)).at(-1)).toMatchObject({ to: [{ name: null, address: "jo@example.test" }], subject: "Half addressed" });
+    expect(String((await edits(page)).at(-1)?.body)).toContain("None of this is to be lost.");
+
+    // It is not sent to some of those it was meant for.
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form.getByRole("alert")).toContainText("`sam` is not an email address. Finish it or take it out before sending.");
+    expect(await sent(page)).toHaveLength(0);
+
+    // It can still be put aside, and is there to come back to.
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
+    await page.getByRole("list", { name: "Being written" }).getByRole("button", { name: "Half addressed" }).click();
+    await expect(form.getByRole("textbox", { name: "Message" })).toHaveText("None of this is to be lost.");
+    await expect(to).toHaveValue("jo@example.test");
+});
+
 test("two people suggested with one address are both listed, and the list still changes", async ({ page }) => {
     const twice = [
         { name: "Sam Taylor", address: "sam.taylor@example.test" },
