@@ -576,3 +576,60 @@ async fn a_draft_thrown_away_elsewhere_is_still_here_and_can_still_be_sent() {
     assert!(f.graph.sent()[0].body_html.contains("Still wanted."));
     assert_eq!(f.graph.sent().len(), 1);
 }
+
+#[tokio::test]
+async fn a_message_moved_here_and_deleted_for_good_elsewhere_is_forgotten() {
+    let f = fixture().await;
+    let archive = f.graph.folder_id("archive");
+    f.db.queue_edit("a", &f.ids[..1], &MessageEdit::Move(archive))
+        .unwrap();
+    f.db.queue_edit("b", &f.ids[..1], &MessageEdit::Read(true))
+        .unwrap();
+    f.graph.delete_message(&f.ids[0]);
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!((drained.waiting, drained.refused), (0, 0));
+    assert!(
+        f.db.message(&f.ids[0]).unwrap().is_none(),
+        "it is still shown"
+    );
+    let (queued, failed) = f.db.outbox().unwrap();
+    assert_eq!((queued, failed.len()), (0, 0));
+}
+
+#[tokio::test]
+async fn a_move_to_a_folder_deleted_elsewhere_is_taken_back_and_reported() {
+    let f = fixture().await;
+    let inbox = f.graph.folder_id("inbox");
+    let gone = f.graph.add_folder("Projects", None);
+    f.db.queue_edit("a", &f.ids[..1], &MessageEdit::Move(gone.clone()))
+        .unwrap();
+    f.graph.remove_folder(&gone);
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!((drained.sent, drained.refused), (0, 1));
+    assert_eq!(f.db.message(&f.ids[0]).unwrap().unwrap().folder_id, inbox);
+    let (_, failed) = f.db.outbox().unwrap();
+    assert_eq!(failed[0].message_id, f.ids[0]);
+}
+
+#[tokio::test]
+async fn taking_the_day_off_a_flag_reaches_the_server() {
+    let f = fixture().await;
+    let one = &f.ids[..1];
+    f.db.queue_edit("a", one, &MessageEdit::Flag("flagged".to_owned()))
+        .unwrap();
+    f.db.queue_edit("a", one, &MessageEdit::FlagDue("2026-10-20".to_owned()))
+        .unwrap();
+    f.outbox.drain().await.unwrap();
+    assert_eq!(f.graph.flag_due(&f.ids[0]).as_deref(), Some("2026-10-20"));
+
+    f.db.queue_edit("b", one, &MessageEdit::FlagDue(String::new()))
+        .unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+
+    assert_eq!(f.graph.flag_due(&f.ids[0]), None);
+    assert_eq!(f.graph.flag(&f.ids[0]).as_deref(), Some("flagged"));
+}

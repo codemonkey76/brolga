@@ -55,20 +55,40 @@ impl Outbox {
         let mut drained = Drained::default();
         let mut held_up: HashSet<String> = HashSet::new();
 
+        let mut gone: HashSet<String> = HashSet::new();
+
         for op in self.db.queued_ops()? {
+            // Forgotten earlier in this pass, and its changes with it.
+            if gone.contains(&op.message_id) {
+                drained.sent += 1;
+                continue;
+            }
             if held_up.contains(&op.message_id) {
                 drained.waiting += 1;
                 continue;
             }
 
-            match self.send(&op).await {
-                Ok(()) => {
-                    self.db.op_sent(op.id)?;
-                    drained.sent += 1;
+            let mut result = self.send(&op).await;
+            // Something is not there. If it is the message, there is nothing
+            // left to change, and it is forgotten here: it may have been
+            // moved on this computer to where no sync would look for it. If
+            // the message is there, it is something else the change needs
+            // (the folder it was to go to), and the change is refused.
+            if let Err(GraphError::Refused { status: 404, .. }) = &result {
+                match self.graph.message_folder(&op.message_id).await {
+                    Err(GraphError::Refused { status: 404, .. }) => {
+                        self.db.forget_message(&op.message_id)?;
+                        gone.insert(op.message_id);
+                        drained.sent += 1;
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(other) => result = Err(other),
                 }
-                // The message is gone from the server. There is nothing left
-                // to change, and the next sync takes it from here too.
-                Err(GraphError::Refused { status: 404, .. }) => {
+            }
+
+            match result {
+                Ok(()) => {
                     self.db.op_sent(op.id)?;
                     drained.sent += 1;
                 }
@@ -294,11 +314,22 @@ impl Outbox {
                 let changes = json!({ "flag": { "flagStatus": op.value } });
                 self.graph.update_message(&op.message_id, &changes).await
             }
+            // The day was taken off the flag. The flag is sent as it now
+            // stands here, with no dates. "followupFlag resource type" does
+            // not say how a date is taken away; null is how a property is
+            // given no value in an update.
+            "flag_due" if op.value.is_empty() => {
+                let Some(message) = self.db.message(&op.message_id).map_err(kept)? else {
+                    return Ok(());
+                };
+                let changes = json!({
+                    "flag": { "flagStatus": message.flag_status, "startDateTime": null, "dueDateTime": null }
+                });
+                self.graph.update_message(&op.message_id, &changes).await
+            }
             // "followupFlag resource type": a due date must come with a
             // start. A day with no time is given as its first moment, in
-            // UTC. An empty day has nothing to send: the flag was cleared
-            // or set afresh by the change beside it.
-            "flag_due" if op.value.is_empty() => Ok(()),
+            // UTC.
             "flag_due" => {
                 let day =
                     json!({ "dateTime": format!("{}T00:00:00", op.value), "timeZone": "UTC" });
@@ -308,8 +339,7 @@ impl Outbox {
                 self.graph.update_message(&op.message_id, &changes).await
             }
             "categories" => {
-                let names: serde_json::Value =
-                    serde_json::from_str(&op.value).unwrap_or_else(|_| json!([]));
+                let names = category_names(&op.value)?;
                 self.graph
                     .update_message(&op.message_id, &json!({ "categories": names }))
                     .await
@@ -334,6 +364,23 @@ impl Outbox {
 
         self.graph.move_message(&op.message_id, &op.value).await
     }
+}
+
+/// A failure to read or write what is kept here, as the error the sending
+/// of a change ends with.
+fn kept(error: StoreError) -> GraphError {
+    GraphError::Decode(error.to_string())
+}
+
+/// A message's categories as they were queued: a JSON array of names. What
+/// cannot be read as that is refused. Sending no names in its place would
+/// take every category off the message.
+fn category_names(queued: &str) -> Result<serde_json::Value, GraphError> {
+    serde_json::from_str::<Vec<String>>(queued)
+        .map(serde_json::Value::from)
+        .map_err(|_| {
+            GraphError::Decode("a queued change of categories that cannot be read".to_owned())
+        })
 }
 
 /// Whether the same request may well succeed later: the network is down,
@@ -422,6 +469,18 @@ mod tests {
             sent.ends_with("<hr><p>Original</p></body></html>"),
             "{sent}"
         );
+    }
+
+    #[test]
+    fn categories_that_cannot_be_read_are_refused_and_not_sent_as_none() {
+        assert_eq!(
+            category_names(r#"["Red","Work"]"#).ok(),
+            Some(json!(["Red", "Work"]))
+        );
+        assert_eq!(category_names("[]").ok(), Some(json!([])));
+        assert!(category_names("").is_err());
+        assert!(category_names(r#"["Red""#).is_err());
+        assert!(category_names(r#"{"Red":1}"#).is_err());
     }
 
     #[test]
