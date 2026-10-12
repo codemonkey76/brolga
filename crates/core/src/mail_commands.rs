@@ -455,8 +455,24 @@ async fn attached(
     Ok(rows)
 }
 
-/// How a cleaned body refers to a picture attached to its message.
-const CID: &str = "src=\"cid:";
+/// How a cleaned body's picture refers to one attached to its message.
+const CID: &str = "cid:";
+
+/// The name after `cid:`, where a picture's address is one.
+fn content_id_of(address: &str) -> Option<&str> {
+    let address = address.trim();
+    address
+        .get(..CID.len())
+        .filter(|scheme| scheme.eq_ignore_ascii_case(CID))
+        .map(|_| address[CID.len()..].trim())
+}
+
+/// Whether cleaned HTML has a picture that refers to an attached one.
+fn has_inline_images(html: &str) -> bool {
+    brolga_mail::image_sources(html)
+        .iter()
+        .any(|source| content_id_of(&source.address).is_some())
+}
 /// The most pictures put into one message, and the largest of them.
 const MAX_INLINE_IMAGES: usize = 40;
 const MAX_INLINE_BYTES: i64 = 3 * 1024 * 1024;
@@ -507,23 +523,24 @@ async fn inline_images(mailbox: &crate::mailboxes::Mailbox, message_id: &str) ->
 
 /// Put each picture in place of the `cid:` name that refers to it. A name
 /// with no picture loses its `src`, so the view has nothing to try.
+///
+/// Only the `src` of an `<img>` is ever replaced. The same characters
+/// written out in the message's words are words, and stay as they are.
 fn with_inline_images(html: &str, images: &[InlineImage]) -> String {
     let mut out = String::with_capacity(html.len());
-    let mut rest = html;
+    let mut from = 0;
 
-    while let Some(at) = rest.find(CID) {
-        let start = at + CID.len();
-        let Some(length) = rest[start..].find('"') else {
-            break;
+    for source in brolga_mail::image_sources(html) {
+        let Some(name) = content_id_of(&source.address) else {
+            continue;
         };
-        // The cleaner writes attribute values with `&` as `&amp;`.
-        let name = rest[start..start + length].replace("&amp;", "&");
-        out.push_str(&rest[..at]);
+        out.push_str(&html[from..source.at.start]);
+        from = source.at.end;
         // The type goes into the page as it is, so it is one of the few
         // plain ones or the picture is left out.
         if let Some(image) = images
             .iter()
-            .find(|i| i.content_id.eq_ignore_ascii_case(name.trim()))
+            .find(|i| i.content_id.eq_ignore_ascii_case(name))
             .filter(|i| PICTURE_TYPES.contains(&i.content_type.as_str()))
         {
             out.push_str(&format!(
@@ -531,9 +548,8 @@ fn with_inline_images(html: &str, images: &[InlineImage]) -> String {
                 image.content_type, image.data
             ));
         }
-        rest = &rest[start + length + 1..];
     }
-    out.push_str(rest);
+    out.push_str(&html[from..]);
 
     out
 }
@@ -688,7 +704,7 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
                 RemoteContent::Allowed => context.images.inline(&clean.html).await,
                 RemoteContent::Blocked => (clean.html, 0),
             };
-            let content = if content.contains(CID) {
+            let content = if has_inline_images(&content) {
                 let images = inline_images(&mailbox, &args.message_id).await;
                 with_inline_images(&content, &images)
             } else {
@@ -696,7 +712,16 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
             };
             json!({ "format": "html", "content": content, "styles": clean.styles, "blocked_remote_content": clean.blocked_remote + missing })
         }
-        _ => json!({ "format": "text", "content": as_text(&body), "blocked_remote_content": 0 }),
+        _ => {
+            // Words the message hides from the person reading it are not
+            // given out as what it says.
+            let (content, hidden) = if body.content_type == "html" {
+                brolga_mail::html_to_visible_text(&body.content)
+            } else {
+                (body.content.clone(), false)
+            };
+            json!({ "format": "text", "content": content, "blocked_remote_content": 0, "hidden_text_left_out": hidden })
+        }
     };
 
     let meeting = if row.is_meeting {
@@ -1364,7 +1389,9 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             description: "One message with its body. The body comes as plain text unless format is `html`, which gives HTML with \
                           everything unsafe removed. Remote images are taken out unless allow_remote_content is true, \
                           when Brolga fetches them itself and puts them in the message; \
-                          `blocked_remote_content` says how many were left out. Reading a message here does not mark it as read."
+                          `blocked_remote_content` says how many were left out. An agent cannot ask for remote images: that is the person's to choose. \
+                          As plain text the body is the words a person reading the message would see: words styled so as not to show are left out, \
+                          and `hidden_text_left_out` says when some were. Reading a message here does not mark it as read."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -1397,7 +1424,8 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                             "format": { "type": "string", "enum": ["text", "html"] },
                             "content": { "type": "string" },
                             "styles": { "type": "string", "description": "The message's own style sheets, made safe, as CSS. For showing the message in a frame of its own: put anywhere else it would style more than the message." },
-                            "blocked_remote_content": { "type": "integer" }
+                            "blocked_remote_content": { "type": "integer" },
+                            "hidden_text_left_out": { "type": "boolean", "description": "With format `text`: true when the message held words styled so that its reader would not see them, which are not in `content`." }
                         },
                         "required": ["format", "content", "blocked_remote_content"]
                     },

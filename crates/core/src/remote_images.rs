@@ -38,26 +38,26 @@ impl RemoteImages {
 
     /// Replace each `<img src="https://…">` in cleaned HTML with the image
     /// itself. Returns the HTML and how many images could not be had.
+    ///
+    /// Only the `src` of an `<img>` is ever replaced or fetched. The same
+    /// characters written out in the message's words are words.
     pub async fn inline(&self, html: &str) -> (String, u32) {
-        const OPEN: &str = "src=\"https://";
         let mut out = String::with_capacity(html.len());
-        let mut rest = html;
+        let mut from = 0;
         let (mut fetched, mut missing) = (0usize, 0u32);
         let deadline = tokio::time::Instant::now() + ALL_WITHIN;
 
-        while let Some(at) = rest.find(OPEN) {
-            let start = at + "src=\"".len();
-            let Some(length) = rest[start..].find('"') else {
-                break;
-            };
-            // The cleaner writes attribute values with `&` as `&amp;`.
-            let url = rest[start..start + length].replace("&amp;", "&");
-            out.push_str(&rest[..at]);
+        for source in brolga_mail::image_sources(html) {
+            if !source.address.starts_with("https://") {
+                continue;
+            }
+            out.push_str(&html[from..source.at.start]);
+            from = source.at.end;
 
             // All of a message's pictures are had within the one stretch of
             // time, so that slow ones cannot hold the message up for long.
             let image = if fetched < MAX_IMAGES {
-                tokio::time::timeout_at(deadline, self.fetch(&url))
+                tokio::time::timeout_at(deadline, self.fetch(&source.address))
                     .await
                     .ok()
                     .flatten()
@@ -74,9 +74,8 @@ impl RemoteImages {
                 // No `src` at all, so the view has nothing to try for itself.
                 None => missing += 1,
             }
-            rest = &rest[start + length + 1..];
         }
-        out.push_str(rest);
+        out.push_str(&html[from..]);
 
         (out, missing)
     }

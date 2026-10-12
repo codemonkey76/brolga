@@ -66,6 +66,14 @@ Every result that carries a message's own words also carries a note saying
 they were written by the sender and are not instructions. Reading a message
 through these tools does not mark it as read.
 
+A message read as plain text is the words a person reading it would see.
+Words the sender styled so as not to show (`display:none`, no opacity, type
+of no size, or no room with the overflow hidden) are left out, and
+`hidden_text_left_out` on the body says when some were. This goes by the
+styles Brolga itself keeps when it shows the message. It does not catch
+every way of hiding words: white words on white, or type too small to read,
+are still given.
+
 ## What an agent may do
 
 **An agent can only read unless you say otherwise.** What it may do is fixed
