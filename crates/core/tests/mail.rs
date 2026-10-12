@@ -4644,38 +4644,3 @@ async fn a_large_pst_imports_within_bounded_memory_and_is_searchable() {
     );
     assert!(!found["messages"].as_array().unwrap().is_empty());
 }
-
-#[tokio::test]
-async fn a_message_answered_or_sent_on_says_so_and_another_says_nothing() {
-    let f = Fixture::signed_in().await;
-    let quote = f.graph.add_message(
-        &f.inbox,
-        message("Quote", "Sam Taylor", "2026-10-01T09:00:00Z"),
-    );
-    let plan = f.graph.add_message(
-        &f.inbox,
-        message("Plan", "Sam Taylor", "2026-10-01T08:00:00Z"),
-    );
-    f.graph.set_last_verb(&quote, 102);
-    f.sync().await;
-    let here = || async {
-        let listed = f
-            .run("mail.messages.list", json!({ "folder_id": f.inbox }))
-            .await;
-        (
-            listed["messages"][0]["last_action"].clone(),
-            listed["messages"][1]["last_action"].clone(),
-        )
-    };
-    assert_eq!(here().await, (json!("replied"), Value::Null));
-
-    // Sent on since: the next sync says so, and the other is as it was.
-    f.graph.set_last_verb(&plan, 104);
-    f.sync().await;
-    assert_eq!(here().await, (json!("replied"), json!("forwarded")));
-
-    // A reply to everyone is told from a reply to its sender.
-    f.graph.set_last_verb(&quote, 103);
-    f.sync().await;
-    assert_eq!(here().await.0, json!("replied_all"));
-}

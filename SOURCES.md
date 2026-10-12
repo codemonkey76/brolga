@@ -17,7 +17,7 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Microsoft Graph error responses and resource types | https://learn.microsoft.com/graph/errors | The shape of an error body, and the meaning of 401, 404 and 503, in the fake Graph server |
 | Use delta query to track changes in Microsoft Graph data | https://learn.microsoft.com/graph/delta-query-overview | nextLink and deltaLink, `@removed`, replays, the 410 reset and `syncStateNotFound`, in `crates/graph` and `crates/sync` |
 | Get incremental changes to messages in a folder | https://learn.microsoft.com/graph/delta-query-messages | The message sync round, in `crates/sync` |
-| message: delta | https://learn.microsoft.com/graph/api/message-delta | `/me/mailFolders/{id}/messages/delta`, `$select`, `$expand`, `$orderby=receivedDateTime desc`, `Prefer: odata.maxpagesize` |
+| message: delta | https://learn.microsoft.com/graph/api/message-delta | `/me/mailFolders/{id}/messages/delta`, `$select`, `$orderby=receivedDateTime desc`, `Prefer: odata.maxpagesize`. It says `$expand` is taken for messages; Microsoft 365 refused an extended property asked for that way (400), so none is |
 | Outlook extended properties overview | https://learn.microsoft.com/graph/api/resources/extended-properties-overview | Naming a property Graph has no name for by its type and property tag: `Integer 0x1081` |
 | Get singleValueLegacyExtendedProperty | https://learn.microsoft.com/graph/api/singlevaluelegacyextendedproperty-get | `$expand=singleValueExtendedProperties($filter=id eq '…')` on a message, and the `id` and `value` it answers with |
 | mailFolder: delta | https://learn.microsoft.com/graph/api/mailfolder-delta | `/me/mailFolders/delta` |

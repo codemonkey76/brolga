@@ -1758,14 +1758,16 @@ async fn messages_delta(
     Query(query): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let mut inner = lock(&shared);
-    // A round keeps what its first request asked for: the links it is given
-    // carry it on ("message: delta", query parameters).
-    if token(&query).is_none() {
-        inner.mailbox.expands_last_verb = query.get("$expand").is_some_and(|expand| {
-            expand == "singleValueExtendedProperties($filter=id eq 'Integer 0x1081')"
-        });
+    // Microsoft 365 refuses a property asked for by `$expand` here, whatever
+    // "message: delta" says of it. Seen on a real mailbox, word for word.
+    if query.contains_key("$expand") {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Value cannot be null. (Parameter 'initialState')",
+        );
     }
+    let inner = lock(&shared);
     let link = format!("{}/me/mailFolders/{folder}/messages/delta", inner.base);
 
     delta_answer(

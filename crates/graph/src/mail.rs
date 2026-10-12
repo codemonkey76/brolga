@@ -155,9 +155,15 @@ pub struct ExtendedProperty {
 }
 
 /// What was last done with a message: answered, or sent on. Graph has no
-/// property of its own for it, so it is asked for by its property tag
+/// property of its own for it, so it is named by its property tag
 /// ("Outlook extended properties overview": `{type} {proptag}`). The tag and
 /// what its numbers mean are in [MS-OXOMSG], PidTagLastVerbExecuted.
+///
+/// A sync does not ask for it. "message: delta" says a delta query takes
+/// `$expand` for messages, but Microsoft 365 refuses this one there (400,
+/// "Parsing OData Select and Expand failed"), and a refused request stops
+/// the whole sync. Until it is fetched some other way no message has it,
+/// and none is marked as answered.
 pub(crate) const LAST_VERB: &str = "Integer 0x1081";
 
 impl Message {
@@ -185,12 +191,6 @@ impl Message {
 pub(crate) const MESSAGE_SELECT: &str = "id,parentFolderId,conversationId,subject,bodyPreview,from,toRecipients,\
     ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,flag,categories,\
     inferenceClassification";
-
-/// Asked for beside them: what was last done with each message. A delta
-/// query takes `$expand` for messages ("message: delta"), and the one
-/// property is chosen as "Get singleValueLegacyExtendedProperty" shows.
-pub(crate) const MESSAGE_EXPAND: &str =
-    "singleValueExtendedProperties($filter=id%20eq%20'Integer%200x1081')";
 
 pub(crate) const FOLDER_SELECT: &str =
     "id,displayName,parentFolderId,unreadItemCount,totalItemCount,isHidden";
