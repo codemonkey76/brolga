@@ -5007,3 +5007,49 @@ async fn a_series_changed_from_here_on_begins_on_the_day_its_new_start_falls_whe
     assert_eq!(carried[0], "2027-03-25T23:00:00Z");
     assert_eq!(named(&now, "Stand-up").len(), 3, "{now:?}");
 }
+
+#[tokio::test]
+async fn a_holiday_made_without_this_computer_being_told_is_not_made_again_at_the_next_sync() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+
+    // The calendar is made and a few days go in before the server stops answering.
+    f.graph
+        .fail_after(8, std::iter::repeat_n(Fault::Unavailable, 50));
+    let made = f
+        .run("calendar.holidays.add", json!({ "country": "NZ" }))
+        .await;
+    f.graph.clear_faults();
+    assert_eq!(made["complete"], false, "{made}");
+    let calendar = made["calendar_id"].as_str().unwrap().to_owned();
+    let year = jiff::Zoned::now().year();
+    let on_the_server = || {
+        f.graph
+            .events(
+                &calendar,
+                &format!("{year}-01-01T00:00:00Z"),
+                &format!("{}-01-01T00:00:00Z", year + 3),
+            )
+            .len()
+    };
+    let before = on_the_server();
+
+    // The next sync reads the calendar and goes on filling it. The first
+    // day it makes is made, and neither the request nor any repeat of it
+    // is answered, so this computer does not know of it.
+    f.graph.lose_event_answers(6);
+    f.sync().await;
+    assert_eq!(on_the_server(), before + 1);
+
+    // The sync that follows at once, before the calendar is due to be read
+    // again, fills the rest, and does not make that day a second time.
+    f.sync().await;
+    let known: usize = (year..=year + 2)
+        .map(|year| {
+            brolga_calendar::holidays::of("NZ", None, year)
+                .unwrap()
+                .len()
+        })
+        .sum();
+    assert_eq!(on_the_server(), known);
+}

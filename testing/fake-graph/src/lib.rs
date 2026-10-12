@@ -89,6 +89,9 @@ struct Inner {
     lose_next_rule_answer: bool,
     /// The next change to an event is made, and the caller is told the server failed.
     lose_next_event_change_answer: bool,
+    /// How many of the next requests to make an event are told the server
+    /// is busy, the event having been made.
+    losing_event_answers: u32,
     /// How many of the next changes to events are not made, the caller being told the server failed.
     failing_event_changes: u32,
     /// The next answer to an invitation is taken, and the caller is not told.
@@ -571,6 +574,13 @@ impl FakeGraph {
                 }
             }
         });
+    }
+
+    /// The next `times` requests to make an event are answered as if the
+    /// server were busy, though the event is made: with six, a request
+    /// and every repeat of it the client allows itself.
+    pub fn lose_event_answers(&self, times: u32) {
+        lock(&self.shared).losing_event_answers = times;
     }
 
     /// The next change to an event is made, and the answer is a 500: an
@@ -1301,6 +1311,10 @@ fn make_event(shared: &Shared, calendar: Option<String>, body: &Value) -> Respon
     };
     if std::mem::take(&mut inner.lose_next_event_answer) {
         // Made, and the caller is told to try again.
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if inner.losing_event_answers > 0 {
+        inner.losing_event_answers -= 1;
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
 
