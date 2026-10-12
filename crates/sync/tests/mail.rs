@@ -962,3 +962,29 @@ async fn a_flag_is_due_on_the_day_it_is_due_where_the_reader_is() {
         "2026-10-21"
     );
 }
+
+#[tokio::test]
+async fn a_standard_folder_made_after_the_first_sync_is_known_by_its_name_at_the_next() {
+    let f = Fixture::new().await;
+    // A mailbox with no archive yet.
+    f.graph.remove_folder(&f.graph.folder_id("archive"));
+    f.sync(10).sync_all().await.unwrap();
+    assert_eq!(f.db.folder_id("archive").unwrap(), None);
+
+    // One is made, as the first thing archived anywhere makes it.
+    let archive = f.graph.add_well_known_folder("archive", "Archive");
+    f.sync(10).sync_all().await.unwrap();
+    assert_eq!(f.db.folder_id("archive").unwrap(), Some(archive));
+    assert_eq!(f.db.folder_id("inbox").unwrap(), Some(f.inbox.clone()));
+
+    // With nothing new, nothing is asked after by name again.
+    let before = f.graph.requests().len();
+    f.sync(10).sync_all().await.unwrap();
+    let asked = f.graph.requests()[before..].to_vec();
+    assert!(
+        !asked
+            .iter()
+            .any(|each| each.ends_with("/mailFolders/archive")),
+        "{asked:?}"
+    );
+}

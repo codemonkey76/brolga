@@ -361,6 +361,14 @@ impl FakeGraph {
         lock(&self.shared).mailbox.add_folder(name, parent)
     }
 
+    /// Add one of the folders every mailbox may have, known from then on
+    /// by its well-known name, such as `archive`.
+    pub fn add_well_known_folder(&self, known: &'static str, name: &str) -> String {
+        lock(&self.shared)
+            .mailbox
+            .add_well_known_folder(known, name)
+    }
+
     pub fn rename_folder(&self, id: &str, name: &str) {
         lock(&self.shared).mailbox.rename_folder(id, name);
     }

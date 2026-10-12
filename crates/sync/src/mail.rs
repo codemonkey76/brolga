@@ -193,6 +193,7 @@ impl MailSync {
     pub async fn sync_folders(&self) -> Result<Synced, SyncError> {
         let mut synced = Synced::default();
         let was_full_pass = self.db.folders_sync()?.reconciling;
+        let had = self.known_folders()?;
 
         loop {
             let state = self.db.folders_sync()?;
@@ -226,23 +227,40 @@ impl MailSync {
         // Graph's v1.0 folder does not say which one is the inbox, so each
         // is asked for by its well-known name. Their ids do not change, so
         // this is done on a full pass, or while the inbox is not yet known.
-        if was_full_pass
-            || !self
-                .db
-                .folders()?
+        let folders = self.db.folders()?;
+        let known = |name: &str| {
+            folders
                 .iter()
-                .any(|f| f.well_known.as_deref() == Some("inbox"))
-        {
-            let mut known = Vec::new();
+                .any(|f| f.well_known.as_deref() == Some(name))
+        };
+        if was_full_pass || !known("inbox") {
+            let mut found = Vec::new();
             for name in WELL_KNOWN_FOLDERS {
                 if let Some(id) = self.graph.well_known_folder(name).await? {
-                    known.push((*name, id));
+                    found.push((*name, id));
                 }
             }
-            self.db.set_well_known(&known)?;
+            self.db.set_well_known(&found)?;
+        } else if folders.iter().any(|f| !had.contains(&f.id)) {
+            // A mailbox need not have every one of them from the start: an
+            // archive is made when something is first archived. So when a
+            // folder has appeared, the names still without one are asked
+            // for again, and only those.
+            let mut found = Vec::new();
+            for name in WELL_KNOWN_FOLDERS.iter().filter(|name| !known(name)) {
+                if let Some(id) = self.graph.well_known_folder(name).await? {
+                    found.push((*name, id));
+                }
+            }
+            self.db.add_well_known(&found)?;
         }
 
         Ok(synced)
+    }
+
+    /// The ids of the folders that are here.
+    fn known_folders(&self) -> Result<std::collections::HashSet<String>, SyncError> {
+        Ok(self.db.folders()?.into_iter().map(|f| f.id).collect())
     }
 
     /// Bring one folder's messages up to date. A first sync carries on from

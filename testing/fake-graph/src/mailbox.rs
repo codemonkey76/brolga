@@ -301,6 +301,16 @@ impl Mailbox {
         id
     }
 
+    /// Add a folder that is one of those every mailbox may have, to be
+    /// found from then on by its well-known name: an archive made the
+    /// first time something is archived, say.
+    pub fn add_well_known_folder(&mut self, known: &'static str, name: &str) -> String {
+        let id = self.add_folder(name, None);
+        self.well_known.insert(known, id.clone());
+
+        id
+    }
+
     pub fn rename_folder(&mut self, id: &str, name: &str) {
         if let Some(folder) = self.folders.get_mut(id) {
             folder.name = name.to_owned();

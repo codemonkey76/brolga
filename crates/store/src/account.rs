@@ -700,6 +700,26 @@ impl AccountDb {
         Ok(())
     }
 
+    /// Record which folder goes by each of these well-known names, leaving
+    /// the names not given as they are.
+    pub fn add_well_known(&self, names: &[(&str, String)]) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        for (name, id) in names {
+            transaction.execute(
+                "UPDATE folders SET well_known = NULL WHERE well_known = ?1",
+                [name],
+            )?;
+            transaction.execute(
+                "UPDATE folders SET well_known = ?1 WHERE id = ?2",
+                params![name, id],
+            )?;
+        }
+        transaction.commit()?;
+
+        Ok(())
+    }
+
     /// Apply one page of a folder's message sync, and where it leaves the
     /// sync, together or not at all.
     pub fn apply_messages(
