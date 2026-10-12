@@ -282,7 +282,7 @@ export function whenSaid(event: CalendarEvent): string {
 
 export interface Placed {
     event: CalendarEvent;
-    /** Minutes from the day's midnight to where it begins and ends on this day. */
+    /** Minutes by the clock from the day's midnight to where it begins and ends on this day. */
     from: number;
     to: number;
     /** Which of `of` columns it is in, where events overlap. */
@@ -297,7 +297,9 @@ export interface Placed {
  */
 export function layOut(events: CalendarEvent[], day: Date): Placed[] {
     const next = addDays(day, 1);
-    const minutes = (date: Date) => Math.round((+date - +day) / 60_000);
+    // By the clock, as the hours down the side are, and not by the time gone since midnight: the two differ on
+    // the day the clocks change.
+    const minutes = (date: Date) => (date <= day ? 0 : date >= next ? 24 * 60 : date.getHours() * 60 + date.getMinutes());
     const timed = events
         .filter((event) => !event.is_all_day && onDay(event, day))
         .map((event) => {

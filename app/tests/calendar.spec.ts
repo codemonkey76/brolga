@@ -977,3 +977,41 @@ test("what was being asked about one mailbox's calendar is dropped when another 
     await expect.poll(async () => (await ran(page)).filter((r) => r.command === "calendar.events.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test" });
     await expect(side.getByText("Delete with its events?")).toHaveCount(0);
 });
+
+test.describe("on the day the clocks go forward", () => {
+    // Sunday 4 October 2026 in Sydney: two in the morning is three, and the day is twenty-three hours long.
+    test.use({ timezoneId: "Australia/Sydney" });
+
+    test("an event is at the hour it says, where the line for now is", async ({ page }) => {
+        // Ten in the morning, which is nine hours after midnight.
+        await page.clock.setFixedTime(new Date("2026-10-03T23:00:00Z"));
+        await withCore(page, { accounts: [robin], events: [{ id: "d1", subject: "Brunch", start: "2026-10-03T23:00:00Z", end: "2026-10-04T00:00:00Z" }] });
+        await page.getByRole("button", { name: "Calendar", exact: true }).click();
+        const view = page.getByRole("region", { name: "Calendar" });
+        await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Day" }).click();
+
+        const brunch = (await event(page, "Brunch").boundingBox())!;
+        const line = (await view.locator(".now").boundingBox())!;
+        expect(Math.abs(brunch.y - line.y)).toBeLessThan(3);
+        // An hour long, and an hour tall.
+        expect(Math.abs(brunch.height - 48)).toBeLessThan(4);
+    });
+
+    test("when someone is busy is under the hour it is at", async ({ page }) => {
+        await page.clock.setFixedTime(new Date("2026-10-03T20:00:00Z"));
+        // Busy from ten until eleven by the clock: the nineteenth and twentieth half hours of that day.
+        await withCore(page, { accounts: [robin], events: [], busy: { "sam.taylor@example.test": "0".repeat(18) + "22" } });
+        await page.getByRole("button", { name: "Calendar", exact: true }).click();
+        await page.getByRole("button", { name: "New event" }).click();
+        const form = page.getByRole("form", { name: "New event" });
+        await form.getByLabel("Start day").fill("2026-10-04");
+        await form.getByRole("combobox", { name: "Invite" }).fill("sam.taylor@example.test");
+        await form.getByRole("button", { name: "See when people are free" }).click();
+
+        // The day shown starts at eight, so ten is its fifth half hour.
+        const cells = form.getByRole("region", { name: "Availability" }).getByRole("row", { name: /^sam/ }).locator("td");
+        await expect(cells.nth(4)).toHaveClass(/busy/);
+        await expect(cells.nth(5)).toHaveClass(/busy/);
+        await expect(cells.nth(3)).toHaveClass(/free/);
+    });
+});

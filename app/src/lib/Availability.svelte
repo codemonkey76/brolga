@@ -51,6 +51,11 @@
 
     /** The slots of the working day, each with where it is in the day's view. */
     const slots = $derived(Array.from({ length: ((TO - FROM) * 60) / SLOT }, (_, at) => (FROM * 60) / SLOT + at));
+    /**
+     * Where a slot of the day by the clock is in what was found, which counts half hours from midnight as they
+     * pass: the two differ on the day the clocks change.
+     */
+    const foundAt = (slot: number) => Math.round((+new Date(midnight.getFullYear(), midnight.getMonth(), midnight.getDate(), 0, slot * SLOT) - +midnight) / (SLOT * 60_000));
     /** Times in the working day when everyone is free for long enough. */
     const suggested = $derived(
         (found?.free_slots ?? [])
@@ -83,7 +88,7 @@
                             <td colspan={slots.length} class="unknown">Not known</td>
                         {:else}
                             {#each slots as slot (slot)}
-                                {@const status = STATUS[Number(person.availability[slot] ?? "0")] ?? "busy"}
+                                {@const status = STATUS[Number(person.availability[foundAt(slot)] ?? "0")] ?? "busy"}
                                 <td class={status} title={status}></td>
                             {/each}
                         {/if}
