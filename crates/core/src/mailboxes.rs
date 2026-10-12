@@ -250,6 +250,86 @@ impl Mailboxes {
         self.open.lock().await.remove(id);
     }
 
+    /// Close a mailbox and delete this computer's copy of it: its
+    /// database, what SQLite keeps beside one, and the file that says a
+    /// sync is running. The mailbox itself is untouched.
+    pub async fn forget(&self, id: &str) {
+        let mut open = self.open.lock().await;
+        open.remove(id);
+        let Some(file) = self.file(id) else {
+            return;
+        };
+        for suffix in ["", "-wal", "-shm"] {
+            let mut path = file.clone().into_os_string();
+            path.push(suffix);
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_file(file.with_extension("sync-lock"));
+    }
+
+    /// Delete everything kept on this computer for an account that has
+    /// been removed: its own mail, that of each mailbox shared with it, and
+    /// the list of those.
+    pub async fn forget_account(&self, account_id: &str) -> Result<(), String> {
+        for shared in self.shared(account_id)? {
+            self.forget(&shared.id(account_id)).await;
+        }
+        self.forget(account_id).await;
+        self.global
+            .remove_setting(&format!("shared:{account_id}"))
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    /// Bring a database kept under the name it had before names were made
+    /// to tell every mailbox apart to the name it has now. Only where the
+    /// old name is no other mailbox's: two mailboxes that had one name
+    /// between them shared one file, and whose it is cannot be told.
+    fn adopt_former_file(&self, id: &str, path: &std::path::Path) {
+        let Some(folder) = path.parent() else {
+            return;
+        };
+        let former_name = former_file_name(id);
+        let former = folder.join(&former_name);
+        if former == path || path.exists() || !former.exists() {
+            return;
+        }
+        let mut known: Vec<String> = match self.accounts() {
+            Ok(all) => all.into_iter().map(|account| account.id).collect(),
+            Err(_) => return,
+        };
+        match self.archives() {
+            Ok(all) => known.extend(all.into_iter().map(|archive| archive.id)),
+            Err(_) => return,
+        }
+        if known
+            .iter()
+            .any(|other| other != id && file_name(other) == former_name)
+        {
+            return;
+        }
+
+        let beside = |file: &std::path::Path, suffix: &str| {
+            let mut other = file.as_os_str().to_owned();
+            other.push(suffix);
+            PathBuf::from(other)
+        };
+        // The database first: if it will not move, nothing has.
+        if std::fs::rename(&former, path).is_err() {
+            return;
+        }
+        for suffix in ["-wal", "-shm"] {
+            let from = beside(&former, suffix);
+            if from.exists() && std::fs::rename(&from, beside(path, suffix)).is_err() {
+                // A database is not parted from its write-ahead log.
+                let _ = std::fs::rename(path, &former);
+                return;
+            }
+        }
+        let _ = std::fs::remove_file(former.with_extension("sync-lock"));
+    }
+
     /// Where a mailbox's copy is kept on this computer, if it is kept in a file.
     pub fn file(&self, id: &str) -> Option<PathBuf> {
         self.data_dir
@@ -332,10 +412,33 @@ impl Mailboxes {
             return Ok(mailbox.clone());
         }
 
+        // A shared mailbox is reached with its account's own sign-in.
+        let (owner, shared) = match account.id.split_once(SHARED) {
+            Some((owner, address)) => (owner.to_owned(), Some(address.to_owned())),
+            None => (account.id.clone(), None),
+        };
+        let archive = account.id.starts_with(ARCHIVE);
+        // An account that has been removed is not opened again by
+        // something that began before it went, such as a sync: that would
+        // make its database anew after it was deleted.
+        if !archive
+            && !self
+                .accounts
+                .list()
+                .map_err(|e| e.to_string())?
+                .iter()
+                .any(|each| each.id == owner)
+        {
+            return Err(format!("There is no account `{owner}`."));
+        }
+
         let path = self
             .data_dir
             .as_ref()
             .map(|folder| folder.join("accounts").join(file_name(&account.id)));
+        if let Some(path) = &path {
+            self.adopt_former_file(&account.id, path);
+        }
         let db = Arc::new(
             match &path {
                 Some(path) => AccountDb::open(path),
@@ -343,13 +446,7 @@ impl Mailboxes {
             }
             .map_err(|e| e.to_string())?,
         );
-        // A shared mailbox is reached with its account's own sign-in.
-        let (owner, shared) = match account.id.split_once(SHARED) {
-            Some((owner, address)) => (owner.to_owned(), Some(address.to_owned())),
-            None => (account.id.clone(), None),
-        };
         let owner_id = owner.clone();
-        let archive = account.id.starts_with(ARCHIVE);
         let tokens = Arc::new(AccountTokens {
             accounts: self.accounts.clone(),
             account_id: owner,
@@ -389,9 +486,69 @@ impl Mailboxes {
     }
 }
 
-/// A file name for an account's database. The id is two GUIDs and a dot,
-/// but nothing that reaches a path is taken on trust.
-fn file_name(account_id: &str) -> String {
+/// A file name for a mailbox's database: one no other mailbox has, and
+/// one that cannot lead out of the folder, since nothing that reaches a
+/// path is taken on trust.
+///
+/// An id of the usual kind keeps the name it has always had. That is an
+/// account's (two GUIDs and a dot), an archive's (`archive:` and a number),
+/// or a shared mailbox's whose address has only letters, digits, `.`, `-`
+/// and `_` before the `@` and a host name after it: the `:`, `~` and `@`
+/// are written `_`. Such a name can be read back in one way only, since an
+/// account's id and a host name have no `_` in them.
+///
+/// Any other id is written out a byte at a time after `__`, which no name
+/// of the usual kind begins with: letters, digits and `-` as they are, and
+/// every other byte as `_` and its two hexadecimal digits. Before this an
+/// address with `+` in it had the name of the address with `_` there, and
+/// the two were kept in one file.
+fn file_name(id: &str) -> String {
+    match usual_name(id) {
+        Some(name) => format!("{name}.db"),
+        None => {
+            let mut name = String::from("__");
+            for byte in id.bytes() {
+                if byte.is_ascii_alphanumeric() || byte == b'-' {
+                    name.push(char::from(byte));
+                } else {
+                    name.push_str(&format!("_{byte:02X}"));
+                }
+            }
+            format!("{name}.db")
+        }
+    }
+}
+
+/// The name an id of the usual kind has always had, or nothing for an id
+/// of any other kind.
+fn usual_name(id: &str) -> Option<String> {
+    let plain = |part: &str, with: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || with.contains(c))
+    };
+    // A name is not begun or ended with a dot: those were taken off.
+    let inside = |name: String| (!name.starts_with('.') && !name.ends_with('.')).then_some(name);
+
+    if let Some(number) = id.strip_prefix(ARCHIVE) {
+        return plain(number, "")
+            .then(|| format!("archive_{number}"))
+            .and_then(inside);
+    }
+    if let Some((owner, address)) = id.split_once(SHARED) {
+        let (local, host) = address.rsplit_once('@')?;
+        return (plain(owner, "") && plain(local, "_") && plain(host, ""))
+            .then(|| format!("{owner}_{local}_{host}"))
+            .and_then(inside);
+    }
+
+    plain(id, "").then(|| id.to_owned()).and_then(inside)
+}
+
+/// The file name a mailbox's database had before names were made to tell
+/// every mailbox apart.
+fn former_file_name(account_id: &str) -> String {
     let safe: String = account_id
         .chars()
         .map(|c| {
@@ -413,8 +570,58 @@ mod tests {
     #[test]
     fn an_account_id_cannot_steer_its_database_out_of_the_folder() {
         assert_eq!(file_name("tenant-1.user-2"), "tenant-1.user-2.db");
-        assert_eq!(file_name("../../etc/passwd"), "_.._etc_passwd.db");
-        assert_eq!(file_name(".."), ".db");
+        assert_eq!(
+            file_name("../../etc/passwd"),
+            "___2E_2E_2F_2E_2E_2Fetc_2Fpasswd.db"
+        );
+        assert_eq!(file_name(".."), "___2E_2E.db");
         assert!(!file_name("a/b\\c").contains(['/', '\\']));
+    }
+
+    #[test]
+    fn an_id_of_the_usual_kind_keeps_the_file_name_it_always_had() {
+        for usual in [
+            "0a1b2c3d-0000-4000-8000-0000000000aa.0a1b2c3d-0000-4000-8000-000000000001",
+            "tenant-1.user-2",
+            "archive:1760000000",
+            "tenant-1.user-2~support@example.test",
+            "tenant-1.user-2~no_reply@mail.example.test",
+            "tenant-1.user-2~First.Last@example.test",
+        ] {
+            assert_eq!(file_name(usual), former_file_name(usual), "{usual}");
+        }
+    }
+
+    #[test]
+    fn no_two_mailboxes_have_one_file_name() {
+        let ids = [
+            "t.u~info_sales@example.test",
+            "t.u~info+sales@example.test",
+            "t.u~info~sales@example.test",
+            "t.u~info@sales@example.test",
+            "t.u~info sales@example.test",
+            "t.u~info@sales_example.test",
+            "t.u_info~sales@example.test",
+            "t.u~info_sales_example.test",
+            "t.u~info_@sales.example.test",
+            "t.u~info@_sales.example.test",
+            "t.u_info_sales_example.test",
+            "t.u~info.sales@example.test",
+            "t.u~.@example.test.",
+            "t.u~.@example.test",
+            ".t.u",
+            "t.u",
+            "t.u.",
+            "archive:1",
+            "archive_1",
+            "archive~1@x",
+            "__t.u",
+            "",
+        ];
+        let names: std::collections::HashSet<String> = ids.iter().map(|id| file_name(id)).collect();
+
+        assert_eq!(names.len(), ids.len(), "{names:?}");
+        // And the two that began it had one name between them before.
+        assert_eq!(former_file_name(ids[0]), former_file_name(ids[1]));
     }
 }

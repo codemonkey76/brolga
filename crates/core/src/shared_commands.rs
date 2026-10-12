@@ -42,9 +42,7 @@ async fn add(mailboxes: Arc<Mailboxes>, args: Add) -> Result<Value, CommandError
         ));
     }
     let address = args.address.trim().to_lowercase();
-    if !address.contains('@')
-        || address.contains(|c: char| c.is_whitespace() || c == '~' || c == '/')
-    {
+    if !is_address(&address) {
         return Err(failed(format!("`{address}` is not an email address.")));
     }
     if address.eq_ignore_ascii_case(&account.username) {
@@ -118,10 +116,7 @@ async fn add(mailboxes: Arc<Mailboxes>, args: Add) -> Result<Value, CommandError
         Err(error) => {
             all.retain(|each| each.address != address);
             mailboxes.set_shared(&account.id, &all).map_err(failed)?;
-            mailboxes.close(&id).await;
-            if let Some(file) = mailboxes.file(&id) {
-                let _ = std::fs::remove_file(file);
-            }
+            mailboxes.forget(&id).await;
             return Err(error);
         }
         Ok(true) => {
@@ -169,23 +164,53 @@ async fn remove(mailboxes: Arc<Mailboxes>, args: Remove) -> Result<Value, Comman
         ));
     };
     let mut all = mailboxes.shared(owner).map_err(failed)?;
-    let before = all.len();
-    all.retain(|each| !each.address.eq_ignore_ascii_case(address));
-    if all.len() == before {
+    // The mailbox as it was added, whatever case it is asked for in: it
+    // is open, and kept on this computer, under the id it was given then.
+    let (gone, kept): (Vec<SharedMailbox>, Vec<SharedMailbox>) = all
+        .drain(..)
+        .partition(|each| each.address.eq_ignore_ascii_case(address));
+    if gone.is_empty() {
         return Ok(json!({ "removed": false }));
     }
-    mailboxes.set_shared(owner, &all).map_err(failed)?;
+    mailboxes.set_shared(owner, &kept).map_err(failed)?;
     // Its copy on this computer goes too. The mailbox itself is untouched.
-    mailboxes.close(&args.mailbox_id).await;
-    if let Some(file) = mailboxes.file(&args.mailbox_id) {
-        for suffix in ["", "-wal", "-shm"] {
-            let mut path = file.clone().into_os_string();
-            path.push(suffix);
-            let _ = std::fs::remove_file(path);
-        }
+    for each in gone {
+        mailboxes.forget(&each.id(owner)).await;
     }
 
     Ok(json!({ "removed": true }))
+}
+
+/// Whether this is an email address of the ordinary kind (RFC 5321
+/// section 4.1.2, without the quoted and bracketed forms, and RFC 1035
+/// section 2.3.4 for the lengths): the address goes into the mailbox's id,
+/// a file name and the address of every request for it, so nothing that
+/// only looks like one is let through. An address not written in ASCII is
+/// not taken either.
+fn is_address(address: &str) -> bool {
+    let Some((local, host)) = address.rsplit_once('@') else {
+        return false;
+    };
+    let local_is_good = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && local
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".!#$%&'*+-=?^_{|}".contains(c));
+    let labels: Vec<&str> = host.split('.').collect();
+    let host_is_good = host.len() <= 253
+        && labels.len() >= 2
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        });
+
+    local_is_good && host_is_good && address.len() <= 254
 }
 
 fn handler<A, F, Fut>(mailboxes: &Arc<Mailboxes>, run: F) -> Handler
@@ -291,4 +316,48 @@ pub(crate) fn register(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_email_address_is_taken_for_one() {
+        for good in [
+            "support@example.test",
+            "first.last@mail.example.test",
+            "info+sales@example.test",
+            "no_reply@example-1.test",
+            "o'brien@example.test",
+        ] {
+            assert!(is_address(good), "{good}");
+        }
+        for bad in [
+            "",
+            "support",
+            "@example.test",
+            "support@",
+            "support@example",
+            "a@b@example.test",
+            "sup port@example.test",
+            "support@exam ple.test",
+            "../messages@example.test",
+            "a/b@example.test",
+            "a~b@example.test",
+            "a?b@example.test/x",
+            "a@example.test?x",
+            "a@example.test#x",
+            "a@example..test",
+            "a@-example.test",
+            ".a@example.test",
+            "a..b@example.test",
+            "a@example.test.",
+            "a\\b@example.test",
+            "a%2fb@example.test\n",
+            "\u{e9}@example.test",
+        ] {
+            assert!(!is_address(bad), "{bad}");
+        }
+    }
 }

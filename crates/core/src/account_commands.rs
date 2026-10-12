@@ -27,6 +27,8 @@ pub(crate) struct DeviceSignIns {
 #[derive(Clone)]
 pub(crate) struct Context {
     pub accounts: Arc<Accounts>,
+    /// The mail kept on this computer, which goes when its account does.
+    pub mailboxes: Arc<crate::mailboxes::Mailboxes>,
     pub open_browser: OpenBrowser,
     pub default_client_id: Option<String>,
     pub device_sign_ins: Arc<DeviceSignIns>,
@@ -189,7 +191,23 @@ impl Context {
     }
 
     async fn remove(self, args: AccountId) -> Result<Value, CommandError> {
-        Ok(json!({ "removed": self.accounts.remove(&args.id).await.map_err(failed)? }))
+        // The saved sign-in and the account first: if the secret store
+        // will not let the sign-in go, nothing is removed and it can be
+        // tried again.
+        let removed = self.accounts.remove(&args.id).await.map_err(|e| {
+            failed(format!(
+                "The account was not removed, because its saved sign-in could not be deleted: {e}"
+            ))
+        })?;
+        // Then its mail on this computer, and that of the mailboxes shared with it.
+        if removed {
+            self.mailboxes
+                .forget_account(&args.id)
+                .await
+                .map_err(failed)?;
+        }
+
+        Ok(json!({ "removed": removed }))
     }
 }
 
@@ -401,7 +419,8 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
         CommandSpec {
             id: "accounts.remove".to_owned(),
             title: "Remove an account".to_owned(),
-            description: "Remove an account from this client and forget its saved sign-in. Nothing is deleted from the mailbox itself."
+            description: "Remove an account from this client: forget its saved sign-in, and delete this computer's copy of its mail and of the \
+                          mailboxes shared with it. Nothing is deleted from the mailbox itself."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: true,

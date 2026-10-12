@@ -8,37 +8,47 @@ use brolga_auth::{Authority, MemorySecrets};
 use brolga_commands::Registry;
 use brolga_core::{Core, CoreOptions};
 use brolga_fake_graph::{FakeGraph, FakeIdentity, FakeMessage};
+
 use serde_json::{Value, json};
 
 struct Fixture {
-    #[allow(dead_code)]
     identity: FakeIdentity,
     graph: FakeGraph,
     registry: Arc<Registry>,
+}
+
+/// Brolga as it is when it starts, with what it kept the last time.
+fn started(
+    identity: &FakeIdentity,
+    graph: &FakeGraph,
+    data_dir: Option<std::path::PathBuf>,
+    secrets: Arc<MemorySecrets>,
+) -> Arc<Registry> {
+    Core::open(CoreOptions {
+        data_dir,
+        downloads_dir: None,
+        secrets,
+        open_browser: Arc::new(|url| {
+            let url = url.to_owned();
+            tokio::spawn(async move {
+                let _ = reqwest::get(url).await;
+            });
+            Ok(())
+        }),
+        authority: Authority::new(identity.base_url()),
+        graph_base: Some(graph.base_url()),
+        default_client_id: Some("client".to_owned()),
+        fetch_images_from_private_hosts: true,
+    })
+    .unwrap()
+    .registry()
 }
 
 impl Fixture {
     async fn signed_in(data_dir: Option<std::path::PathBuf>) -> Self {
         let identity = FakeIdentity::start().await.unwrap();
         let graph = FakeGraph::start().await.unwrap();
-        let core = Core::open(CoreOptions {
-            data_dir,
-            downloads_dir: None,
-            secrets: Arc::new(MemorySecrets::default()),
-            open_browser: Arc::new(|url| {
-                let url = url.to_owned();
-                tokio::spawn(async move {
-                    let _ = reqwest::get(url).await;
-                });
-                Ok(())
-            }),
-            authority: Authority::new(identity.base_url()),
-            graph_base: Some(graph.base_url()),
-            default_client_id: Some("client".to_owned()),
-            fetch_images_from_private_hosts: true,
-        })
-        .unwrap();
-        let registry = core.registry();
+        let registry = started(&identity, &graph, data_dir, Arc::default());
         registry
             .execute("accounts.sign_in", json!({}))
             .await
@@ -159,5 +169,227 @@ async fn mail_on_this_computer_is_for_its_owner_alone() {
     }
 
     drop(f);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+fn message(subject: &str) -> FakeMessage {
+    FakeMessage::new(
+        subject,
+        "Alex Chen",
+        "alex@example.test",
+        "2026-10-02T09:00:00Z",
+    )
+}
+
+#[tokio::test]
+async fn removing_an_account_deletes_its_mail_from_this_computer() {
+    let folder = data_dir("remove");
+    let f = Fixture::signed_in(Some(folder.clone())).await;
+    f.graph
+        .add_message(&f.graph.folder_id("inbox"), message("Mine"));
+    f.graph.add_shared_mailbox("support@example.test", true);
+    f.run(
+        "accounts.shared.add",
+        json!({ "address": "support@example.test" }),
+    )
+    .await;
+    f.run("mail.sync", json!({})).await;
+    let account = f.run("accounts.list", json!({})).await["accounts"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let before = kept(&folder);
+    assert!(
+        before.iter().filter(|name| name.ends_with(".db")).count() == 2,
+        "{before:?}"
+    );
+
+    let removed = f.run("accounts.remove", json!({ "id": account })).await;
+
+    assert_eq!(removed["removed"], true);
+    assert_eq!(kept(&folder), Vec::<String>::new());
+    // Nor is the shared mailbox there for whoever signs in next.
+    f.run("accounts.sign_in", json!({})).await;
+    let shared = f.run("accounts.shared.list", json!({})).await;
+    assert_eq!(shared["mailboxes"], json!([]));
+
+    drop(f);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
+async fn a_shared_mailbox_is_removed_whatever_case_it_is_asked_for_in() {
+    let folder = data_dir("case");
+    let f = Fixture::signed_in(Some(folder.clone())).await;
+    f.graph.add_shared_mailbox("support@example.test", true);
+    let added = f
+        .run(
+            "accounts.shared.add",
+            json!({ "address": "support@example.test" }),
+        )
+        .await;
+    f.run("mail.sync", json!({})).await;
+    let id = added["mailbox"]["id"].as_str().unwrap();
+    assert!(
+        kept(&folder)
+            .iter()
+            .any(|name| name.contains("support_example.test")),
+        "{:?}",
+        kept(&folder)
+    );
+
+    let removed = f
+        .run(
+            "accounts.shared.remove",
+            json!({ "mailbox_id": id.replace("support", "SUPPORT") }),
+        )
+        .await;
+
+    assert_eq!(removed["removed"], true);
+    let left = kept(&folder);
+    assert!(!left.iter().any(|name| name.contains("upport")), "{left:?}");
+    // The account's own mail is still there.
+    assert!(left.iter().any(|name| name.ends_with(".db")), "{left:?}");
+
+    drop(f);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
+async fn two_addresses_that_differ_by_a_sign_are_kept_apart() {
+    let folder = data_dir("apart");
+    let f = Fixture::signed_in(Some(folder.clone())).await;
+    for (address, subject) in [
+        ("info_sales@example.test", "Underscore"),
+        ("info+sales@example.test", "Plus"),
+    ] {
+        f.graph.add_shared_mailbox(address, true);
+        f.graph
+            .in_shared(address, |mailbox| {
+                let inbox = mailbox.folder_id("inbox").unwrap();
+                mailbox.add_message(&inbox, message(subject));
+            })
+            .unwrap();
+        f.run("accounts.shared.add", json!({ "address": address }))
+            .await;
+    }
+    f.run("mail.sync", json!({})).await;
+
+    for (address, subject) in [
+        ("info_sales@example.test", "Underscore"),
+        ("info+sales@example.test", "Plus"),
+    ] {
+        let shared = f.run("accounts.shared.list", json!({})).await;
+        let id = shared["mailboxes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|each| each["address"] == address)
+            .unwrap()["id"]
+            .clone();
+        let folders = f
+            .run("mail.folders.list", json!({ "account_id": id }))
+            .await;
+        let inbox = folders["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|each| each["well_known"] == "inbox")
+            .unwrap()["id"]
+            .clone();
+        let listed = f
+            .run(
+                "mail.messages.list",
+                json!({ "account_id": id, "folder_id": inbox }),
+            )
+            .await;
+        assert_eq!(listed["total"], 1, "{address}");
+        assert_eq!(listed["messages"][0]["subject"], subject, "{address}");
+    }
+    assert_eq!(
+        kept(&folder)
+            .iter()
+            .filter(|name| name.ends_with(".db"))
+            .count(),
+        3
+    );
+
+    drop(f);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[tokio::test]
+async fn mail_kept_under_a_mailbox_s_former_file_name_is_found_under_its_new_one() {
+    let folder = data_dir("former");
+    let identity = FakeIdentity::start().await.unwrap();
+    let graph = FakeGraph::start().await.unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let address = "info+sales@example.test";
+    graph.add_shared_mailbox(address, true);
+    graph
+        .in_shared(address, |mailbox| {
+            let inbox = mailbox.folder_id("inbox").unwrap();
+            mailbox.add_message(&inbox, message("Kept"));
+        })
+        .unwrap();
+    let id = {
+        let registry = started(&identity, &graph, Some(folder.clone()), secrets.clone());
+        registry
+            .execute("accounts.sign_in", json!({}))
+            .await
+            .unwrap();
+        let added = registry
+            .execute("accounts.shared.add", json!({ "address": address }))
+            .await
+            .unwrap();
+        registry.execute("mail.sync", json!({})).await.unwrap();
+        added["mailbox"]["id"].as_str().unwrap().to_owned()
+    };
+    // As an earlier version left it: under the name that `info_sales` has too.
+    let accounts = folder.join("accounts");
+    let new: Vec<String> = kept(&folder)
+        .into_iter()
+        .filter(|name| name.starts_with("__"))
+        .collect();
+    assert!(new.iter().any(|name| name.ends_with(".db")), "{new:?}");
+    let former = id.replace(['~', '@', '+'], "_");
+    for name in &new {
+        let suffix = name.split_once(".db").map(|(_, after)| after);
+        match suffix {
+            Some(after) => std::fs::rename(
+                accounts.join(name),
+                accounts.join(format!("{former}.db{after}")),
+            )
+            .unwrap(),
+            None => std::fs::remove_file(accounts.join(name)).unwrap(),
+        }
+    }
+
+    // Started again, with the server out of reach: what is read is what was kept.
+    let registry = started(&identity, &graph, Some(folder.clone()), secrets);
+    drop(graph);
+    let folders = registry
+        .execute("mail.folders.list", json!({ "account_id": id }))
+        .await
+        .unwrap();
+    let inbox = folders["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["well_known"] == "inbox")
+        .unwrap()["id"]
+        .clone();
+    let listed = registry
+        .execute(
+            "mail.messages.list",
+            json!({ "account_id": id, "folder_id": inbox }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(listed["messages"][0]["subject"], "Kept");
+    let now = kept(&folder);
+    assert!(!now.iter().any(|name| name.starts_with(&former)), "{now:?}");
+
     let _ = std::fs::remove_dir_all(folder);
 }

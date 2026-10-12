@@ -152,6 +152,7 @@ impl Core {
             &mut registry,
             account_commands::Context {
                 accounts: accounts.clone(),
+                mailboxes: probed.clone(),
                 open_browser: options.open_browser,
                 default_client_id: options.default_client_id,
                 device_sign_ins: Default::default(),
