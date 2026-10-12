@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.11" date="2026-10-13">
+      <description>
+        <p>Many fixes from a review of the whole program: keys and actions reach the message they are meant for, a message cannot be sent by mistake or without its files, one folder that fails no longer holds up the rest, and an agent's request to send shows exactly what would go.</p>
+      </description>
+    </release>
     <release version="0.1.10" date="2026-10-13">
       <description>
         <p>Public holidays can be added as a calendar, for a country or one of its states. Read mail stands back so that bold means unread, and the small calendar shows the days on view as one band.</p>
