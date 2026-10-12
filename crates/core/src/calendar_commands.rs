@@ -199,7 +199,7 @@ struct Shown {
     shown: bool,
 }
 
-fn failed(reason: impl std::fmt::Display) -> CommandError {
+pub(crate) fn failed(reason: impl std::fmt::Display) -> CommandError {
     CommandError::Failed(reason.to_string())
 }
 
@@ -528,7 +528,7 @@ fn given<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<Option<i64>
 /// a moment with its offset (`2026-10-19T23:00:00Z`), which is put into the
 /// zone. An all-day event is given by its days, and ends on the day after
 /// its last.
-fn times(
+pub(crate) fn times(
     start: &str,
     end: &str,
     zone: Option<&str>,
@@ -689,7 +689,7 @@ fn event_body(fields: &Fields) -> Result<Value, CommandError> {
 
 /// Why a change to the calendar was not made, said so that it is plain
 /// nothing here was changed.
-fn not_made(error: brolga_graph::GraphError) -> CommandError {
+pub(crate) fn not_made(error: brolga_graph::GraphError) -> CommandError {
     if error.is_transient() {
         failed(
             "Microsoft 365 could not be reached, so the calendar was not changed. Sync before trying again, in case it was.",
@@ -700,7 +700,7 @@ fn not_made(error: brolga_graph::GraphError) -> CommandError {
 }
 
 /// Keep an event as the server has just given it, and say it.
-fn kept(
+pub(crate) fn kept(
     mailbox: &crate::mailboxes::Mailbox,
     calendar_id: &str,
     event: brolga_graph::Event,
@@ -1830,7 +1830,7 @@ async fn set_shown(mailboxes: Arc<Mailboxes>, args: Shown) -> Result<Value, Comm
     Ok(json!({ "calendar_id": args.calendar_id, "shown": args.shown }))
 }
 
-fn handler<A, F, Fut>(mailboxes: &Arc<Mailboxes>, run: F) -> Handler
+pub(crate) fn handler<A, F, Fut>(mailboxes: &Arc<Mailboxes>, run: F) -> Handler
 where
     A: serde::de::DeserializeOwned + Send + 'static,
     F: Fn(Arc<Mailboxes>, A) -> Fut + Send + Sync + 'static,

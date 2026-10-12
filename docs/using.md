@@ -87,6 +87,17 @@ up in one stays closed wherever it is listed. A calendar someone has
 shared with you appears in the calendar list once it is among your calendars
 in Microsoft 365, labelled with whose it is.
 
+## Public holidays
+
+In the calendar, the palm tree beside the **+** over the list of calendars
+adds a calendar of public holidays. Choose a country and, where its states
+or provinces keep days of their own, which of them. The days go into your
+Microsoft 365 account as a calendar of all-day events called, say,
+"Queensland holidays", so your phone shows them too. It is filled from the
+start of this year to two years on, and a further year is added as it comes
+within reach. Hide it with its tick, or delete it like any other calendar.
+A day declared at short notice is not there until a newer Brolga brings it.
+
 ## Old mail from Outlook
 
 **Import a PST file…** on the Accounts screen reads an Outlook data file into

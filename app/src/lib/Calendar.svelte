@@ -10,7 +10,10 @@
         type Scope,
         repeatSaid,
         cancelEvent,
+        addHolidays,
         createCalendar,
+        holidayPlaces,
+        type HolidayPlace,
         deleteCalendar,
         createEvent,
         deleteEvent,
@@ -37,7 +40,7 @@
     import MonthGrid from "./MonthGrid.svelte";
     import EventEditor from "./EventEditor.svelte";
     import Rsvp from "./Rsvp.svelte";
-    import { Pencil, Plus, Trash, X } from "@lucide/svelte";
+    import { Pencil, Plus, TreePalm, Trash, X } from "@lucide/svelte";
     import TimeGrid from "./TimeGrid.svelte";
 
     interface Props {
@@ -309,6 +312,54 @@
         }
     }
 
+    /** The places whose holidays can be added, while one is being chosen. Null when none is. */
+    let places = $state<HolidayPlace[] | null>(null);
+    let country = $state("");
+    let region = $state("");
+    let addingHolidays = $state(false);
+    const regions = $derived(places?.find((each) => each.code === country)?.regions ?? []);
+    /** Holidays go in a calendar of one's own, not in a mailbox someone shared. */
+    const own = $derived(!accounts.find((each) => each.id === accountId)?.shared_with);
+
+    async function chooseHolidays() {
+        if (places) return void (places = null);
+        naming = null;
+        try {
+            places = await holidayPlaces();
+            // Where this computer says it is, to begin with.
+            let here = "";
+            try {
+                here = new Intl.Locale(navigator.language).maximize().region ?? "";
+            } catch {
+                // Nowhere known: the first country in the list.
+            }
+            country = places.some((each) => each.code === here) ? here : (places[0]?.code ?? "");
+            region = "";
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    /** The list of countries comes after the button was pressed, so the keyboard is put on it when it does. */
+    const focused = (node: HTMLElement) => node.focus();
+    const putAway = (pressed: KeyboardEvent) => pressed.key === "Escape" && (places = null);
+
+    async function addHolidayCalendar(submitted: SubmitEvent) {
+        submitted.preventDefault();
+        if (!accountId || !country || addingHolidays) return;
+        addingHolidays = true;
+        try {
+            const made = await addHolidays(accountId, country, region || undefined);
+            places = null;
+            problem = made.problem ?? null;
+            await load();
+        } catch (failure) {
+            problem = say(failure);
+        } finally {
+            addingHolidays = false;
+        }
+    }
+
     async function dropCalendar(calendar: Calendar) {
         if (!accountId) return;
         try {
@@ -406,8 +457,31 @@
 
         <h2 id="calendars-heading">
             Calendars
-            <button type="button" class="add" aria-label="New calendar" title="New calendar" onclick={() => (naming = "")}><Plus size={14} aria-hidden="true" /></button>
+            <span class="adds">
+            <button type="button" class="add" aria-label="New calendar" title="New calendar" onclick={() => ((naming = ""), (places = null))}><Plus size={14} aria-hidden="true" /></button>
+            {#if own}
+                <button type="button" class="add" aria-label="Add holidays" title="Add a calendar of public holidays" aria-expanded={places !== null} onclick={chooseHolidays}><TreePalm size={14} aria-hidden="true" /></button>
+            {/if}
+            </span>
         </h2>
+        {#if places}
+            <form class="holidays" aria-label="Holidays to add" onsubmit={addHolidayCalendar}>
+                <select aria-label="Country" use:focused bind:value={country} onchange={() => (region = "")} onkeydown={putAway}>
+                    {#each places as each (each.code)}
+                        <option value={each.code}>{each.name}</option>
+                    {/each}
+                </select>
+                {#if regions.length > 0}
+                    <select aria-label="State or region" bind:value={region} onkeydown={putAway}>
+                        <option value="">All of the country</option>
+                        {#each regions as each (each.code)}
+                            <option value={each.code}>{each.name}</option>
+                        {/each}
+                    </select>
+                {/if}
+                <button type="submit" disabled={!country || addingHolidays}>{addingHolidays ? "Adding…" : "Add holidays"}</button>
+            </form>
+        {/if}
         {#if naming !== null}
             <form class="naming" onsubmit={addCalendar}>
                 <!-- svelte-ignore a11y_autofocus -->
@@ -653,6 +727,11 @@
         opacity: 0.6;
     }
 
+    .adds {
+        display: flex;
+        gap: 0.2rem;
+    }
+
     aside .add:hover,
     aside .bin:hover {
         opacity: 1;
@@ -679,6 +758,18 @@
         display: flex;
         gap: 0.3rem;
         margin-bottom: 0.4rem;
+    }
+
+    .holidays {
+        display: grid;
+        gap: 0.3rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .holidays select {
+        min-width: 0;
+        font: inherit;
+        font-size: 0.85rem;
     }
 
     .naming input {

@@ -125,6 +125,13 @@ The icons are Lucide's (https://lucide.dev), used under the ISC licence
 through the `@lucide/svelte` package. None is taken from, or drawn after,
 any Microsoft product.
 
+## Data
+
+| Source | URL | Used for |
+| --- | --- | --- |
+| `holidays` (vacanza), MIT | https://github.com/vacanza/holidays | The public holidays of each country and its regions for a span of years, worked out by release 0.106 and written to `crates/calendar/data/holidays.json` by `tools/holidays/generate.py`. The library is not a dependency and is not shipped |
+| Nager.Holidays terms of service | https://nagerholidays.com/legal/termsofservice | Looked at as a source of holidays and not used: its web service is for private or non-profit projects, and its days for Australia's states were less complete |
+
 ## Libraries
 
 Open source libraries are dependencies, listed in `Cargo.toml` and

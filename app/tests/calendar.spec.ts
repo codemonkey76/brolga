@@ -646,7 +646,7 @@ test("a calendar is added and deleted from the list, and the main one cannot be"
 
     await list.getByRole("button", { name: "New calendar" }).click();
     await list.getByRole("textbox", { name: "Name of the new calendar" }).fill("Training");
-    await list.getByRole("button", { name: "Add" }).click();
+    await list.getByRole("button", { name: "Add", exact: true }).click();
     await expect(list.getByRole("checkbox", { name: "Training" })).toBeChecked();
 
     // The main calendar has no delete; the family one has, and takes its events with it.
@@ -833,4 +833,30 @@ test("with one mailbox there is no choice of whose calendar", async ({ page }) =
     const view = await calendar(page);
     await expect(view).toBeVisible();
     await expect(page.getByRole("complementary", { name: "Calendars" }).getByRole("combobox", { name: "Account" })).toHaveCount(0);
+});
+
+test("public holidays are added as a calendar of their own, for a country or one of its states", async ({ page }) => {
+    await calendar(page);
+    const list = page.getByRole("complementary", { name: "Calendars" });
+
+    // The palm beside the plus asks which country, and which part of it where the parts differ.
+    await list.getByRole("button", { name: "Add holidays" }).click();
+    const form = list.getByRole("form", { name: "Holidays to add" });
+    await form.getByRole("combobox", { name: "Country" }).selectOption({ label: "Japan" });
+    await expect(form.getByRole("combobox", { name: "State or region" })).toHaveCount(0);
+    await form.getByRole("combobox", { name: "Country" }).selectOption({ label: "Australia" });
+    await expect(form.getByRole("combobox", { name: "State or region" }).getByRole("option")).toHaveText(["All of the country", "New South Wales", "Queensland"]);
+    await form.getByRole("combobox", { name: "State or region" }).selectOption({ label: "Queensland" });
+    await form.getByRole("button", { name: "Add holidays" }).click();
+
+    // It is a calendar like the others, with its days in it, and the asking is put away.
+    await expect(form).toHaveCount(0);
+    await expect(list.getByRole("checkbox", { name: "Queensland holidays" })).toBeChecked();
+    await expect(page.getByRole("button", { name: /The Royal Queensland Show/ })).toBeVisible();
+    expect((await ran(page)).filter((r) => r.command === "calendar.holidays.add").at(-1)?.args).toMatchObject({ country: "AU", region: "QLD" });
+
+    // Escape puts the asking away with nothing added.
+    await list.getByRole("button", { name: "Add holidays" }).click();
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
 });

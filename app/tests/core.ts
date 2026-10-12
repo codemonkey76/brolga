@@ -584,6 +584,25 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 diaries.push({ id, name: args.name as string, color: "auto", hex_color: "", is_default: false, can_edit: true, shown: true });
                 return { calendar_id: id, name: args.name };
             },
+            "calendar.holidays.places": () => ({
+                first_year: 2025,
+                last_year: 2031,
+                countries: [
+                    { code: "AU", name: "Australia", regions: [{ code: "NSW", name: "New South Wales" }, { code: "QLD", name: "Queensland" }] },
+                    { code: "JP", name: "Japan", regions: [] },
+                    { code: "NZ", name: "New Zealand", regions: [{ code: "AUK", name: "Auckland" }] },
+                ],
+            }),
+            "calendar.holidays.add": (args) => {
+                const place = { QLD: "Queensland", NSW: "New South Wales", AUK: "Auckland", AU: "Australia", JP: "Japan", NZ: "New Zealand" }[(args.region ?? args.country) as string];
+                const id = `made-${diaries.length + 1}`;
+                diaries.push({ id, name: `${place} holidays`, color: "auto", hex_color: "", is_default: false, can_edit: true, shown: true });
+                core.events = [
+                    ...(core.events ?? []),
+                    { id: `${id}-1`, calendar_id: id, subject: args.region === "QLD" ? "The Royal Queensland Show" : "A day off", start: "2026-10-14T00:00:00Z", end: "2026-10-15T00:00:00Z", is_all_day: true } as FakeEvent,
+                ];
+                return { calendar_id: id, name: `${place} holidays`, added: 1, complete: true, problem: null };
+            },
             "calendar.calendars.delete": (args) => {
                 diaries.splice(diaries.findIndex((each) => each.id === args.calendar_id), 1);
                 core.events = (core.events ?? []).filter((each) => (each.calendar_id ?? "main") !== args.calendar_id);

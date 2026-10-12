@@ -240,6 +240,10 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                     }
                     other => other.to_string(),
                 });
+            // With the calendars read, the holiday ones are filled a year further where one has come within reach.
+            if calendar.is_ok() {
+                crate::holiday_commands::top_up(&mailbox).await;
+            }
             // And contacts, the same way. A mailbox someone shared brings
             // its mail and its calendar, and no contacts of its own.
             mailbox.stage(Some("contacts"));

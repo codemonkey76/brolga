@@ -13,6 +13,7 @@ mod archive_commands;
 mod calendar_commands;
 mod contact_commands;
 mod draft_commands;
+mod holiday_commands;
 mod link_commands;
 mod mail_commands;
 mod mailboxes;
@@ -124,6 +125,7 @@ impl Core {
         action_commands::register(&mut registry, mailboxes.clone())?;
         draft_commands::register(&mut registry, mailboxes.clone())?;
         calendar_commands::register(&mut registry, mailboxes.clone())?;
+        holiday_commands::register(&mut registry, mailboxes.clone())?;
         contact_commands::register(
             &mut registry,
             mailboxes.clone(),

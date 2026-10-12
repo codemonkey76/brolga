@@ -7,6 +7,7 @@
 //! the event's own zone, so that a weekly nine o'clock meeting stays at nine
 //! when the clocks change (`recurrence`).
 
+pub mod holidays;
 mod recurrence;
 mod zones;
 

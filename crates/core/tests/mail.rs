@@ -4671,3 +4671,164 @@ async fn a_sync_marks_what_was_answered_or_forwarded_elsewhere() {
         (json!("replied_all"), Value::Null)
     );
 }
+
+/// The all-day events of one calendar in a year, as (day, subject).
+async fn days_in(f: &Fixture, calendar: &str, year: i16) -> Vec<(String, String)> {
+    let listed = f
+        .run(
+            "calendar.events.list",
+            json!({ "start": format!("{}-12-30T00:00:00Z", year - 1), "end": format!("{}-01-03T00:00:00Z", year + 1), "include_hidden": true }),
+        )
+        .await;
+
+    listed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["calendar_id"] == calendar && event["is_all_day"] == true)
+        .map(|event| {
+            (
+                event["start"].as_str().unwrap()[..10].to_owned(),
+                event["subject"].as_str().unwrap().to_owned(),
+            )
+        })
+        .filter(|(day, _)| day.starts_with(&format!("{year}-")))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_places_holidays_are_added_as_a_calendar_of_their_own_and_not_twice() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+
+    // The places to choose from: countries, and the regions of each.
+    let places = f.run("calendar.holidays.places", json!({})).await;
+    let australia = places["countries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|each| each["code"] == "AU")
+        .unwrap();
+    assert_eq!(australia["name"], "Australia");
+    assert!(
+        australia["regions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({ "code": "QLD", "name": "Queensland" }))
+    );
+
+    let made = f
+        .run(
+            "calendar.holidays.add",
+            json!({ "country": "au", "region": "qld" }),
+        )
+        .await;
+    assert_eq!(made["name"], "Queensland holidays");
+    assert_eq!(made["complete"], true, "{made}");
+    let calendar = made["calendar_id"].as_str().unwrap().to_owned();
+    let calendars = f.run("calendar.calendars.list", json!({})).await;
+    assert!(
+        calendars["calendars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|each| each["id"] == calendar.as_str() && each["name"] == "Queensland holidays")
+    );
+
+    // This year and the two after are there, each day once, as the table has them.
+    let year = jiff::Zoned::now().year();
+    let mut all = 0;
+    for year in year..=year + 2 {
+        let known: Vec<(String, String)> = brolga_calendar::holidays::of("AU", Some("QLD"), year)
+            .unwrap()
+            .into_iter()
+            .map(|day| (day.date, day.name))
+            .collect();
+        assert!(known.len() > 8, "{year}: {known:?}");
+        assert_eq!(days_in(&f, &calendar, year).await, known, "{year}");
+        all += known.len();
+    }
+    assert_eq!(made["added"], all);
+    assert!(days_in(&f, &calendar, year + 3).await.is_empty());
+
+    // They are days off and not appointments: nobody is busy, and nothing rings.
+    let one = f
+        .run(
+            "calendar.events.list",
+            json!({ "start": format!("{year}-12-25T00:00:00Z"), "end": format!("{year}-12-25T12:00:00Z"), "include_hidden": true }),
+        )
+        .await;
+    let christmas = one["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["subject"] == "Christmas Day")
+        .unwrap();
+    assert_eq!(christmas["show_as"], "free");
+    assert_eq!(christmas["is_all_day"], true);
+
+    // A sync changes nothing, and the same place is not added a second time.
+    f.sync().await;
+    f.sync().await;
+    assert_eq!(
+        days_in(&f, &calendar, year).await.len(),
+        brolga_calendar::holidays::of("AU", Some("QLD"), year)
+            .unwrap()
+            .len()
+    );
+    let again = f
+        .registry
+        .execute(
+            "calendar.holidays.add",
+            json!({ "country": "AU", "region": "QLD" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(again.to_string().contains("already"), "{again}");
+
+    // A place there are no days for is said, and nothing is made.
+    let nowhere = f
+        .registry
+        .execute("calendar.holidays.add", json!({ "country": "ZZ" }))
+        .await
+        .unwrap_err();
+    assert!(nowhere.to_string().contains("no holidays"), "{nowhere}");
+}
+
+#[tokio::test]
+async fn holidays_cut_short_by_an_outage_are_finished_at_a_later_sync_without_doubling() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+
+    // The calendar is made and a few days go in before the server stops answering.
+    f.graph
+        .fail_after(8, std::iter::repeat_n(Fault::Unavailable, 50));
+    let made = f
+        .run("calendar.holidays.add", json!({ "country": "NZ" }))
+        .await;
+    f.graph.clear_faults();
+    assert_eq!(made["complete"], false, "{made}");
+    assert!(
+        made["problem"]
+            .as_str()
+            .unwrap()
+            .contains("added at a later sync"),
+        "{made}"
+    );
+    let calendar = made["calendar_id"].as_str().unwrap().to_owned();
+    let year = jiff::Zoned::now().year();
+    let known = |year: i16| -> Vec<(String, String)> {
+        brolga_calendar::holidays::of("NZ", None, year)
+            .unwrap()
+            .into_iter()
+            .map(|day| (day.date, day.name))
+            .collect()
+    };
+    assert!(days_in(&f, &calendar, year).await.len() < known(year).len());
+
+    // The next sync puts in what is missing, and only that.
+    f.sync().await;
+    for year in year..=year + 2 {
+        assert_eq!(days_in(&f, &calendar, year).await, known(year), "{year}");
+    }
+}

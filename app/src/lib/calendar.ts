@@ -190,6 +190,19 @@ export const respond = (account_id: string, event_id: string, response: Answer, 
 
 export const createCalendar = (account_id: string, name: string) => execute("calendar.calendars.create", { account_id, name });
 
+/** A country whose public holidays can be added, and the regions of it that keep days of their own. */
+export interface HolidayPlace {
+    code: string;
+    name: string;
+    regions: { code: string; name: string }[];
+}
+
+export const holidayPlaces = async () => (await execute<{ countries: HolidayPlace[] }>("calendar.holidays.places")).countries;
+
+/** Make a calendar of a place's public holidays. `problem` says so where not every day went in. */
+export const addHolidays = (account_id: string, country: string, region?: string) =>
+    execute<{ calendar_id: string; name: string; added: number; complete: boolean; problem?: string | null }>("calendar.holidays.add", { account_id, country, ...(region ? { region } : {}) });
+
 export const deleteCalendar = (account_id: string, calendar_id: string) => execute("calendar.calendars.delete", { account_id, calendar_id });
 
 export const showCalendar = (account_id: string, calendar_id: string, shown: boolean) =>
