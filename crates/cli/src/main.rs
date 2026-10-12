@@ -58,9 +58,11 @@ enum Command {
     /// For developers: ask Microsoft Graph read-only questions as a signed-in account, and print how it answers.
     ///
     /// With no path, it asks each way there might be of learning that a message was answered or
-    /// forwarded, and says which the server takes. Only message ids are asked for: no mail is printed.
+    /// forwarded, and says which the server takes. Only message ids are asked for. Whatever is asked,
+    /// no mail is printed: an answer is summed up as how many things it gave, or why it was refused.
     Probe {
         /// What follows `/me` in the request, such as `/messages?$top=1`. Put it in single quotes.
+        /// It stays under `/me`: a path with `..` in it is refused.
         path: Option<String>,
         /// Which account, by its id. May be left out when there is only one.
         #[arg(long)]
@@ -286,7 +288,8 @@ fn last_action_probes() -> Vec<(String, String)> {
 /// property was on them, or why it refused. No mail is repeated.
 fn summed_up(status: u16, said: &str) -> String {
     let Ok(answer) = serde_json::from_str::<Value>(said) else {
-        return said.chars().take(300).collect();
+        // Not repeated: it could be a message, or a file attached to one.
+        return format!("an answer that is not JSON, of {} bytes", said.len());
     };
     if !(200..300).contains(&status) {
         let error = &answer["error"];
@@ -390,4 +393,19 @@ fn failed(error: impl std::fmt::Display) -> Failure {
 fn print(value: &Value) -> Result<(), Failure> {
     println!("{}", serde_json::to_string_pretty(value).map_err(failed)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_answer_to_a_probe_is_summed_up_and_never_repeated() {
+        let mime = "Subject: Secret plans\r\n\r\nMeet at dawn.";
+        let summed = summed_up(200, mime);
+        assert_eq!(summed, "an answer that is not JSON, of 38 bytes");
+
+        let listed = r#"{"value":[{"id":"a","subject":"Secret plans"}]}"#;
+        assert!(!summed_up(200, listed).contains("Secret"));
+    }
 }

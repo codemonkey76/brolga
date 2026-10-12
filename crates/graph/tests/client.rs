@@ -86,3 +86,27 @@ async fn a_link_to_another_server_is_not_followed_and_is_given_no_token() {
         elsewhere.requests()
     );
 }
+
+#[tokio::test]
+async fn a_probe_stays_under_the_mailbox_it_is_for() {
+    let graph = FakeGraph::start().await.unwrap();
+    let client = client(&graph);
+
+    for path in [
+        "/../users/someone@example.test/messages",
+        "/messages/../../users",
+        "/..",
+        "/%2e%2e/users",
+        "/.\t./users",
+        "/..\\users",
+        "messages",
+    ] {
+        let answer = client.probe(path).await;
+        assert!(matches!(answer, Err(GraphError::Decode(_))), "{path}");
+    }
+    assert!(graph.requests().is_empty(), "{:?}", graph.requests());
+
+    let (status, _) = client.probe("/mailFolders/inbox?$select=id").await.unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(graph.requests(), ["GET /v1.0/me/mailFolders/inbox"]);
+}
