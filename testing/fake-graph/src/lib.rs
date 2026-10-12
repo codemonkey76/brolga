@@ -87,6 +87,10 @@ struct Inner {
     lose_next_event_answer: bool,
     /// The next rule is made, and the caller is told the server is busy.
     lose_next_rule_answer: bool,
+    /// The next change to an event is made, and the caller is told the server failed.
+    lose_next_event_change_answer: bool,
+    /// How many of the next changes to events are not made, the caller being told the server failed.
+    failing_event_changes: u32,
     /// The next answer to an invitation is taken, and the caller is not told.
     lose_next_response_answer: bool,
     /// Every answer to an invitation: (event, answer, comment, organiser told).
@@ -559,6 +563,18 @@ impl FakeGraph {
                 }
             }
         });
+    }
+
+    /// The next change to an event is made, and the answer is a 500: an
+    /// error that does not say whether the change was made.
+    pub fn lose_next_event_change_answer(&self) {
+        lock(&self.shared).lose_next_event_change_answer = true;
+    }
+
+    /// The next `times` changes to events are answered with a 500 and are
+    /// not made.
+    pub fn fail_next_event_changes(&self, times: u32) {
+        lock(&self.shared).failing_event_changes = times;
     }
 
     pub fn lose_next_event_answer(&self) {
@@ -1309,8 +1325,15 @@ async fn update_event(
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
     let mut inner = lock(&shared);
+    if inner.failing_event_changes > 0 {
+        inner.failing_event_changes -= 1;
+        return broken(500);
+    }
     if let Err(code) = inner.calendars().update(&event, &body) {
         return event_refused(code);
+    }
+    if std::mem::take(&mut inner.lose_next_event_change_answer) {
+        return broken(500);
     }
 
     match inner.calendars().one(&event) {

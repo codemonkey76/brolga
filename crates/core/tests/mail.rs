@@ -4889,3 +4889,121 @@ async fn a_folder_that_cannot_be_synced_is_said_and_the_rest_of_the_account_stil
 
     assert_eq!(f.sync().await["ok"], true);
 }
+
+/// A series every day at nine in Brisbane, ten times from 22 March 2027,
+/// synced, with the id of its fourth occurrence: Thursday the 25th.
+async fn daily_series(f: &Fixture) -> String {
+    f.sync().await;
+    f.run(
+        "calendar.events.create",
+        json!({
+            "subject": "Stand-up", "start": "2027-03-22T09:00", "end": "2027-03-22T09:30", "time_zone": "Australia/Brisbane",
+            "repeat": { "unit": "day", "count": 10 }
+        }),
+    )
+    .await;
+    let all = f
+        .run(
+            "calendar.events.list",
+            json!({ "start": "2027-03-01T00:00:00Z", "end": "2027-06-01T00:00:00Z" }),
+        )
+        .await;
+    assert_eq!(all["events"].as_array().unwrap().len(), 10);
+
+    id_on(&all, "2027-03-24T23:00:00Z")
+}
+
+fn named<'a>(events: &'a [(String, String)], subject: &str) -> Vec<&'a str> {
+    events
+        .iter()
+        .filter(|each| each.0 == subject)
+        .map(|each| each.1.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_series_changed_from_here_on_is_whole_when_the_answer_to_stopping_the_old_one_is_lost() {
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+
+    // The old series is stopped, and the server says only that it failed.
+    f.graph.lose_next_event_change_answer();
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": fourth, "scope": "following", "subject": "Check-in" }),
+    )
+    .await;
+
+    // Three of the old and seven of the new: none lost, none twice.
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(named(&now, "Stand-up").len(), 3, "{now:?}");
+    assert_eq!(named(&now, "Check-in").len(), 7, "{now:?}");
+    assert_eq!(named(&now, "Check-in")[0], "2027-03-24T23:00:00Z");
+}
+
+#[tokio::test]
+async fn a_series_changed_from_here_on_is_never_left_with_neither_half() {
+    // The server fails once without stopping the old series: it is asked again.
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+    f.graph.fail_next_event_changes(1);
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": fourth, "scope": "following", "subject": "Check-in" }),
+    )
+    .await;
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(
+        (named(&now, "Stand-up").len(), named(&now, "Check-in").len()),
+        (3, 7),
+        "{now:?}"
+    );
+
+    // It keeps failing: both are left, and that is said. Nothing is taken away on a guess.
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+    f.graph.fail_next_event_changes(2);
+    let error = f
+        .registry
+        .execute(
+            "calendar.events.update",
+            json!({ "event_id": fourth, "scope": "following", "subject": "Check-in" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("both"), "{error}");
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(
+        (named(&now, "Stand-up").len(), named(&now, "Check-in").len()),
+        (10, 7),
+        "{now:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_series_changed_from_here_on_begins_on_the_day_its_new_start_falls_where_it_is_held() {
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+
+    // Moved a day on, the start given as a moment in UTC: eleven at night on
+    // the 25th there is nine in the morning of the 26th in Brisbane.
+    f.run(
+        "calendar.events.update",
+        json!({
+            "event_id": fourth, "scope": "following", "subject": "Check-in",
+            "start": "2027-03-25T23:00:00Z", "end": "2027-03-25T23:30:00Z", "time_zone": "Australia/Brisbane"
+        }),
+    )
+    .await;
+
+    // The new series begins on the 26th and has the six that were left from then.
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    let carried = named(&now, "Check-in");
+    assert_eq!(carried.len(), 6, "{now:?}");
+    assert_eq!(carried[0], "2027-03-25T23:00:00Z");
+    assert_eq!(named(&now, "Stand-up").len(), 3, "{now:?}");
+}
