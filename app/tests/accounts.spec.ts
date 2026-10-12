@@ -786,3 +786,15 @@ test("a shared mailbox that could not be removed stays in the list, and it says 
     await expect(section.getByRole("listitem")).toHaveCount(0);
     await expect(section.getByRole("alert")).toHaveCount(0);
 });
+
+test("on a dark window the dot of a colour has a ring, so that a dark one is seen", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Categories" }).click();
+    const dot = page.getByRole("region", { name: "Categories for robin@example.test" }).locator(".dot").first();
+
+    await expect(dot).not.toHaveCSS("box-shadow", "none");
+    await page.emulateMedia({ colorScheme: "light" });
+    await expect(dot).toHaveCSS("box-shadow", "none");
+});

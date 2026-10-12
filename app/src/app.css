@@ -35,6 +35,13 @@ body {
     color: var(--muted);
 }
 
+/* The dot of a colour. A dark colour would be lost on a dark window, so there each has a thin ring. */
+@media (prefers-color-scheme: dark) {
+    .dot {
+        box-shadow: 0 0 0 1px color-mix(in srgb, CanvasText 45%, transparent);
+    }
+}
+
 button,
 input {
     font: inherit;
