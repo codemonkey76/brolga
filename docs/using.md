@@ -58,7 +58,10 @@ On macOS, Cmd takes the place of Ctrl.
 - **Remote pictures stay out** until you ask for them, so a sender cannot
   tell that you opened their message. **Show blocked content** downloads
   them for that message once; **Trust sender** downloads them for every
-  message from that address.
+  message from that address. Brolga goes by the address a message says it
+  is from, and does not know whether it truly came from there: a message
+  forged to look as if a trusted sender wrote it has its pictures downloaded
+  too. Trust a sender only where that is a risk you accept.
 - **A message looks as it was laid out**, with its own colours, type and
   tables. On a dark desktop its colours are darkened to suit, keeping their
   hue; **Show it as written** puts back the sender's own. What is taken out is anything that could fetch
