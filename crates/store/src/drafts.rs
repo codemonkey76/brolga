@@ -62,6 +62,8 @@ pub struct DraftFile {
     /// For a picture shown within the body: the name the body refers to
     /// it by, without the `cid:`.
     pub content_id: Option<String>,
+    /// Its id on the server's copy of the draft, where that is known.
+    pub attachment_id: Option<String>,
 }
 
 /// What may be changed about a draft. `None` leaves a part as it is.
@@ -88,6 +90,7 @@ fn read_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<DraftFile> {
         upload_tried: row.get(4)?,
         uploaded: row.get(5)?,
         content_id: row.get(6)?,
+        attachment_id: row.get(7)?,
     })
 }
 
@@ -277,6 +280,7 @@ impl AccountDb {
             upload_tried: false,
             uploaded: false,
             content_id,
+            attachment_id: None,
         }))
     }
 
@@ -289,10 +293,10 @@ impl AccountDb {
         Ok(self
             .connection()
             .query_row(
-                "SELECT id, name, content_type, size, upload_tried, uploaded, content_id, data
+                "SELECT id, name, content_type, size, upload_tried, uploaded, content_id, attachment_id, data
                  FROM draft_files WHERE draft_id = ?1 AND id = ?2",
                 params![draft_id, file_id],
-                |row| Ok((read_file(row)?, row.get(7)?)),
+                |row| Ok((read_file(row)?, row.get(8)?)),
             )
             .optional()?)
     }
@@ -301,7 +305,8 @@ impl AccountDb {
     pub fn draft_files(&self, draft_id: &str) -> Result<Vec<DraftFile>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT id, name, content_type, size, upload_tried, uploaded, content_id FROM draft_files WHERE draft_id = ?1 ORDER BY id",
+            "SELECT id, name, content_type, size, upload_tried, uploaded, content_id, attachment_id
+             FROM draft_files WHERE draft_id = ?1 ORDER BY id",
         )?;
         let files = statement
             .query_map([draft_id], read_file)?
@@ -330,15 +335,102 @@ impl AccountDb {
             .optional()?)
     }
 
-    /// Take a file off a draft that is not on its way out.
+    /// Take a file off a draft that is not on its way out. If a request to
+    /// attach it has gone out, the server's copy of the draft may have it,
+    /// and that is noted, so that it is taken off there before the draft
+    /// is sent.
     pub fn detach_from_draft(&self, draft_id: &str, file_id: i64) -> Result<bool, StoreError> {
-        let gone = self.connection().execute(
-            "DELETE FROM draft_files WHERE id = ?2 AND draft_id = ?1
-                 AND EXISTS (SELECT 1 FROM drafts WHERE id = ?1 AND state <> 'queued')",
-            params![draft_id, file_id],
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let file: Option<(String, bool, Option<String>)> = transaction
+            .query_row(
+                "SELECT name, upload_tried, attachment_id FROM draft_files WHERE id = ?2 AND draft_id = ?1
+                     AND EXISTS (SELECT 1 FROM drafts WHERE id = ?1 AND state <> 'queued')",
+                params![draft_id, file_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((name, upload_tried, attachment_id)) = file else {
+            return Ok(false);
+        };
+        if upload_tried {
+            transaction.execute(
+                "INSERT INTO draft_files_removed (draft_id, attachment_id, name) VALUES (?1, ?2, ?3)",
+                params![draft_id, attachment_id, name],
+            )?;
+        }
+        transaction.execute("DELETE FROM draft_files WHERE id = ?1", [file_id])?;
+        transaction.commit()?;
+
+        Ok(true)
+    }
+
+    /// The files taken off a draft that its copy on the server may still
+    /// have, oldest first: each with a number to call it done by, its id
+    /// on the server where that is known, and its name.
+    pub fn draft_files_removed(
+        &self,
+        draft_id: &str,
+    ) -> Result<Vec<(i64, Option<String>, String)>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, attachment_id, name FROM draft_files_removed WHERE draft_id = ?1 ORDER BY id",
+        )?;
+        let removed = statement
+            .query_map([draft_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        Ok(removed)
+    }
+
+    /// A file taken off a draft is off the server's copy of it too.
+    pub fn draft_file_removal_done(&self, removal_id: i64) -> Result<(), StoreError> {
+        self.connection().execute(
+            "DELETE FROM draft_files_removed WHERE id = ?1",
+            [removal_id],
         )?;
 
-        Ok(gone > 0)
+        Ok(())
+    }
+
+    /// The ids of what was attached to the server's copy of a draft before
+    /// any file went to it from here. Nothing until that has been looked at.
+    pub fn draft_attachments_before(
+        &self,
+        draft_id: &str,
+    ) -> Result<Option<Vec<String>>, StoreError> {
+        let kept: Option<Option<String>> = self
+            .connection()
+            .query_row(
+                "SELECT attachments_before FROM drafts WHERE id = ?1",
+                [draft_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(kept
+            .flatten()
+            .map(|ids| serde_json::from_str(&ids).unwrap_or_default()))
+    }
+
+    /// Note what is attached to the server's copy of a draft, before the
+    /// first file goes to it from here.
+    pub fn set_draft_attachments_before(
+        &self,
+        draft_id: &str,
+        attachment_ids: &[String],
+    ) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE drafts SET attachments_before = ?2 WHERE id = ?1",
+            params![
+                draft_id,
+                serde_json::Value::from(attachment_ids.to_vec()).to_string()
+            ],
+        )?;
+
+        Ok(())
     }
 
     /// A request to attach the file is about to go out.
@@ -351,10 +443,25 @@ impl AccountDb {
         Ok(())
     }
 
-    /// The server has the file.
-    pub fn draft_file_uploaded(&self, file_id: i64) -> Result<(), StoreError> {
+    /// The server has the file, under this id where it said.
+    pub fn draft_file_uploaded(
+        &self,
+        file_id: i64,
+        attachment_id: Option<&str>,
+    ) -> Result<(), StoreError> {
         self.connection().execute(
-            "UPDATE draft_files SET uploaded = 1 WHERE id = ?1",
+            "UPDATE draft_files SET uploaded = 1, attachment_id = ?2 WHERE id = ?1",
+            params![file_id, attachment_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// The server's copy of the draft does not have the file after all. It
+    /// is to go there again.
+    pub fn draft_file_not_uploaded(&self, file_id: i64) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE draft_files SET uploaded = 0, upload_tried = 0, attachment_id = NULL WHERE id = ?1",
             [file_id],
         )?;
 
@@ -371,6 +478,52 @@ impl AccountDb {
         Ok(gone > 0)
     }
 
+    /// A copy of a draft on the server is no longer wanted, and is not
+    /// among the messages here to be moved as one of those is. It is kept
+    /// in mind until it has been moved to Deleted Items there.
+    pub fn discard_on_server(&self, server_id: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "INSERT OR IGNORE INTO draft_discards (server_id) VALUES (?1)",
+            [server_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// The copies of drafts on the server still to be moved to Deleted
+    /// Items, each with how many times that has been tried.
+    pub fn draft_discards(&self) -> Result<Vec<(String, u32)>, StoreError> {
+        let connection = self.connection();
+        let mut statement =
+            connection.prepare("SELECT server_id, attempts FROM draft_discards ORDER BY rowid")?;
+        let discards = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+
+        Ok(discards)
+    }
+
+    /// An unwanted copy could not be moved this time. It is tried again.
+    pub fn draft_discard_waits(&self, server_id: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE draft_discards SET attempts = attempts + 1 WHERE server_id = ?1",
+            [server_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// An unwanted copy is in Deleted Items, or gone, or the server will
+    /// not move it: there is nothing more to do about it.
+    pub fn draft_discard_done(&self, server_id: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "DELETE FROM draft_discards WHERE server_id = ?1",
+            [server_id],
+        )?;
+
+        Ok(())
+    }
+
     /// Queue a draft to be sent. From here it is the outbox's.
     pub fn queue_draft(&self, id: &str) -> Result<bool, StoreError> {
         let queued = self.connection().execute(
@@ -383,10 +536,12 @@ impl AccountDb {
     }
 
     /// Take a queued draft back to be edited, if no request to send it has
-    /// gone out yet. Once one has, it may be sent already.
+    /// gone out yet. Once one has, it may be sent already. It counts as a
+    /// change to the draft, so that an outbox with the draft in hand, as it
+    /// was when queued, can tell it is no longer that draft's to send.
     pub fn unqueue_draft(&self, id: &str) -> Result<bool, StoreError> {
         let back = self.connection().execute(
-            "UPDATE drafts SET state = 'editing' WHERE id = ?1 AND state = 'queued' AND send_tried = 0",
+            "UPDATE drafts SET state = 'editing', rev = rev + 1 WHERE id = ?1 AND state = 'queued' AND send_tried = 0",
             [id],
         )?;
 
@@ -455,44 +610,53 @@ impl AccountDb {
         Ok(self.draft(&draft.id)?.unwrap_or(draft))
     }
 
-    /// The server's copy is gone. The draft carries on here without one.
+    /// The server's copy is gone, and whatever was attached to it with it.
+    /// The draft carries on here without one, and its files are to go to
+    /// the next copy as if they had gone to none.
     pub fn draft_unlinked(&self, id: &str) -> Result<(), StoreError> {
-        self.connection().execute(
-            "UPDATE drafts SET server_id = NULL, quoted = NULL, server_rev = -1, send_tried = 0 WHERE id = ?1",
-            [id],
-        )?;
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        unlink(&transaction, id)?;
+        transaction.commit()?;
 
         Ok(())
     }
 
-    /// The draft now exists on the server.
+    /// The draft now exists on the server. False if the draft is no longer
+    /// here: it was thrown away while its copy was being made.
     pub fn draft_on_server(
         &self,
         id: &str,
         server_id: &str,
         quoted: Option<&str>,
-    ) -> Result<(), StoreError> {
-        self.connection().execute(
+    ) -> Result<bool, StoreError> {
+        let linked = self.connection().execute(
             "UPDATE drafts SET server_id = ?2, quoted = ?3 WHERE id = ?1",
             params![id, server_id, quoted],
         )?;
 
-        Ok(())
+        Ok(linked > 0)
     }
 
     /// A request to send is about to go out. Written first, so that if the
     /// answer never comes it is known that the message may have been sent.
-    pub fn draft_send_tried(&self, id: &str) -> Result<(), StoreError> {
-        self.connection()
-            .execute("UPDATE drafts SET send_tried = 1 WHERE id = ?1", [id])?;
+    ///
+    /// `rev` is the draft's count of changes as the outbox has it in hand.
+    /// False, and nothing written, if the draft is no longer queued or has
+    /// changed since: the send was taken back meanwhile, and must not go.
+    pub fn draft_send_tried(&self, id: &str, rev: i64) -> Result<bool, StoreError> {
+        let still = self.connection().execute(
+            "UPDATE drafts SET send_tried = 1 WHERE id = ?1 AND state = 'queued' AND rev = ?2",
+            params![id, rev],
+        )?;
 
-        Ok(())
+        Ok(still > 0)
     }
 
     /// It could not be sent this time. It stays queued.
     pub fn draft_waits(&self, id: &str, error: &str) -> Result<(), StoreError> {
         self.connection().execute(
-            "UPDATE drafts SET error = ?2 WHERE id = ?1",
+            "UPDATE drafts SET error = ?2 WHERE id = ?1 AND state = 'queued'",
             params![id, error],
         )?;
 
@@ -500,10 +664,11 @@ impl AccountDb {
     }
 
     /// The server will not send it as it is. It goes back to its writer,
-    /// with the reason, and nothing of it is lost.
+    /// with the reason, and nothing of it is lost. One taken back by its
+    /// writer already is left as they have it.
     pub fn draft_refused(&self, id: &str, error: &str) -> Result<(), StoreError> {
         self.connection().execute(
-            "UPDATE drafts SET state = 'failed', error = ?2, send_tried = 0 WHERE id = ?1",
+            "UPDATE drafts SET state = 'failed', error = ?2, send_tried = 0 WHERE id = ?1 AND state = 'queued'",
             params![id, error],
         )?;
 
@@ -511,12 +676,48 @@ impl AccountDb {
     }
 
     /// The server has sent it. The copy in Sent Items comes with the next sync.
-    pub fn draft_sent(&self, id: &str) -> Result<(), StoreError> {
-        self.connection()
-            .execute("DELETE FROM drafts WHERE id = ?1", [id])?;
+    ///
+    /// Only a draft still queued is done with. Should it have been taken
+    /// back and be in its writer's hands, what is here may have been
+    /// changed since and is kept: false is given, and the draft is parted
+    /// from the copy that went, with a word to say that one did.
+    pub fn draft_sent(&self, id: &str) -> Result<bool, StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let done = transaction.execute(
+            "DELETE FROM drafts WHERE id = ?1 AND state = 'queued'",
+            [id],
+        )?;
+        if done == 0 {
+            unlink(&transaction, id)?;
+            transaction.execute(
+                "UPDATE drafts SET error = 'This message was sent as it stood before it was taken back. What is here has not been sent.'
+                 WHERE id = ?1",
+                [id],
+            )?;
+        }
+        transaction.commit()?;
 
-        Ok(())
+        Ok(done > 0)
     }
+}
+
+/// Part a draft from its copy on the server, and from everything that was
+/// known about that copy: which of its files had gone there, what was
+/// attached there first, and what was still to be taken off it.
+fn unlink(transaction: &rusqlite::Transaction<'_>, id: &str) -> Result<(), StoreError> {
+    transaction.execute(
+        "UPDATE drafts SET server_id = NULL, quoted = NULL, server_rev = -1, send_tried = 0, attachments_before = NULL
+         WHERE id = ?1",
+        [id],
+    )?;
+    transaction.execute(
+        "UPDATE draft_files SET uploaded = 0, upload_tried = 0, attachment_id = NULL WHERE draft_id = ?1",
+        [id],
+    )?;
+    transaction.execute("DELETE FROM draft_files_removed WHERE draft_id = ?1", [id])?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -569,8 +770,39 @@ mod tests {
         assert!(db.unqueue_draft(&draft.id).unwrap());
 
         db.queue_draft(&draft.id).unwrap();
-        db.draft_send_tried(&draft.id).unwrap();
+        let queued = db.draft(&draft.id).unwrap().unwrap();
+        assert!(db.draft_send_tried(&draft.id, queued.rev).unwrap());
         assert!(!db.unqueue_draft(&draft.id).unwrap());
+    }
+
+    #[test]
+    fn a_send_cannot_go_out_for_a_draft_taken_back_since_it_was_picked_up() {
+        let db = AccountDb::in_memory().unwrap();
+        let draft = db.create_draft("new", None, &start("One")).unwrap();
+        db.queue_draft(&draft.id).unwrap();
+        let in_hand = db.draft(&draft.id).unwrap().unwrap();
+
+        // Taken back: not queued, so no send may go.
+        assert!(db.unqueue_draft(&draft.id).unwrap());
+        assert!(!db.draft_send_tried(&draft.id, in_hand.rev).unwrap());
+        // Queued again, it is not the draft the outbox had in hand.
+        db.queue_draft(&draft.id).unwrap();
+        assert!(!db.draft_send_tried(&draft.id, in_hand.rev).unwrap());
+        assert!(!db.draft(&draft.id).unwrap().unwrap().send_tried);
+    }
+
+    #[test]
+    fn a_draft_in_its_writers_hands_is_kept_when_a_copy_of_it_is_found_sent() {
+        let db = AccountDb::in_memory().unwrap();
+        let draft = db.create_draft("new", None, &start("One")).unwrap();
+        db.draft_on_server(&draft.id, "server-1", None).unwrap();
+        db.edit_draft(&draft.id, &start("Two")).unwrap();
+
+        assert!(!db.draft_sent(&draft.id).unwrap());
+
+        let kept = db.draft(&draft.id).unwrap().unwrap();
+        assert_eq!((kept.body.as_str(), kept.server_id), ("Two", None));
+        assert!(kept.error.unwrap().contains("has not been sent"));
     }
 
     #[test]

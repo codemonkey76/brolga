@@ -716,7 +716,8 @@ impl GraphClient {
 
     /// Attach a file of under 3 MB to a draft ("Add attachment",
     /// SOURCES.md). Not safe to repeat blindly: a second request attaches
-    /// the file a second time.
+    /// the file a second time. Gives back the id the attachment was given,
+    /// which the answer carries.
     pub async fn add_attachment(
         &self,
         message_id: &str,
@@ -724,7 +725,7 @@ impl GraphClient {
         content_type: &str,
         content: &[u8],
         content_id: Option<&str>,
-    ) -> Result<(), GraphError> {
+    ) -> Result<Option<String>, GraphError> {
         use base64::Engine;
 
         let url = format!("{}/me/messages/{message_id}/attachments", self.base);
@@ -740,10 +741,34 @@ impl GraphClient {
             body["isInline"] = serde_json::json!(true);
             body["contentId"] = serde_json::json!(content_id);
         }
-        self.send(reqwest::Method::POST, &url, None, Some(&body), false)
-            .await?;
+        let made: serde_json::Value = decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&body), false)
+                .await?,
+        )?;
 
-        Ok(())
+        Ok(made["id"].as_str().map(str::to_owned))
+    }
+
+    /// Take an attachment off a draft ("Delete attachment", SOURCES.md).
+    /// One already gone counts as taken off, so asking twice is safe.
+    pub async fn delete_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), GraphError> {
+        let url = format!(
+            "{}/me/messages/{message_id}/attachments/{attachment_id}",
+            self.base
+        );
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
     }
 
     /// Attach a file of 3 MB or more to a draft, a piece at a time
@@ -754,13 +779,16 @@ impl GraphClient {
     /// sent no token of ours and is never put in an error or a log. If a
     /// piece fails the whole upload fails: the caller starts again, having
     /// first looked whether the file arrived after all.
+    ///
+    /// Gives back the id the attachment was given, where the answer to the
+    /// last piece says: it is within the address in its `Location` header.
     pub async fn upload_attachment(
         &self,
         message_id: &str,
         name: &str,
         content: &[u8],
         content_id: Option<&str>,
-    ) -> Result<(), GraphError> {
+    ) -> Result<Option<String>, GraphError> {
         // "Keep each byte range less than 4 MB."
         const PIECE: usize = 3 * 1024 * 1024;
 
@@ -785,6 +813,7 @@ impl GraphClient {
 
         let total = content.len();
         let mut start = 0;
+        let mut attachment_id = None;
         while start < total {
             let end = (start + PIECE).min(total);
             let _permit = self
@@ -818,10 +847,15 @@ impl GraphClient {
                     message: "The file could not be uploaded.".to_owned(),
                 });
             }
+            attachment_id = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(id_in_location);
             start = end;
         }
 
-        Ok(())
+        Ok(attachment_id)
     }
 
     /// The mailbox's automatic replies as Graph gives them
@@ -1224,6 +1258,17 @@ impl GraphClient {
             return Err(refusal(response).await);
         }
     }
+}
+
+/// The attachment's id in the address a finished upload is answered with:
+/// `…/Messages('…')/Attachments('AAMk…=')`. Nothing where the address is
+/// not of that form, or the id is written in a way that would have to be
+/// undone before it could be used.
+fn id_in_location(location: &str) -> Option<String> {
+    let (_, after) = location.rsplit_once("ttachments('")?;
+    let (id, _) = after.split_once("')")?;
+
+    (!id.is_empty() && !id.contains('%')).then(|| id.to_owned())
 }
 
 #[derive(Deserialize)]

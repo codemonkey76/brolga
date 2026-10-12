@@ -743,25 +743,29 @@ async fn discard(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandE
     let discarded = mailbox.db.discard_draft(&args.draft_id).map_err(failed)?;
 
     // Its copy on the server goes too, to Deleted Items as anything
-    // deleted does. Through the outbox, so it happens offline as well; and
-    // straight to the server where the copy has not been synced down yet.
-    if let (true, Some(server_id)) = (discarded, server_id)
-        && let Some(deleted) = mailbox.db.folder_id("deleteditems").map_err(failed)?
-    {
-        let action = mailbox.db.new_action().map_err(failed)?;
-        let queued = mailbox
-            .db
-            .queue_edit(
-                &action,
-                std::slice::from_ref(&server_id),
-                &brolga_store::MessageEdit::Move(deleted),
-            )
-            .map_err(failed)?;
+    // deleted does. Through the outbox, so it happens offline as well.
+    // Where the copy has not been synced down yet there is no message
+    // here to move, and the copy is noted for the outbox by its id alone.
+    if let (true, Some(server_id)) = (discarded, server_id) {
+        let queued = match mailbox.db.folder_id("deleteditems").map_err(failed)? {
+            Some(deleted) => {
+                let action = mailbox.db.new_action().map_err(failed)?;
+                mailbox
+                    .db
+                    .queue_edit(
+                        &action,
+                        std::slice::from_ref(&server_id),
+                        &brolga_store::MessageEdit::Move(deleted),
+                    )
+                    .map_err(failed)?
+            }
+            None => 0,
+        };
+        if queued == 0 {
+            mailbox.db.discard_on_server(&server_id).map_err(failed)?;
+        }
         let sending = mailbox.clone();
         tokio::spawn(async move {
-            if queued == 0 {
-                let _ = sending.graph.move_message(&server_id, "deleteditems").await;
-            }
             let _ = sending.outbox.drain().await;
         });
     }

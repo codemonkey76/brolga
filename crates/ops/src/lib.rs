@@ -9,13 +9,18 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use brolga_graph::{GraphClient, GraphError};
+use brolga_graph::{Attachment, GraphClient, GraphError};
 use brolga_store::{AccountDb, Draft, Op, StoreError};
 use serde_json::json;
 use tokio::sync::Mutex;
 
 /// Below this a file is attached in one request; from it up, in pieces.
 const SMALL_FILE: usize = 3 * 1024 * 1024;
+
+/// Said of a message that may have been sent, where the server no longer
+/// has it to ask about.
+const UNCONFIRMED: &str =
+    "It could not be confirmed that this was sent. Check Sent Items before sending again.";
 
 /// What became of the queue in one pass over it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,6 +33,17 @@ pub struct Drained {
     pub refused: u32,
     /// Drafts whose copy on the server was brought up to date.
     pub saved: u32,
+}
+
+/// What became of a queued draft.
+enum Sending {
+    /// The server has sent it.
+    Sent,
+    /// Its writer took it back while it was in hand. Nothing was sent.
+    TakenBack,
+    /// A request to send it went out once, and the server no longer has
+    /// the message to say whether it went.
+    Unconfirmed,
 }
 
 /// Sends one account's queued changes.
@@ -54,7 +70,6 @@ impl Outbox {
         let _one_at_a_time = self.draining.lock().await;
         let mut drained = Drained::default();
         let mut held_up: HashSet<String> = HashSet::new();
-
         let mut gone: HashSet<String> = HashSet::new();
 
         for op in self.db.queued_ops()? {
@@ -104,11 +119,21 @@ impl Outbox {
             }
         }
 
+        self.discard_copies().await?;
         drained.saved = self.save_drafts().await?;
 
-        for draft in self.db.queued_drafts()? {
+        for listed in self.db.queued_drafts()? {
+            // As it is now: it may have been taken back since the list was read.
+            let Some(draft) = self
+                .db
+                .draft(&listed.id)?
+                .filter(|draft| draft.state == "queued")
+            else {
+                continue;
+            };
+
             match self.send_draft(&draft).await {
-                Ok(()) => {
+                Ok(Sending::Sent) => {
                     // An answer or a forward marks the message it was made
                     // from, here and now: the server does not say so in a sync.
                     let done = match draft.kind.as_str() {
@@ -122,6 +147,13 @@ impl Outbox {
                     }
                     self.db.draft_sent(&draft.id)?;
                     drained.sent += 1;
+                }
+                Ok(Sending::TakenBack) => {}
+                // Kept, and handed back to its writer to look and decide:
+                // sending it again unasked could send it twice.
+                Ok(Sending::Unconfirmed) => {
+                    self.db.draft_refused(&draft.id, UNCONFIRMED)?;
+                    drained.refused += 1;
                 }
                 Err(error) if will_pass(&error) => {
                     self.db.draft_waits(&draft.id, &error.to_string())?;
@@ -145,42 +177,61 @@ impl Outbox {
     /// be run again is the sending itself: where a request to send may have
     /// reached the server, the draft is looked at first, and if it is no
     /// longer a draft there it has been sent and is not sent again.
-    async fn send_draft(&self, draft: &Draft) -> Result<(), GraphError> {
+    ///
+    /// The draft in hand is the draft as it was when this began. Its writer
+    /// may take it back at any moment before the request to send goes out,
+    /// and that request goes only if they have not.
+    async fn send_draft(&self, draft: &Draft) -> Result<Sending, GraphError> {
         if draft.send_tried
             && let Some(server_id) = &draft.server_id
-            && self.graph.is_draft(server_id).await? != Some(true)
         {
-            return Ok(());
+            match self.graph.is_draft(server_id).await? {
+                Some(false) => return Ok(Sending::Sent),
+                // Still a draft: the request never arrived, and is made again.
+                Some(true) => {}
+                // Gone, sent or not. Only the message itself could have said.
+                None => return Ok(Sending::Unconfirmed),
+            }
         }
 
         let server_id = match self.put_on_server(draft).await {
-            Ok(server_id) => server_id,
+            Ok(Some(server_id)) => server_id,
+            Ok(None) => return Ok(Sending::TakenBack),
             // The server's copy has gone: thrown away in another mail
             // program, most likely. The message is still wanted, so it is
             // made again and sent from there.
             Err(GraphError::Refused { status: 404, .. }) if draft.server_id.is_some() => {
-                self.db
-                    .draft_unlinked(&draft.id)
-                    .map_err(|e| GraphError::Decode(e.to_string()))?;
+                self.db.draft_unlinked(&draft.id).map_err(kept)?;
                 let mut fresh = draft.clone();
                 fresh.server_id = None;
                 fresh.quoted = None;
-                self.put_on_server(&fresh).await?
+                match self.put_on_server(&fresh).await? {
+                    Some(server_id) => server_id,
+                    None => return Ok(Sending::TakenBack),
+                }
             }
             Err(other) => return Err(other),
         };
 
-        self.attach_files(draft, &server_id).await?;
+        self.level_files(draft, &server_id).await?;
 
-        self.db
-            .draft_send_tried(&draft.id)
-            .map_err(|e| GraphError::Decode(e.to_string()))?;
-        self.graph.send_draft(&server_id).await
+        if !self
+            .db
+            .draft_send_tried(&draft.id, draft.rev)
+            .map_err(kept)?
+        {
+            return Ok(Sending::TakenBack);
+        }
+        self.graph.send_draft(&server_id).await?;
+
+        Ok(Sending::Sent)
     }
 
     /// Bring the server's copy of a draft up to what is here, making it
-    /// first if there is none. Gives back its id there.
-    async fn put_on_server(&self, draft: &Draft) -> Result<String, GraphError> {
+    /// first if there is none. Gives back its id there, or nothing if the
+    /// draft was thrown away here while its copy was being made: the copy
+    /// is then not wanted either, and is noted to be thrown away.
+    async fn put_on_server(&self, draft: &Draft) -> Result<Option<String>, GraphError> {
         let (server_id, quoted) = match &draft.server_id {
             Some(server_id) => (server_id.clone(), draft.quoted.clone()),
             None => {
@@ -206,9 +257,14 @@ impl Outbox {
                     .body
                     .map(|body| body.content)
                     .filter(|q| !q.trim().is_empty());
-                self.db
+                if !self
+                    .db
                     .draft_on_server(&draft.id, &created.id, quoted.as_deref())
-                    .map_err(|e| GraphError::Decode(e.to_string()))?;
+                    .map_err(kept)?
+                {
+                    self.db.discard_on_server(&created.id).map_err(kept)?;
+                    return Ok(None);
+                }
                 (created.id, quoted)
             }
         };
@@ -228,7 +284,7 @@ impl Outbox {
         }
         self.graph.update_message(&server_id, &content).await?;
 
-        Ok(server_id)
+        Ok(Some(server_id))
     }
 
     /// Keep the server's Drafts folder level with what is being written
@@ -239,7 +295,7 @@ impl Outbox {
         let mut saved = 0;
         for draft in self.db.drafts_to_upload()? {
             match self.put_on_server(&draft).await {
-                Ok(_) => {
+                Ok(Some(_)) => {
                     self.db.draft_uploaded(&draft.id, draft.rev)?;
                     saved += 1;
                 }
@@ -248,36 +304,132 @@ impl Outbox {
                 Err(GraphError::Refused { status: 404, .. }) if draft.server_id.is_some() => {
                     self.db.draft_unlinked(&draft.id)?;
                 }
-                Err(_) => {}
+                Ok(None) | Err(_) => {}
             }
         }
 
         Ok(saved)
     }
 
-    /// Put a draft's files on the server's copy of it, each once. Attaching
-    /// is not safe to repeat blindly, so where an earlier request for a file
-    /// may have arrived, the server's list is looked at first.
-    async fn attach_files(&self, draft: &Draft, server_id: &str) -> Result<(), GraphError> {
-        let kept = |e: StoreError| GraphError::Decode(e.to_string());
-        let files = self.db.draft_files(&draft.id).map_err(kept)?;
-        let unsure = files.iter().any(|f| f.upload_tried && !f.uploaded);
+    /// Move to Deleted Items the copies of drafts on the server that are
+    /// no longer wanted: of a draft thrown away here before its copy was
+    /// known of here as a message, or while the copy was being made. One
+    /// that cannot be moved now is tried again at the next pass.
+    async fn discard_copies(&self) -> Result<(), StoreError> {
+        let deleted = self.db.folder_id("deleteditems")?;
+        for (server_id, attempts) in self.db.draft_discards()? {
+            // A move is not safe to send twice blindly: where an earlier try
+            // may have arrived, the copy's folder is looked at first.
+            let moved = if attempts > 0 {
+                match self.graph.message_folder(&server_id).await {
+                    Ok(folder) if folder.is_some() && folder == deleted => Ok(()),
+                    Ok(_) => self.graph.move_message(&server_id, "deleteditems").await,
+                    Err(error) => Err(error),
+                }
+            } else {
+                self.graph.move_message(&server_id, "deleteditems").await
+            };
+
+            match moved {
+                Err(error) if will_pass(&error) => self.db.draft_discard_waits(&server_id)?,
+                // Moved, or already gone, or not to be moved at all.
+                Ok(()) | Err(_) => self.db.draft_discard_done(&server_id)?,
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Make the files on the server's copy of a draft the files the draft
+    /// has here: those taken off here are taken off there, and those not
+    /// yet there are put there, each once. Attaching is not safe to repeat
+    /// blindly, so where an earlier request for a file may have arrived,
+    /// the server's list is looked at first.
+    ///
+    /// What was attached to the copy before any file went to it from here
+    /// (on a draft begun in another mail program, or the original's files
+    /// on a forward) is noted first, and is never counted as a file from
+    /// here nor taken off.
+    async fn level_files(&self, draft: &Draft, server_id: &str) -> Result<(), GraphError> {
+        let mut files = self.db.draft_files(&draft.id).map_err(kept)?;
+        let removed = self.db.draft_files_removed(&draft.id).map_err(kept)?;
+        if removed.is_empty() && files.iter().all(|f| f.uploaded) {
+            return Ok(());
+        }
+
+        let before = match self.db.draft_attachments_before(&draft.id).map_err(kept)? {
+            Some(before) => before,
+            None => {
+                let before: Vec<String> = self
+                    .graph
+                    .attachments(server_id)
+                    .await?
+                    .into_iter()
+                    .map(|a| a.id)
+                    .collect();
+                self.db
+                    .set_draft_attachments_before(&draft.id, &before)
+                    .map_err(kept)?;
+                before
+            }
+        };
+        let unsure = !removed.is_empty() || files.iter().any(|f| f.upload_tried && !f.uploaded);
         let mut there = if unsure {
             self.graph.attachments(server_id).await?
         } else {
             Vec::new()
         };
 
+        for (removal, attachment_id, name) in removed {
+            let known = attachment_id.filter(|id| there.iter().any(|a| a.id == *id));
+            let going: Vec<String> = match known {
+                Some(id) => vec![id],
+                // Its id is not known, or is not one the server lists. Then
+                // everything of its name that came from here and is not
+                // known to be another file goes, and any file of that name
+                // still wanted, whose id is not known either, goes up again.
+                None => {
+                    let mut going = Vec::new();
+                    for a in &there {
+                        if a.name.as_deref() == Some(name.as_str()) && from_here(a, &before, &files)
+                        {
+                            going.push(a.id.clone());
+                        }
+                    }
+                    for file in &files {
+                        if file.name == name && file.attachment_id.is_none() && file.upload_tried {
+                            self.db.draft_file_not_uploaded(file.id).map_err(kept)?;
+                        }
+                    }
+                    going
+                }
+            };
+            for id in going {
+                self.graph.delete_attachment(server_id, &id).await?;
+                there.retain(|a| a.id != id);
+            }
+            self.db.draft_file_removal_done(removal).map_err(kept)?;
+            files = self.db.draft_files(&draft.id).map_err(kept)?;
+        }
+
         for file in files.iter().filter(|f| !f.uploaded) {
             if file.upload_tried {
                 // One the server already has is claimed, so that two files
-                // alike in name and size are each attached.
+                // alike in name are each attached. It must be at least the
+                // file's size: the server counts more than the file's own
+                // bytes ("Attach large files to Outlook messages or events"
+                // shows a file of 3,483,322 bytes listed as 3,640,066), so
+                // the sizes cannot be asked to be the same.
                 let found = there.iter().position(|a| {
-                    a.name.as_deref() == Some(file.name.as_str()) && a.size.is_some()
+                    a.name.as_deref() == Some(file.name.as_str())
+                        && a.size.is_some_and(|size| size >= file.size)
+                        && from_here(a, &before, &files)
                 });
                 if let Some(found) = found {
-                    there.remove(found);
-                    self.db.draft_file_uploaded(file.id).map_err(kept)?;
+                    let claimed = there.remove(found);
+                    self.db
+                        .draft_file_uploaded(file.id, Some(&claimed.id))
+                        .map_err(kept)?;
                     continue;
                 }
             }
@@ -288,16 +440,18 @@ impl Outbox {
             // "Add attachment" takes a file of under 3 MB; a larger one
             // goes up in pieces.
             let content_id = file.content_id.as_deref();
-            if data.len() < SMALL_FILE {
+            let attachment_id = if data.len() < SMALL_FILE {
                 self.graph
                     .add_attachment(server_id, &file.name, &file.content_type, &data, content_id)
-                    .await?;
+                    .await?
             } else {
                 self.graph
                     .upload_attachment(server_id, &file.name, &data, content_id)
-                    .await?;
-            }
-            self.db.draft_file_uploaded(file.id).map_err(kept)?;
+                    .await?
+            };
+            self.db
+                .draft_file_uploaded(file.id, attachment_id.as_deref())
+                .map_err(kept)?;
         }
 
         Ok(())
@@ -370,6 +524,20 @@ impl Outbox {
 /// of a change ends with.
 fn kept(error: StoreError) -> GraphError {
     GraphError::Decode(error.to_string())
+}
+
+/// Whether an attachment on the server's copy of a draft may be a file put
+/// there from here whose id is not known: it was not there before the
+/// first file went, and it is not known to be another of the draft's files.
+fn from_here(
+    attachment: &Attachment,
+    before: &[String],
+    files: &[brolga_store::DraftFile],
+) -> bool {
+    !before.contains(&attachment.id)
+        && !files
+            .iter()
+            .any(|f| f.attachment_id.as_deref() == Some(attachment.id.as_str()))
 }
 
 /// A message's categories as they were queued: a JSON array of names. What

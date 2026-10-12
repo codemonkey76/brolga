@@ -4856,3 +4856,39 @@ async fn a_change_to_a_draft_that_is_turned_down_changes_none_of_it() {
     let kept = f.run("mail.drafts.get", json!({ "draft_id": draft })).await;
     assert_eq!(kept["draft"]["subject"], "Plan");
 }
+
+#[tokio::test]
+async fn a_draft_thrown_away_while_the_server_is_out_of_reach_leaves_drafts_when_it_is_back() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let drafts = f.graph.folder_id("drafts");
+    let in_drafts = || {
+        f.graph
+            .messages()
+            .values()
+            .filter(|(folder, _, _)| *folder == drafts)
+            .count()
+    };
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Plan", "body": "First thoughts." }),
+        )
+        .await["draft"]["id"]
+        .clone();
+    // Its copy is on the server, and has not been synced down as a message.
+    f.run("app.outbox.flush", json!({})).await;
+    assert_eq!(in_drafts(), 1);
+
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 4));
+    f.run("mail.drafts.discard", json!({ "draft_id": draft }))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    f.graph.clear_faults();
+
+    for _ in 0..5 {
+        f.run("app.outbox.flush", json!({})).await;
+    }
+    assert_eq!(in_drafts(), 0, "the copy was left in Drafts");
+}
