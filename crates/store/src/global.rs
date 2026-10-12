@@ -88,9 +88,9 @@ pub struct Account {
 /// that anyone else could read are closed to them: mail is kept here, and
 /// another user of the computer has no business in it. A database's
 /// write-ahead log and shared memory beside it are closed likewise; SQLite
-/// makes new ones as the database itself is ("Write-Ahead Logging",
-/// SOURCES.md, and its `unix` VFS). Elsewhere a user's files are their own
-/// by default, and only the folder is made.
+/// makes new ones as the database itself is, which a test here holds it
+/// to. Elsewhere a user's files are their own by default, and only the
+/// folder is made.
 pub(crate) fn keep_private(path: &Path) -> std::io::Result<()> {
     let folder = path.parent().filter(|f| !f.as_os_str().is_empty());
 

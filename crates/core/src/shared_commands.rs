@@ -182,8 +182,8 @@ async fn remove(mailboxes: Arc<Mailboxes>, args: Remove) -> Result<Value, Comman
 }
 
 /// Whether this is an email address of the ordinary kind (RFC 5321
-/// section 4.1.2, without the quoted and bracketed forms, and RFC 1035
-/// section 2.3.4 for the lengths): the address goes into the mailbox's id,
+/// sections 4.1.2 and 4.5.3.1, without the quoted and bracketed forms, and
+/// RFC 1035 section 2.3.4 for the lengths of a host name): the address goes into the mailbox's id,
 /// a file name and the address of every request for it, so nothing that
 /// only looks like one is let through. An address not written in ASCII is
 /// not taken either.
