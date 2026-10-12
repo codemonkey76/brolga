@@ -324,7 +324,10 @@
                         {/if}
                         {#if meeting.response && ANSWERED[meeting.response]}<p class="muted">{ANSWERED[meeting.response]}.</p>{/if}
                         {#if meeting.event_id}
-                            <Rsvp response={meeting.response} {onAnswer} start={meeting.start} end={meeting.end} />
+                            <!-- Each invitation has its own answer: a note written for one is not kept for the next. -->
+                            {#key opened.message.id}
+                                <Rsvp response={meeting.response} {onAnswer} start={meeting.start} end={meeting.end} />
+                            {/key}
                         {/if}
                     {/if}
                 </div>

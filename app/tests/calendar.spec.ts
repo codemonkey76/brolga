@@ -901,3 +901,74 @@ test("public holidays are added as a calendar of their own, for a country or one
     await page.keyboard.press("Escape");
     await expect(form).toHaveCount(0);
 });
+
+test("a note and a time written for one invitation are not kept for the next", async ({ page }) => {
+    // From the inbox.
+    const second = { ...invitation, id: "inv2", subject: "Supplier call", preview: "Please join the call.", body: "<p>Please join the call.</p>", meeting: { ...invitation.meeting, event_id: "e3", start: "2026-10-15T01:00:00Z", end: "2026-10-15T02:00:00Z" } };
+    const both = week.map((each) => (each.id === "e2" || each.id === "e3" ? { ...each, response: "notResponded" } : each));
+    await page.clock.setFixedTime(new Date("2026-10-14T00:20:00Z"));
+    await withCore(page, { accounts: [robin], mail: [invitation, second], events: both });
+    const rows = page.getByRole("listbox", { name: "Messages" }).getByRole("option");
+    const answers = page.getByRole("group", { name: "Answer the invitation" });
+
+    await rows.filter({ hasText: "Please join the budget review" }).click();
+    await answers.getByText("Options").click();
+    await answers.getByRole("checkbox", { name: "Propose another time" }).check();
+    await answers.getByRole("textbox", { name: "Note to the organiser" }).fill("Only for Sam.");
+    await rows.filter({ hasText: "Supplier call" }).click();
+    await expect(page.getByRole("region", { name: "Meeting" })).toContainText("Oct 15");
+    await answers.getByText("Options").click();
+    await expect(answers.getByRole("textbox", { name: "Note to the organiser" })).toHaveValue("");
+    await expect(answers.getByRole("checkbox", { name: "Propose another time" })).not.toBeChecked();
+
+    // And from the calendar.
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await event(page, "Budget review").click();
+    await answers.getByText("Options").click();
+    await answers.getByRole("textbox", { name: "Note to the organiser" }).fill("Only for Sam.");
+    await event(page, "Supplier call").click();
+    await expect(page.getByRole("complementary", { name: "Event" }).getByRole("heading", { level: 2 })).toHaveText("Supplier call");
+    await answers.getByText("Options").click();
+    await expect(answers.getByRole("textbox", { name: "Note to the organiser" })).toHaveValue("");
+});
+
+test("an invitation in a calendar that can only be read has no answer to give", async ({ page }) => {
+    const otherCalendars = [{ id: "alex", name: "Calendar", color: "auto", hex_color: "", is_default: false, can_edit: false, shown: true, owner_name: "Alex Chen", owner_address: "alex.chen@example.test" }];
+    await page.clock.setFixedTime(new Date("2026-10-14T00:20:00Z"));
+    await withCore(page, { accounts: [robin], events: [...unanswered, { id: "theirs", calendar_id: "alex", subject: "Alex and Sam", start: "2026-10-14T01:00:00Z", end: "2026-10-14T02:00:00Z", response: "notResponded" }], otherCalendars });
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Event" });
+
+    await event(page, "Alex and Sam").click();
+    await expect(panel.getByRole("heading", { level: 2 })).toHaveText("Alex and Sam");
+    await expect(panel.getByRole("group", { name: "Answer the invitation" })).toHaveCount(0);
+    // One's own invitation still has.
+    await event(page, "Budget review").click();
+    await expect(panel.getByRole("group", { name: "Answer the invitation" })).toBeVisible();
+});
+
+test("someone invited twice, or with no address, is listed each time", async ({ page }) => {
+    const twice = { name: "Sam Taylor", address: "sam.taylor@example.test", kind: "required", response: "accepted" };
+    await calendar(page, [...week, { id: "dup", subject: "Twice over", start: "2026-10-14T01:00:00Z", end: "2026-10-14T02:00:00Z", attendees: [twice, twice] }]);
+    const panel = page.getByRole("complementary", { name: "Event" });
+
+    await event(page, "Budget review").click();
+    await expect(panel.getByRole("listitem")).toHaveCount(2);
+    await event(page, "Twice over").click();
+    await expect(panel.getByRole("heading", { level: 2 })).toHaveText("Twice over");
+    await expect(panel.getByRole("listitem").filter({ hasText: "Sam Taylor" })).toHaveCount(2);
+});
+
+test("what was being asked about one mailbox's calendar is dropped when another is chosen", async ({ page }) => {
+    const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
+    await page.clock.setFixedTime(new Date("2026-10-14T00:20:00Z"));
+    await withCore(page, { accounts: [robin], events: week, shared });
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    const side = page.getByRole("complementary", { name: "Calendars" });
+
+    await side.getByRole("button", { name: "Delete Family" }).click();
+    await expect(side.getByText("Delete with its events?")).toBeVisible();
+    await side.getByRole("combobox", { name: "Account" }).selectOption({ label: "↳ support@example.test (shared)" });
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "calendar.events.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test" });
+    await expect(side.getByText("Delete with its events?")).toHaveCount(0);
+});

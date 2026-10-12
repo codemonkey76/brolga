@@ -237,6 +237,20 @@
         };
     });
 
+    /** Another mailbox's calendar: nothing being asked about the one that was shown is carried over. */
+    function chooseAccount(id: string) {
+        accountId = id;
+        selected = null;
+        editing = null;
+        moving = null;
+        cancelling = null;
+        asking = null;
+        dropping = null;
+        sure = false;
+        places = null;
+        load().then(sync);
+    }
+
     function show(next: View) {
         view = next;
         try {
@@ -459,7 +473,7 @@
 <div class="calendar">
     <aside aria-label="Calendars">
         {#if accounts.length > 1}
-            <select class="whose" aria-label="Account" value={accountId} onchange={(event) => ((accountId = event.currentTarget.value), (selected = null), (editing = null), load().then(sync))}>
+            <select class="whose" aria-label="Account" value={accountId} onchange={(event) => chooseAccount(event.currentTarget.value)}>
                 {#each accounts as each (each.id)}
                     <option value={each.id}>{each.shared_with ? `↳ ${each.username} (shared)` : each.username}</option>
                 {/each}
@@ -712,8 +726,12 @@
             {#if selected.organizer.name || selected.organizer.address}
                 <p class="small">Organised by {selected.organizer.name || selected.organizer.address}{SAID[selected.response] && !selected.is_organizer ? ` · ${SAID[selected.response]}` : ""}</p>
             {/if}
-            {#if !selected.is_organizer && !selected.is_cancelled && ["notResponded", "accepted", "tentativelyAccepted", "declined"].includes(selected.response)}
-                <Rsvp response={selected.response} onAnswer={answer} start={selected.is_all_day ? null : selected.start} end={selected.is_all_day ? null : selected.end} />
+            <!-- An answer is given only where the calendar may be changed: not in one someone shared to be read. -->
+            {#if !selected.is_organizer && !selected.is_cancelled && ["notResponded", "accepted", "tentativelyAccepted", "declined"].includes(selected.response) && (calendars.find((c) => c.id === selected?.calendar_id)?.can_edit ?? true)}
+                <!-- Each invitation has its own answer: a note written for one is not kept for the next. -->
+                {#key selected.id}
+                    <Rsvp response={selected.response} onAnswer={answer} start={selected.is_all_day ? null : selected.start} end={selected.is_all_day ? null : selected.end} />
+                {/key}
             {/if}
             {#if selected.attendees.length > 0}
                 {@const answers = selected.attendees}
@@ -726,7 +744,7 @@
                     </p>
                 {/if}
                 <ul class="people">
-                    {#each selected.attendees as each (each.address)}
+                    {#each selected.attendees as each, index (index)}
                         <li>{each.name || each.address} <span class="muted">{ANSWERED[each.response] ?? each.response}{each.kind === "optional" ? " · optional" : ""}</span>
                             {#if selected.is_organizer && each.proposed_start && each.proposed_end}
                                 {@const start = new Date(each.proposed_start)}
