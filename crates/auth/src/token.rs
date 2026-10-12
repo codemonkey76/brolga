@@ -80,6 +80,20 @@ pub(crate) struct DeviceCodeBody {
     pub message: String,
 }
 
+/// The longest anything the identity platform gives out is taken to last,
+/// whatever it says. An access token lasts about an hour and a device code
+/// a quarter of one; a number of seconds beyond counting, added to the
+/// time, would otherwise stop the program.
+const LONGEST_LIFE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The largest answer read from a token endpoint: each is a few tokens.
+const MAX_ANSWER: usize = 1024 * 1024;
+
+/// How long something lasts that is said to last so many seconds.
+pub(crate) fn life(seconds: u64) -> Duration {
+    Duration::from_secs(seconds).min(LONGEST_LIFE)
+}
+
 /// Talks to the identity platform's token endpoints.
 #[derive(Clone)]
 pub struct TokenClient {
@@ -193,7 +207,7 @@ impl TokenClient {
 
         Ok(Tokens {
             access_token: body.access_token,
-            expires_at: Instant::now() + Duration::from_secs(body.expires_in),
+            expires_at: Instant::now() + life(body.expires_in),
             refresh_token: body.refresh_token,
             identity: body.id_token.as_deref().map(identity).transpose()?,
         })
@@ -201,9 +215,26 @@ impl TokenClient {
 }
 
 /// A 2xx answer is the body asked for; anything else is the platform's error body.
-async fn read<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, AuthError> {
+async fn read<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, AuthError> {
     let status = response.status();
-    let bytes = response.bytes().await.map_err(AuthError::Network)?;
+    // A piece at a time, and given up on once it is larger than any
+    // answer could be: a server need not say how much it is about to send.
+    let too_large = || AuthError::Protocol("an answer too large to be one".to_owned());
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ANSWER as u64)
+    {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    while let Some(piece) = response.chunk().await.map_err(AuthError::Network)? {
+        if bytes.len() + piece.len() > MAX_ANSWER {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&piece);
+    }
 
     if status.is_success() {
         return serde_json::from_slice(&bytes).map_err(|e| AuthError::Protocol(e.to_string()));
@@ -284,6 +315,14 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn nothing_is_taken_to_last_longer_than_a_day() {
+        assert_eq!(life(3600), Duration::from_secs(3600));
+        assert_eq!(life(u64::MAX), LONGEST_LIFE);
+        // What stopped the program: the time, and that many seconds more.
+        let _ = Instant::now() + life(u64::MAX);
     }
 
     #[test]

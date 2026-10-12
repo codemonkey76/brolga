@@ -261,3 +261,20 @@ async fn no_token_is_ever_written_to_the_database_file() {
     drop(fixture);
     let _ = std::fs::remove_dir_all(folder);
 }
+
+#[tokio::test]
+async fn a_token_said_to_last_for_ever_does_not_stop_the_program() {
+    let fixture = Fixture::new().await;
+    fixture.identity.access_tokens_last(u64::MAX);
+
+    let accounts = fixture.start();
+    let account = fixture.sign_in(&accounts, &registration()).await;
+
+    assert!(
+        accounts
+            .access_token(&account.id)
+            .await
+            .unwrap()
+            .starts_with("access-")
+    );
+}
