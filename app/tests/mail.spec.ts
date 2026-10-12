@@ -1985,3 +1985,34 @@ test("what went wrong stays in sight through a sync until it is dismissed, and a
     await moved.getByRole("button", { name: "Dismiss" }).click();
     await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("the arrow keys go on working when the line that was clicked has scrolled out of the list", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(300)] });
+    await folder(page, "Archive").click();
+    await messages(page).getByRole("option").first().click();
+    const chosen = messages(page).getByRole("option", { selected: true });
+    await expect(chosen).toContainText("Archived message 1");
+
+    for (let pressed = 1; pressed <= 6; pressed++) {
+        await page.keyboard.press("PageDown");
+        await expect(chosen).toContainText(`Archived message ${pressed * 8 + 1}`);
+    }
+    await page.keyboard.press("ArrowDown");
+
+    await expect(chosen).toContainText("Archived message 50");
+    // The keys are the list's, which tells a screen reader which of its lines they are on.
+    await expect(messages(page)).toBeFocused();
+    expect(await messages(page).getAttribute("aria-activedescendant")).toBe(await chosen.getAttribute("id"));
+});
+
+test("End goes to the last line of a long folder the first time it is pressed", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)] });
+    await folder(page, "Archive").click();
+    await messages(page).getByRole("option").first().click();
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Archived message 1");
+
+    await page.keyboard.press("End");
+
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Archived message 1200");
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Archived message 1200");
+});
