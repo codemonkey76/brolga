@@ -1769,3 +1769,96 @@ test("the bin on a line leaves the lines chosen as they were", async ({ page }) 
     await expect(picked).toContainText("2 messages selected");
     await expect(messages(page).getByRole("option", { selected: true })).toHaveCount(2);
 });
+
+test("a search still under way when the box is cleared does not show under the empty box", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+    await expect(rows).toHaveCount(4);
+    await told(page, "hold", "mail.search");
+
+    await search.fill("invoice");
+    await expect.poll(() => told(page, "heldBack", "mail.search")).toBe(1);
+    await search.fill("");
+    await told(page, "letGo", "mail.search");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 50)));
+
+    await expect(page.getByText("· 4 messages")).toBeVisible();
+    await expect(rows).toHaveCount(4);
+});
+
+test("after a search that fails, the folder still shows the mail that comes", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+    await expect(rows).toHaveCount(4);
+    await told(page, "failAfter", "mail.search", 0, "The search could not be run.");
+
+    await search.fill("invoice");
+    await search.press("Enter");
+    await expect(page.getByRole("alert")).toContainText("The search could not be run.");
+    await search.fill("");
+    await page.evaluate(() => (window as unknown as { arrive: () => void }).arrive());
+    await page.keyboard.press("F9");
+
+    await expect(rows).toHaveCount(5);
+    await expect(rows.first()).toContainText("Just in");
+});
+
+test("a search says when it shows only the first of many, and what was searched for, not what is being typed", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(250)] });
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+
+    await search.fill("archived");
+    await search.press("Enter");
+    await expect(page.getByText("The first 200 results for “archived”")).toBeVisible();
+
+    await told(page, "hold", "mail.search");
+    await search.fill("archived message 25");
+    await expect.poll(() => told(page, "heldBack", "mail.search")).toBe(1);
+    await expect(page.getByText("The first 200 results for “archived”")).toBeVisible();
+    await told(page, "letGo", "mail.search");
+    await expect(page.getByText("9 results for “archived message 25”")).toBeVisible();
+});
+
+test("every line stays chosen when the list is fetched again while they are being chosen", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)] });
+    await folder(page, "Archive").click();
+    await expect(page.getByText("· 1,200 messages")).toBeVisible();
+    await messages(page).getByRole("option").first().click();
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    // A sync ends by fetching the list again: that is held back.
+    await told(page, "hold", "mail.messages.list", 1);
+    await page.keyboard.press("F9");
+    await expect.poll(() => told(page, "heldBack", "mail.messages.list")).toBe(1);
+
+    await page.keyboard.press("Control+a");
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await expect(picked).toContainText("1,200 messages selected");
+    await told(page, "letGo", "mail.messages.list");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 300)));
+
+    await expect(picked).toContainText("1,200 messages selected");
+});
+
+test("while a sync goes on, only what is near the lines on screen is fetched again", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)], syncNeverEnds: true });
+    await folder(page, "Archive").click();
+    await expect(page.getByText("· 1,200 messages")).toBeVisible();
+    await messages(page).evaluate((list) => (list.scrollTop = list.scrollHeight));
+    await expect(messages(page).getByText("Archived message 1200", { exact: true })).toBeVisible();
+    await messages(page).evaluate((list) => (list.scrollTop = 0));
+    await expect(messages(page).getByText("Archived message 1", { exact: true })).toBeVisible();
+
+    const pages = async (from: number) => (await ran(page)).slice(from).filter((r) => r.command === "mail.messages.list" && r.args.folder_id === "archive").map((r) => r.args.offset);
+    // The first fetch of the top after coming back to it, and then the one after that.
+    let mark = (await ran(page)).length;
+    await expect.poll(async () => (await pages(mark)).includes(0), { timeout: 10_000 }).toBe(true);
+    mark = (await ran(page)).length;
+    await expect.poll(async () => (await pages(mark)).includes(0), { timeout: 10_000 }).toBe(true);
+    expect(await pages(mark)).not.toContain(1100);
+
+    // What was let go is fetched when it is scrolled to again.
+    await messages(page).evaluate((list) => (list.scrollTop = list.scrollHeight));
+    await expect(messages(page).getByText("Archived message 1200", { exact: true })).toBeVisible();
+});

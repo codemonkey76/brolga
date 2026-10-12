@@ -2,7 +2,7 @@
     import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { type Asked, chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, SEARCH_MOST, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -31,6 +31,8 @@
     /** Bumped whenever the list is replaced, so a slow answer for the old one is dropped. */
     let listing = 0;
     const asked = new Set<number>();
+    /** The positions on screen, as the list last told of them. What is fetched again is what is near them. */
+    let seen = { first: 0, last: 0 };
 
     let query = $state("");
     /** Whether a search looks in every folder or only the one shown. */
@@ -51,6 +53,12 @@
         if (query.trim()) search();
     }
     let searching = $state(false);
+    /** The words last searched for. What is shown was found for these, whatever has been typed since. */
+    let sought = $state("");
+    /** The search found as many as it is asked for, so there may be more. */
+    let capped = $state(false);
+    /** Counts each search asked for, so that only the answer to the last is shown. */
+    let seeking = 0;
     let opened = $state<Opened | null>(null);
     let selectedId = $state<string | null>(null);
     /** The message being read, which in a conversation need not be the one selected in the list. */
@@ -339,7 +347,7 @@
 
     /** Fetch the list again as it now is: the folder's pages, or what the search finds. */
     async function again() {
-        if (searching) await search();
+        if (searching) await search(sought);
         else await refresh();
     }
 
@@ -719,6 +727,8 @@
 
     function reset() {
         listing += 1;
+        seeking += 1;
+        seen = { first: 0, last: 0 };
         asked.clear();
         picked = [];
         rows = [];
@@ -743,7 +753,8 @@
         const mine = listing;
         try {
             const page = await listMessages(accountId, folderId, offset, PAGE, view);
-            if (mine !== listing) return;
+            // Left if the list has been replaced, or the page was let go again while it was on its way.
+            if (mine !== listing || !asked.has(offset)) return;
             total = page.total;
             const next = rows.slice();
             page.messages.forEach((message, i) => (next[offset + i] = message));
@@ -754,44 +765,103 @@
         }
     }
 
-    /** Fetch again what is on screen, in place, so new mail appears without the list jumping. */
-    async function refresh() {
-        if (!accountId || !folderId || searching) return;
+    /** The fetching again that is under way, if one is, and whether another has been asked for since it began. */
+    let refreshing: Promise<void> | null = null;
+    let stale = false;
+
+    /**
+     * Fetch again what is on screen, in place, so new mail appears without
+     * the list jumping. One at a time: asked for while one is under way, it
+     * is done once more when that is over, and both end together.
+     */
+    function refresh(): Promise<void> {
+        if (refreshing) {
+            stale = true;
+            return refreshing;
+        }
+        const turns = (async () => {
+            try {
+                do {
+                    stale = false;
+                    await fetchAgain();
+                } while (stale);
+            } finally {
+                refreshing = null;
+            }
+        })();
+        refreshing = turns;
+        return turns;
+    }
+
+    /**
+     * Fetch again the pages near what is on screen and the page the selected
+     * line is on. A page further off may no longer start where it did, so it
+     * is let go, to be fetched when it is scrolled to. While lines are chosen
+     * across pages, or being gathered to be, every page is fetched: which
+     * lines are chosen is told from the rows.
+     */
+    async function fetchAgain() {
+        const [account, within] = [accountId, folderId];
+        if (!account || !within || searching) return;
         const mine = listing;
-        const next = rows.slice();
+        const had = [...asked].sort((a, b) => a - b);
+        const whole = () => many || gathering > 0;
+        const at = rows.findIndex((row) => row?.id === selectedId);
+        const near = (offset: number) => (offset + PAGE > seen.first - PAGE && offset < seen.last + PAGE) || (at >= offset && at < offset + PAGE);
+        const fetched = new Map<number, Message[]>();
         let now = total;
-        for (const offset of [...asked].sort((a, b) => a - b)) {
-            const page = await listMessages(accountId, folderId, offset, PAGE, view);
+        for (const offset of had) {
+            if (!whole() && !near(offset)) continue;
+            const page = await listMessages(account, within, offset, PAGE, view);
             if (mine !== listing) return;
             now = page.total;
-            for (let i = 0; i < PAGE; i++) next[offset + i] = page.messages[i];
+            fetched.set(offset, page.messages);
+        }
+        // Put into the rows as they are now, not as they were, so that a page loaded meanwhile is kept.
+        const next = rows.slice();
+        for (const offset of had) {
+            const page = fetched.get(offset);
+            if (page) {
+                for (let i = 0; i < PAGE; i++) next[offset + i] = page[i];
+            } else if (whole()) {
+                // Wanted after all, since lines began to be chosen: fetched on the turn after this.
+                stale = true;
+            } else {
+                for (let i = 0; i < PAGE; i++) next[offset + i] = undefined;
+                asked.delete(offset);
+            }
         }
         next.length = Math.min(next.length, now);
         rows = next;
         total = now;
     }
 
-    async function search() {
+    /** Search for the words in the box, or for those given. With none, the folder is shown again. */
+    async function search(words = query) {
         clearTimeout(searchSoon);
         if (!accountId) return;
-        if (!query.trim()) {
+        // A search still under way is no longer the one wanted: its answer is left.
+        const mine = ++seeking;
+        if (!words.trim()) {
             if (searching && folderId) await showFolder(folderId);
             return;
         }
-        // The list is replaced when the answer is in, not emptied first, so
-        // it does not flicker with every letter typed.
-        listing += 1;
-        asked.clear();
-        const mine = listing;
         try {
-            const found = await searchMail(accountId, query, everywhere ? undefined : (folderId ?? undefined));
-            if (mine !== listing) return;
+            const found = await searchMail(accountId, words, everywhere ? undefined : (folderId ?? undefined));
+            if (mine !== seeking) return;
+            // The list is replaced when the answer is in, not emptied first, so
+            // it does not flicker with every letter typed. Only now is the
+            // folder forgotten: a search that fails leaves it as it was.
+            listing += 1;
+            asked.clear();
             searching = true;
+            sought = words;
+            capped = found.length >= SEARCH_MOST;
             picked = [];
             rows = found;
             total = found.length;
         } catch (failure) {
-            problem = say(failure);
+            if (mine === seeking) problem = say(failure);
         }
     }
 
@@ -799,12 +869,20 @@
     let searchSoon: ReturnType<typeof setTimeout> | undefined;
     function typedSearch() {
         clearTimeout(searchSoon);
-        searchSoon = setTimeout(search, query.trim() ? 150 : 0);
+        searchSoon = setTimeout(() => search(), query.trim() ? 150 : 0);
     }
+
+    /** How many runs of lines are being gathered to be chosen. Until they are, no page is let go. */
+    let gathering = 0;
 
     /** Load every page of the folder that holds a position from one to another. */
     async function load(from: number, to: number) {
-        for (let offset = Math.floor(from / PAGE) * PAGE; offset <= to; offset += PAGE) await need(offset);
+        gathering += 1;
+        try {
+            for (let offset = Math.floor(from / PAGE) * PAGE; offset <= to; offset += PAGE) await need(offset);
+        } finally {
+            gathering -= 1;
+        }
     }
 
     /** Choose these lines. One alone is opened to be read; several are held to be acted on together. */
@@ -1221,7 +1299,7 @@
 
         <p class="heading">
             {#if searching}
-                {total === 1 ? "1 result" : `${total} results`} for “{query}” {everywhere ? "in all folders" : `in ${folder?.name ?? "this folder"}`}
+                {capped ? `The first ${total} results` : total === 1 ? "1 result" : `${total} results`} for “{sought}” {everywhere ? "in all folders" : `in ${folder?.name ?? "this folder"}`}
             {:else if folder}
                 {@const things = view.conversations ? "conversation" : "message"}
                 {folder.name} <span class="muted">· {total === 1 ? `1 ${things}` : `${total.toLocaleString()} ${things}s`}</span>
@@ -1274,7 +1352,7 @@
             </p>
         {:else}
             <div class="rows">
-                <MessageList {total} {rows} {selectedId} {picked} {categories} onSelect={select} onAll={selectAll} onFlag={flagLine} onDelete={folder?.well_known === "deleteditems" && !searching ? undefined : removeLine} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
+                <MessageList {total} {rows} {selectedId} {picked} {categories} onSelect={select} onAll={selectAll} onFlag={flagLine} onDelete={folder?.well_known === "deleteditems" && !searching ? undefined : removeLine} onNeed={need} onSeen={(first, last) => (seen = { first, last })} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
             </div>
         {/if}
         {#if notice}

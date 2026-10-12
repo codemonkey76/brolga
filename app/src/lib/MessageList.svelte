@@ -20,13 +20,15 @@
         onDelete?: (message: Message) => void;
         /** Asked for when a position on screen has not been loaded. */
         onNeed: (index: number) => void;
+        /** Told which positions are on screen, and a few either side, whenever that changes. */
+        onSeen?: (first: number, last: number) => void;
         /** The mailbox's categories, for the colour of each. */
         categories: Category[];
         /** The list is in date order, so it can be marked off into today, yesterday and so on. */
         byDate: boolean;
     }
 
-    let { total, rows, selectedId, picked, onSelect, onAll, onFlag, onDelete, onNeed, byDate, categories }: Props = $props();
+    let { total, rows, selectedId, picked, onSelect, onAll, onFlag, onDelete, onNeed, onSeen, byDate, categories }: Props = $props();
 
     const chosen = $derived(new Set(picked.length > 1 ? picked : selectedId ? [selectedId] : []));
 
@@ -51,6 +53,8 @@
     };
     const top = $derived(group(Math.min(Math.max(0, total - 1), Math.floor(scrollTop / ROW))));
     const starts = (index: number) => index > 0 && group(index) !== "" && group(index - 1) !== "" && group(index) !== group(index - 1);
+
+    $effect(() => onSeen?.(first, last));
 
     $effect(() => {
         for (const index of visible) {
