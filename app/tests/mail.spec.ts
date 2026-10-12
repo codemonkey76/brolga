@@ -2016,3 +2016,55 @@ test("End goes to the last line of a long folder the first time it is pressed", 
     await expect(messages(page).getByRole("option", { selected: true })).toContainText("Archived message 1200");
     await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Archived message 1200");
 });
+
+test("deleting one message of an open conversation leaves the conversation open and its line chosen", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...lunch] });
+    await page.getByRole("checkbox", { name: "Conversations" }).check();
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await rows.filter({ hasText: "Lunch on Friday?" }).click();
+    const thread = pane.getByRole("list", { name: "Conversation" });
+    await expect(thread.getByRole("button")).toHaveCount(3);
+    await thread.getByRole("button").first().click();
+    await expect(body(page).getByText("The place by the harbour has reopened.")).toBeVisible();
+
+    await page.keyboard.press("Delete");
+
+    await expect(page.getByText("Moved to Deleted Items")).toBeVisible();
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Lunch on Friday?");
+    await expect(body(page).getByText("Booked for four of us.")).toBeVisible();
+});
+
+test("Ctrl with a click in another folder chooses that line alone, not also the one left behind", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(3)] });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await folder(page, "Archive").click();
+    await expect(rows).toHaveCount(3);
+
+    await rows.first().click({ modifiers: ["ControlOrMeta"] });
+
+    await expect(page.getByRole("region", { name: "Messages selected" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Archived message 1");
+});
+
+test("a line clicked while a message is being written is opened, and marked read, once the writing is put aside", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    await expect(first).toHaveClass(/unread/);
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    await expect(form).toBeVisible();
+
+    await first.click();
+    await expect(first).toHaveAttribute("aria-selected", "true");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 100)));
+    await expect(form).toBeVisible();
+    expect(await asked(page, "mail.messages.set_read")).toBe(0);
+    await expect(first).toHaveClass(/unread/);
+
+    await form.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Budget review moved to Thursday");
+    await expect(first).not.toHaveClass(/unread/);
+});

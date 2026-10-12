@@ -245,6 +245,9 @@
 
     async function doneWriting(how: "sent" | "discarded" | "closed") {
         writing = null;
+        // A line chosen while this was being written is opened now that there is somewhere to show it.
+        const waiting = rows.find((row) => row?.id === selectedId);
+        if (waiting && !waiting.is_draft && !many && readingId !== waiting.id) void open(waiting);
         if (how === "sent") tell("Sending. It will be in Sent Items once it has gone.");
         await loadDrafts();
         // Sending happens in the background: look again shortly for it having gone, or come back.
@@ -433,10 +436,14 @@
         });
     }
 
-    /** Where in the list the first of these is. */
+    /**
+     * Where in the list the first of these is. One message of a conversation
+     * being read has no line of its own: it is where the selected line is.
+     */
     function place(ids: string[]) {
         const going = new Set(ids);
-        return rows.findIndex((row) => row && going.has(row.id));
+        const at = rows.findIndex((row) => row && going.has(row.id));
+        return at >= 0 ? at : rows.findIndex((row) => row?.id === selectedId);
     }
 
     /**
@@ -931,7 +938,8 @@
         if (how === "one") return open(message);
         const mine = listing;
         if (how === "toggle") {
-            const now = many ? picked : selectedId ? [selectedId] : [];
+            // The selected line counts only if it is in this list: it may be of a folder since left.
+            const now = many ? picked : selectedId && rows.some((row) => row?.id === selectedId) ? [selectedId] : [];
             anchorId = message.id;
             return pick(now.includes(message.id) ? now.filter((id) => id !== message.id) : [...now, message.id], message.id);
         }
@@ -990,6 +998,9 @@
             return;
         }
         selectedId = message.id;
+        // A message being written has the pane. The line is chosen, and is opened when the writing is put aside,
+        // so that nothing is marked read that has not been shown.
+        if (writing) return;
         thread = [];
         const reading = read(message);
         if (accountId && view.conversations && !searching && message.conversation_id) {
