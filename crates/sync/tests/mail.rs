@@ -853,3 +853,55 @@ async fn a_body_with_nothing_in_it_is_an_empty_body_and_the_ones_after_it_are_fe
     assert_eq!(f.db.body(&empty).unwrap().unwrap().content, "");
     assert!(f.db.body(&full).unwrap().unwrap().content.contains("Words"));
 }
+
+#[tokio::test]
+async fn a_pass_over_what_was_answered_keeps_its_place_through_an_outage() {
+    let f = Fixture::new().await;
+    let ids = f.graph.add_messages(&f.inbox, 260);
+    for id in ids.iter().take(250) {
+        f.graph.set_last_verb_at(id, 102, "2026-01-01T09:00:00Z");
+    }
+    let sync = f.sync(100);
+    sync.sync_all().await.unwrap();
+    assert_eq!(sync.sync_last_actions(1).await.unwrap(), 200);
+
+    // The server cannot be had for a while. That is not the saved place's fault.
+    f.graph.fail_next(std::iter::repeat_n(
+        Fault::Throttled {
+            retry_after_secs: 0,
+        },
+        6,
+    ));
+    assert!(sync.sync_last_actions(5).await.unwrap_err().is_transient());
+
+    // The pass carries on from where it was: one request, for the last fifty.
+    let before = f.graph.requests().len();
+    assert_eq!(f.sync(100).sync_last_actions(5).await.unwrap(), 50);
+    assert_eq!(f.graph.requests().len(), before + 1);
+}
+
+#[tokio::test]
+async fn a_place_the_server_no_longer_takes_is_dropped_and_the_pass_begins_again() {
+    let f = Fixture::new().await;
+    let ids = f.graph.add_messages(&f.inbox, 30);
+    for id in ids.iter().take(20) {
+        f.graph.set_last_verb_at(id, 104, "2026-01-01T09:00:00Z");
+    }
+    let sync = f.sync(100);
+    sync.sync_all().await.unwrap();
+    f.db.set_setting(
+        "last_actions.link",
+        &format!(
+            "{}/me/messages?$top=200&$skiptoken=stale",
+            f.graph.base_url()
+        ),
+    )
+    .unwrap();
+
+    // Refused: said once, and the next pass starts from the beginning.
+    assert!(matches!(
+        sync.sync_last_actions(5).await,
+        Err(SyncError::Graph(GraphError::Refused { status: 400, .. }))
+    ));
+    assert_eq!(sync.sync_last_actions(5).await.unwrap(), 20);
+}

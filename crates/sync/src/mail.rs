@@ -313,8 +313,21 @@ impl MailSync {
                 Ok(page) => page,
                 Err(error) => {
                     // A link the server no longer takes is dropped, and the
-                    // pass begins again next time.
-                    self.db.set_setting(ACTIONS_LINK, "")?;
+                    // pass begins again next time. Any other trouble is
+                    // not the link's: with no connection, or the server
+                    // busy, the place is kept, or a large mailbox on a
+                    // poor connection would never reach the end of its
+                    // first pass.
+                    if matches!(
+                        error,
+                        GraphError::SyncStateGone
+                            | GraphError::Refused {
+                                status: 400 | 404 | 410,
+                                ..
+                            }
+                    ) {
+                        self.db.set_setting(ACTIONS_LINK, "")?;
+                    }
                     return Err(error.into());
                 }
             };

@@ -1167,6 +1167,20 @@ async fn answered_messages(
             "This stand-in lists messages only by what was last done with them.",
         );
     }
+    // A place in the list that is not one this server gave is refused. The
+    // documentation does not say what a link that is no longer good is
+    // answered with: the 400 is this stand-in's own, for testing that a
+    // refusal of the saved place is survived.
+    if query
+        .get("$skiptoken")
+        .is_some_and(|place| place.parse::<usize>().is_err())
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "BadRequest",
+            "The skip token is not valid.",
+        );
+    }
     let number = |part: &str, or: usize| query.get(part).and_then(|n| n.parse().ok()).unwrap_or(or);
     let (top, skip) = (number("$top", 10), number("$skiptoken", 0));
     let inner = lock(&shared);
