@@ -3,9 +3,16 @@ name: Release
 # Packages for every platform, from a tag like v0.1.0. Run by hand, it
 # builds the same packages and keeps them with the run, releasing nothing.
 #
-# Nothing here is signed, by the owner's decision for 1.0: Windows and macOS
-# warn about, or refuse, an app from a publisher they do not know, and
-# docs/using.md says how a person gets past that. Linux is the first home.
+# Nothing here is signed for the operating system, by the owner's decision
+# for 1.0: Windows and macOS warn about, or refuse, an app from a publisher
+# they do not know, and docs/using.md says how a person gets past that.
+# Linux is the first home.
+#
+# What is signed is each package an installed Brolga can replace itself
+# with, by Brolga's own key (the TAURI_SIGNING_PRIVATE_KEY secret), so that
+# a copy takes an update only from here. The release carries a latest.json
+# that says where each is and gives its signature; a copy looks for it on
+# the newest published release, so a draft is offered to nobody.
 on:
   push:
     tags: ["v*"]
@@ -29,7 +36,7 @@ jobs:
           # anything newer.
           - { name: Linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, bundles: "deb,rpm,appimage" }
           - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc, bundles: "nsis,msi" }
-          - { name: macOS, os: macos-latest, target: universal-apple-darwin, bundles: "dmg" }
+          - { name: macOS, os: macos-latest, target: universal-apple-darwin, bundles: "app,dmg" }
     steps:
       - uses: actions/checkout@v7
 
@@ -82,6 +89,9 @@ jobs:
       - name: Package the app
         working-directory: app
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           target=""
           if [ "$RUNNER_OS" = macOS ]; then target="--target ${{ matrix.target }}"; fi
@@ -100,7 +110,8 @@ jobs:
         shell: bash
         run: |
           find target -path '*/release/bundle/*' -type f \
-            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \) \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \
+               -o -name '*.app.tar.gz' -o -name '*.sig' \) \
             -exec cp {} dist/ \;
           ls -l dist
 
@@ -119,10 +130,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # What an installed Brolga reads to learn of this release: where the
+      # package for its kind of install is, and that package's signature.
+      # A kind is looked for by its own name first, then by its system's.
+      - name: Say where each update is
+        working-directory: dist
+        run: bash ../.github/update-manifest.sh "$GITHUB_REF_NAME" "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" > latest.json && rm -f ./*.sig && cat latest.json
       - name: Say what each file should be
         working-directory: dist
         run: sha256sum * > SHA256SUMS

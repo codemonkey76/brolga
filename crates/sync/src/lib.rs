@@ -19,7 +19,7 @@ mod mail;
 
 pub use calendar::{CalendarSync, event_row};
 pub use contacts::{ContactSync, contact_row};
-pub use mail::{MailSync, Synced};
+pub use mail::{Doing, MailSync, Synced};
 
 use brolga_graph::GraphError;
 use brolga_store::StoreError;

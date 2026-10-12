@@ -108,9 +108,10 @@ pub fn mailto(link: &str) -> Option<Value> {
 /// Where the choices about this computer are kept.
 const DESKTOP: &str = "desktop";
 
-/// How Brolga sits on this computer, as the person chose. Both are off
-/// until they are turned on: a program that stays when it is closed, or
-/// starts by itself, is one that was asked to.
+/// How Brolga sits on this computer, as the person chose. Staying and
+/// starting are off until they are turned on: a program that stays when it
+/// is closed, or starts by itself, is one that was asked to. Looking for a
+/// newer version is on until it is turned off.
 fn desktop(db: &GlobalDb) -> Value {
     let kept: Value = db
         .setting(DESKTOP)
@@ -122,6 +123,7 @@ fn desktop(db: &GlobalDb) -> Value {
     json!({
         "keep_running": kept["keep_running"].as_bool().unwrap_or(false),
         "start_at_login": kept["start_at_login"].as_bool().unwrap_or(false),
+        "check_for_updates": kept["check_for_updates"].as_bool().unwrap_or(true),
     })
 }
 
@@ -134,7 +136,8 @@ pub(crate) fn register(
         "type": "object",
         "properties": {
             "keep_running": { "type": "boolean", "description": "Closing the window leaves Brolga running, fetching mail and giving reminders, with an icon in the system tray to bring it back or quit." },
-            "start_at_login": { "type": "boolean", "description": "Brolga starts, with no window, when the person signs in to this computer." }
+            "start_at_login": { "type": "boolean", "description": "Brolga starts, with no window, when the person signs in to this computer." },
+            "check_for_updates": { "type": "boolean", "description": "The app looks, when it starts and once a day, for a newer version among its published releases, and offers it. On until turned off." }
         },
         "required": ["keep_running", "start_at_login"],
         "additionalProperties": false
@@ -144,7 +147,7 @@ pub(crate) fn register(
         CommandSpec {
             id: "app.desktop.get".to_owned(),
             title: "How Brolga sits on this computer".to_owned(),
-            description: "Whether Brolga keeps running when its window is closed, and whether it starts when the person signs in to this computer. Both are off until turned on."
+            description: "Whether Brolga keeps running when its window is closed, whether it starts when the person signs in to this computer, and whether it looks for newer versions of itself. The first two are off until turned on; the last is on until turned off."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -162,7 +165,7 @@ pub(crate) fn register(
         CommandSpec {
             id: "app.desktop.set".to_owned(),
             title: "Change how Brolga sits on this computer".to_owned(),
-            description: "Choose whether Brolga keeps running when its window is closed, and whether it starts when the person signs in to this computer. Only what is given changes. \
+            description: "Choose whether Brolga keeps running when its window is closed, whether it starts when the person signs in to this computer, and whether it looks for newer versions of itself. Only what is given changes. \
                           This records the choice; the app acts on it."
                 .to_owned(),
             kind: CommandKind::Action,
@@ -170,7 +173,7 @@ pub(crate) fn register(
             mcp_tool: None,
             args_schema: json!({
                 "type": "object",
-                "properties": { "keep_running": { "type": "boolean" }, "start_at_login": { "type": "boolean" } },
+                "properties": { "keep_running": { "type": "boolean" }, "start_at_login": { "type": "boolean" }, "check_for_updates": { "type": "boolean" } },
                 "additionalProperties": false
             }),
             result_schema: choices,
@@ -180,7 +183,7 @@ pub(crate) fn register(
             let db = global.clone();
             Box::pin(async move {
                 let mut now = desktop(&db);
-                for each in ["keep_running", "start_at_login"] {
+                for each in ["keep_running", "start_at_login", "check_for_updates"] {
                     if let Some(chosen) = args[each].as_bool() {
                         now[each] = json!(chosen);
                     }

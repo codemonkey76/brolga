@@ -104,6 +104,24 @@ Under **This computer** on the Accounts screen:
 Both are off until you turn them on. Starting Brolga a second time always
 brings the window you already have to the front.
 
+## What it is doing, and new versions
+
+A bar along the bottom of the window says what Brolga is busy with. The
+first time an account is fetched it brings the newest mail of every folder,
+then goes back for the rest a folder at a time, the inbox first; the bar says
+which folder it has reached and how far through it is. When nothing is being
+fetched it says when everything was last brought up to date.
+
+The end of the bar says which version of Brolga this is. When it starts, and
+once a day, Brolga asks GitHub, where it is published, whether there is a
+newer one. Nothing about you or your mail is sent. A newer version is offered
+on the bar and in the system tray's menu: **Update and restart** fetches it,
+checks that it was made with Brolga's own key, puts it in and starts again.
+An AppImage, a Windows install and a Mac install update this way; a `.deb`
+or `.rpm` does where it can, and a Flatpak or a copy you built is pointed to
+the page to download from. Press the version to look now, and turn the
+looking off under **Accounts**, **This computer**.
+
 ## Opening email links
 
 Installed from a package, Brolga offers itself as the program for `mailto:`

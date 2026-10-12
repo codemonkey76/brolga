@@ -852,6 +852,19 @@ async fn sync_status_says_how_much_is_here_and_how_fresh_it_is() {
     assert!(after["synced_at"].as_str().unwrap().starts_with("20"));
     assert_eq!(after["syncing"], false);
     assert_eq!(after["needs_sign_in"], false);
+    // Nothing is being fetched now, and every folder has been.
+    assert_eq!(
+        (before["now"].clone(), after["now"].clone()),
+        (Value::Null, Value::Null)
+    );
+    let folders = f.run("mail.folders.list", json!({})).await["folders"].clone();
+    assert!(
+        folders
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|each| each["synced"] == true)
+    );
 }
 
 #[tokio::test]

@@ -106,6 +106,12 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | MS-OXOMSG, Email Object Protocol: PidTagLastVerbExecuted | https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-oxomsg/87a8b6b8-59a4-4859-9dcd-8b0f36e3d729 | What was last done with a message, property 0x1081: 102 a reply to its sender, 103 a reply to all, 104 forwarding it |
 | OpenID Connect Core 1.0 | https://openid.net/specs/openid-connect-core-1_0.html | Section 3.1.3.7: an ID token received straight from the token endpoint over TLS need not have its signature checked |
 
+## Tauri
+
+| Document | URL | Used for |
+|---|---|---|
+| Updater plugin | https://v2.tauri.app/plugin/updater/ | The signing key and its environment variables, `createUpdaterArtifacts`, the `latest.json` an installed copy reads and its platform names, and checking for, fetching and installing an update |
+
 ## Data
 
 | Data | URL | Used for |

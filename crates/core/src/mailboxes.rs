@@ -29,6 +29,8 @@ pub(crate) struct Mailbox {
     pub outbox: Arc<brolga_ops::Outbox>,
     /// One sync of an account at a time: two would fetch the same pages.
     pub syncing: Mutex<()>,
+    /// Which part of a sync is running, while one is.
+    stage: std::sync::Mutex<Option<&'static str>>,
     /// The file that says so to other copies of Brolga on this computer.
     /// None when the mail is kept in memory, which no other copy can see.
     lock_file: Option<PathBuf>,
@@ -38,7 +40,37 @@ pub(crate) struct Mailbox {
 /// app, and a command-line or MCP run with no app) until it is dropped.
 pub(crate) struct SyncTurn(#[allow(dead_code)] Option<std::fs::File>);
 
+/// Says a sync has moved on to nothing, however it ended.
+pub(crate) struct Staged<'a>(&'a Mailbox);
+
+impl Drop for Staged<'_> {
+    fn drop(&mut self) {
+        self.0.stage(None);
+    }
+}
+
 impl Mailbox {
+    /// Note which part of a sync is running, for `app.sync.status` to say.
+    pub fn stage(&self, stage: Option<&'static str>) {
+        *self
+            .stage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = stage;
+    }
+
+    /// Which part of a sync is running.
+    pub fn staged(&self) -> Option<&'static str> {
+        *self
+            .stage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Hold this for as long as a sync runs: when it goes, no part is running.
+    pub fn staging(&self) -> Staged<'_> {
+        Staged(self)
+    }
+
     /// Take the turn to sync, or nothing if another copy has it. Two copies
     /// share one database safely, but syncing it twice at once would fetch
     /// everything twice and each could overwrite the other's place.
@@ -346,6 +378,7 @@ impl Mailboxes {
             }),
             shared,
             syncing: Mutex::new(()),
+            stage: std::sync::Mutex::new(None),
             lock_file: path.map(|path| path.with_extension("sync-lock")),
         });
         open.insert(account.id.clone(), mailbox.clone());

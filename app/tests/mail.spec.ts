@@ -18,7 +18,7 @@ test("the window opens on the inbox, newest first, and syncs", async ({ page }) 
     await expect(rows.first()).toContainText("Sam Taylor");
     await expect(rows.first()).toContainText("Budget review moved to Thursday");
     await expect(folder(page, "Inbox")).toContainText("2");
-    await expect(page.getByText("4 messages")).toBeVisible();
+    await expect(page.getByText("· 4 messages")).toBeVisible();
     await expect.poll(async () => (await ran(page)).some((r) => r.command === "mail.sync")).toBe(true);
 });
 
@@ -890,7 +890,7 @@ test("search filters as the words are typed", async ({ page }) => {
 
     await page.getByRole("searchbox", { name: "Search mail" }).fill("");
     await expect(rows).toHaveCount(4);
-    await expect(page.getByText("4 messages")).toBeVisible();
+    await expect(page.getByText("· 4 messages")).toBeVisible();
 });
 
 test("files are attached from the file dialog, can be removed, and go with the message", async ({ page }) => {
@@ -1471,4 +1471,85 @@ test("a message that has been answered or sent on is marked on its line", async 
     await expect(rows.nth(1).getByLabel("Replied to all")).toBeVisible();
     await expect(rows.nth(2).getByLabel("Forwarded")).toBeVisible();
     await expect(rows.nth(3).locator(".done")).toHaveCount(0);
+});
+
+test("a bar along the bottom says the mail is up to date, and how much of it is here", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const bar = page.getByRole("contentinfo", { name: "Sync status" });
+
+    await expect(bar).toContainText("Up to date as of");
+    await expect(bar).toContainText(`${inbox.length} messages on this computer`);
+    await expect(bar).toContainText("Brolga 0.1.5");
+});
+
+test("while mail is first fetched the bar says which folder and how far, and a folder not reached yet says why it is empty", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: inbox,
+        unfetched: ["junk"],
+        status: { syncing: true, folders_synced: 1, now: { doing: "mail", folder_id: "sent", folder: "Sent Items", fetched: 3200, total: 12450 } },
+    });
+    const bar = page.getByRole("contentinfo", { name: "Sync status" });
+
+    await expect(bar).toContainText("Fetching Sent Items: 3,200 of 12,450 messages");
+    await expect(bar.getByRole("progressbar")).toHaveAttribute("value", "3200");
+    await expect(bar).toContainText("1 of 10 folders fetched; the rest are empty until their turn");
+
+    await folder(page, "Junk Email").click();
+    await expect(page.getByText("This folder has not been fetched yet.")).toBeVisible();
+
+    // A folder that has been fetched and holds nothing says only that.
+    await folder(page, "Drafts").click();
+    await expect(page.getByText("Fetching your mail…").or(page.getByText("Nothing here."))).toBeVisible();
+});
+
+test("the bar says when an account needs signing in again, and what else a sync is busy with", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, status: { needs_sign_in: true } });
+    const bar = page.getByRole("contentinfo", { name: "Sync status" });
+    await expect(bar).toContainText("robin@example.test needs signing in again");
+});
+
+test("the bar says when a sync is fetching the calendar", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, status: { syncing: true, now: { doing: "calendar" } } });
+    await expect(page.getByRole("contentinfo", { name: "Sync status" })).toContainText("Fetching the calendar…");
+});
+
+const looked = (page: Page) => page.evaluate(() => (window as unknown as { looked: boolean[] }).looked);
+const installed = (page: Page) => page.evaluate(() => (window as unknown as { installed: string[] }).installed);
+
+test("a newer Brolga is offered along the bottom, said once on the desktop, and installed when asked", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, newer: { version: "0.1.6", installs: true, page: "https://example.test/releases" } });
+    const bar = page.getByRole("contentinfo", { name: "Sync status" });
+
+    const offer = bar.getByRole("button", { name: "Update to 0.1.6 and restart" });
+    await expect(offer).toBeVisible();
+    await expect.poll(async () => (await notified(page)).filter((n) => n.title === "Brolga 0.1.6 is available").length).toBe(1);
+    // It was looked for without being asked.
+    expect(await looked(page)).toEqual([false]);
+
+    await offer.click();
+    await expect.poll(() => installed(page)).toEqual(["0.1.6"]);
+});
+
+test("where a copy cannot replace itself the newer one is pointed to, and a failure to install is said", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: inbox,
+        newer: { version: "0.1.6", installs: false, page: "https://example.test/releases" },
+        installFails: "The new version could not be installed, and this one is untouched.",
+    });
+    const bar = page.getByRole("contentinfo", { name: "Sync status" });
+
+    await bar.getByRole("button", { name: "Brolga 0.1.6 is available" }).click();
+    await expect(bar).toContainText("The new version could not be installed, and this one is untouched.");
+});
+
+test("the version in the bar looks for a newer one when pressed, and says when there is none", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const bar = page.getByRole("contentinfo", { name: "Sync status" });
+    await expect(bar.getByRole("button", { name: /Update to/ })).toHaveCount(0);
+
+    await bar.getByRole("button", { name: "Brolga 0.1.5" }).click();
+    await expect(bar).toContainText("This is the newest version.");
+    expect(await looked(page)).toEqual([false, true]);
 });

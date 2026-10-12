@@ -359,7 +359,15 @@ pub struct Folder {
     pub favourite: bool,
     /// How far below the top of the tree: 0 for the inbox and its peers.
     pub depth: u32,
+    /// Its messages have all been fetched once. Until then what is here of
+    /// it is a part, or nothing.
+    #[serde(default)]
+    pub synced: bool,
 }
+
+/// A folder's name, and how many of its messages have been fetched out of
+/// how many, while it is being fetched whole.
+pub type FolderProgress = (String, Option<(u32, u32)>);
 
 /// What a sync learned about a folder. `None` leaves what is stored alone,
 /// because a delta entry carries only what changed.
@@ -575,6 +583,38 @@ impl AccountDb {
         restart(&self.connection(), &messages_resource(folder_id))
     }
 
+    /// How far the fetching of a folder's messages has got: its name, how
+    /// many of its messages this pass has fetched, and how many the server
+    /// says it has. The two numbers are given only while the folder is being
+    /// gone over whole; a look for what is new has nothing to count towards.
+    pub fn messages_progress(&self, folder_id: &str) -> Result<Option<FolderProgress>, StoreError> {
+        let connection = self.connection();
+        let folder = connection
+            .query_row(
+                "SELECT name, total FROM folders WHERE id = ?1",
+                [folder_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((name, total)) = folder else {
+            return Ok(None);
+        };
+        let state = sync_state(&connection, &messages_resource(folder_id))?;
+        if !state.reconciling {
+            return Ok(Some((name, None)));
+        }
+        let fetched: u32 = connection.query_row(
+            "SELECT count(*) FROM messages WHERE folder_id = ?1 AND generation = ?2",
+            params![folder_id, state.generation],
+            |row| row.get(0),
+        )?;
+
+        Ok(Some((
+            name,
+            Some((fetched, u32::try_from(total).unwrap_or(0))),
+        )))
+    }
+
     /// How much of the mailbox is here, and how recently it was brought up
     /// to date: (folders, messages, folders whose first sync has finished,
     /// the oldest "last synced" among those).
@@ -718,7 +758,9 @@ impl AccountDb {
     pub fn folders(&self) -> Result<Vec<Folder>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT id, parent_id, name, well_known, unread, total, hidden, favourite FROM folders
+            "SELECT id, parent_id, name, well_known, unread, total, hidden, favourite,
+                 coalesce((SELECT complete FROM sync_state WHERE resource = 'messages:' || folders.id), 0)
+             FROM folders
              WHERE hidden = 0
              ORDER BY CASE well_known
                  WHEN 'inbox' THEN 0 WHEN 'drafts' THEN 1 WHEN 'sentitems' THEN 2 WHEN 'deleteditems' THEN 3
@@ -737,6 +779,7 @@ impl AccountDb {
                     hidden: row.get(6)?,
                     favourite: row.get(7)?,
                     depth: 0,
+                    synced: row.get(8)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -1653,6 +1696,48 @@ mod tests {
             is_read: Some(read),
             ..MessageChange::default()
         }
+    }
+
+    #[test]
+    fn a_folder_being_fetched_says_how_far_it_has_got_and_when_it_is_all_here() {
+        let db = AccountDb::in_memory().unwrap();
+        let inbox = FolderChange {
+            id: "inbox".to_owned(),
+            name: Some("Inbox".to_owned()),
+            total: Some(3),
+            ..FolderChange::default()
+        };
+        db.apply_folders(&[inbox], &[], "next", Round::Finished)
+            .unwrap();
+        let synced = |db: &AccountDb| db.folders().unwrap()[0].synced;
+        assert!(!synced(&db));
+        assert_eq!(
+            db.messages_progress("inbox").unwrap(),
+            Some(("Inbox".to_owned(), Some((0, 3))))
+        );
+
+        let first = [mail("1", None, "Sam", "One", "2026-10-03T09:00:00Z", true)];
+        db.apply_messages("inbox", &first, &[], "more", Round::Continues)
+            .unwrap();
+        assert_eq!(
+            db.messages_progress("inbox").unwrap(),
+            Some(("Inbox".to_owned(), Some((1, 3))))
+        );
+        assert!(!synced(&db), "part of a folder is not the folder");
+
+        let rest = [
+            mail("2", None, "Sam", "Two", "2026-10-02T09:00:00Z", true),
+            mail("3", None, "Sam", "Three", "2026-10-01T09:00:00Z", true),
+        ];
+        db.apply_messages("inbox", &rest, &[], "since", Round::Finished)
+            .unwrap();
+        assert!(synced(&db));
+        // Looking for what is new has nothing to count towards.
+        assert_eq!(
+            db.messages_progress("inbox").unwrap(),
+            Some(("Inbox".to_owned(), None))
+        );
+        assert_eq!(db.messages_progress("nowhere").unwrap(), None);
     }
 
     fn with_mail() -> AccountDb {

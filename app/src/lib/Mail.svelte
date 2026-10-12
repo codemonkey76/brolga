@@ -1081,7 +1081,15 @@
         {/if}
 
         {#if total === 0}
-            <p class="empty muted">{searching ? "Nothing matches." : syncing ? "Fetching your mail…" : "Nothing here."}</p>
+            <p class="empty muted">
+                {#if searching}
+                    Nothing matches.
+                {:else if folder?.synced === false && !account?.archive}
+                    This folder has not been fetched yet. Mail is fetched a folder at a time, and the bar along the bottom says which it has reached.
+                {:else}
+                    {syncing ? "Fetching your mail…" : "Nothing here."}
+                {/if}
+            </p>
         {:else}
             <div class="rows">
                 <MessageList {total} {rows} {selectedId} {picked} {categories} onSelect={select} onAll={selectAll} onFlag={flagLine} onDelete={folder?.well_known === "deleteditems" && !searching ? undefined : removeLine} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
@@ -1397,6 +1405,8 @@
 
     .empty {
         margin: 2rem auto;
+        padding: 0 1rem;
+        text-align: center;
     }
 
     .problem {

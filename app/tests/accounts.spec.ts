@@ -519,9 +519,9 @@ test("Brolga is kept running and started at sign-in only when chosen, and says w
     await expect(here.getByRole("checkbox", { name: /Start when I sign in/ })).not.toBeChecked();
 
     await here.getByRole("checkbox", { name: /Start when I sign in/ }).check();
-    await expect.poll(applied).toEqual({ keep_running: false, start_at_login: true });
+    await expect.poll(applied).toMatchObject({ keep_running: false, start_at_login: true });
     await here.getByRole("checkbox", { name: /Keep running/ }).check();
-    await expect.poll(applied).toEqual({ keep_running: true, start_at_login: true });
+    await expect.poll(applied).toMatchObject({ keep_running: true, start_at_login: true });
     await expect(here.getByRole("status")).toContainText("no system tray");
     await picture(page, "this-computer");
 });
@@ -537,4 +537,15 @@ test("an import can be stopped, and one that failed says why", async ({ page }) 
     await section.getByRole("button", { name: "Stop reading Huge" }).click();
     await expect(section.getByRole("listitem").filter({ hasText: "Huge" })).toContainText(/Stopped: [\d,]+ messages? were read/);
     expect((await ran(page)).find((r) => r.command === "archives.cancel")?.args).toMatchObject({ archive_id: "archive:2" });
+});
+
+test("looking for new versions is on until it is turned off, and then nothing is looked for unasked", async ({ page }) => {
+    await withCore(page, { accounts: [robin], newer: { version: "0.1.6", installs: true, page: "https://example.test/releases" } });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    const box = page.getByRole("region", { name: "This computer" }).getByRole("checkbox", { name: /Look for new versions/ });
+    await expect(box).toBeChecked();
+
+    await box.uncheck();
+    await expect(box).not.toBeChecked();
+    expect((await ran(page)).filter((r) => r.command === "app.desktop.set").at(-1)?.args).toEqual({ check_for_updates: false });
 });

@@ -9,6 +9,7 @@
     import Reminders from "./lib/Reminders.svelte";
     import Mail from "./lib/Mail.svelte";
     import NewMail from "./lib/NewMail.svelte";
+    import StatusBar from "./lib/StatusBar.svelte";
     import Palette, { type Action } from "./lib/Palette.svelte";
     import People from "./lib/People.svelte";
     import { tick } from "svelte";
@@ -189,6 +190,10 @@
             <div class="scroll"><Accounts onChanged={changed} onArchives={reload} /></div>
         {/if}
     </main>
+
+    {#if started && accounts.length > 0}
+        <StatusBar {accounts} />
+    {/if}
 </div>
 
 <style>
@@ -196,6 +201,7 @@
         height: 100vh;
         display: grid;
         grid-template-columns: auto minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) auto;
     }
 
     .rail {
@@ -226,7 +232,6 @@
     main {
         min-width: 0;
         min-height: 0;
-        height: 100vh;
     }
 
     .scroll {

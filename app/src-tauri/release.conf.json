@@ -1,5 +1,8 @@
 {
   "bundle": {
-    "externalBin": ["binaries/brolga-cli"]
+    "externalBin": [
+      "binaries/brolga-cli"
+    ],
+    "createUpdaterArtifacts": true
   }
 }

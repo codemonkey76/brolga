@@ -5,9 +5,10 @@
     interface Choices {
         keep_running: boolean;
         start_at_login: boolean;
+        check_for_updates: boolean;
     }
 
-    let choices = $state<Choices>({ keep_running: false, start_at_login: false });
+    let choices = $state<Choices>({ keep_running: false, start_at_login: false, check_for_updates: true });
     /** Whether this desktop has a system tray for Brolga to sit in. Unknown until asked. */
     let tray = $state(true);
     let problem = $state<string | null>(null);
@@ -48,6 +49,13 @@
         <span>
             Start when I sign in to this computer
             <small class="muted">With no window, where it is also kept running; otherwise with one.</small>
+        </span>
+    </label>
+    <label>
+        <input type="checkbox" checked={choices.check_for_updates} onchange={(event) => change({ check_for_updates: event.currentTarget.checked })} />
+        <span>
+            Look for new versions of Brolga
+            <small class="muted">When it starts and once a day, Brolga asks GitHub, where it is published, whether there is a newer one, and offers it along the bottom of the window. Nothing about you or your mail is sent.</small>
         </span>
     </label>
     {#if problem}

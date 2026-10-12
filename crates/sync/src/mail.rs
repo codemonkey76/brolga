@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use brolga_graph::{
     DeltaItem, GraphClient, GraphError, MailFolder, Message, Next, Recipient, WELL_KNOWN_FOLDERS,
@@ -32,11 +32,21 @@ impl Synced {
     }
 }
 
+/// What a sync of mail is busy with, for whoever is waiting on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Doing {
+    /// Reading the folder tree.
+    Folders,
+    /// Fetching the messages of the folder with this id.
+    Messages(String),
+}
+
 /// Syncs one account's mail.
 pub struct MailSync {
     graph: Arc<GraphClient>,
     db: Arc<AccountDb>,
     page_size: u32,
+    doing: Mutex<Option<Doing>>,
 }
 
 impl MailSync {
@@ -45,6 +55,7 @@ impl MailSync {
             graph,
             db,
             page_size: 100,
+            doing: Mutex::new(None),
         }
     }
 
@@ -54,12 +65,50 @@ impl MailSync {
         self
     }
 
+    /// What a sync that is running has reached. Nothing when none is.
+    pub fn doing(&self) -> Option<Doing> {
+        self.doing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn now(&self, doing: Option<Doing>) {
+        *self.doing.lock().unwrap_or_else(PoisonError::into_inner) = doing;
+    }
+
     /// Sync the folder tree, then every folder's messages, the inbox first.
     pub async fn sync_all(&self) -> Result<Synced, SyncError> {
+        let synced = self.all().await;
+        // However it ended, it is busy with nothing now.
+        self.now(None);
+
+        synced
+    }
+
+    async fn all(&self) -> Result<Synced, SyncError> {
+        self.now(Some(Doing::Folders));
         let mut synced = self.sync_folders().await?;
 
         // `folders()` lists the well-known folders first, the inbox at the head.
-        for folder in self.db.folders()? {
+        let folders = self.db.folders()?;
+
+        // First the newest page of every folder nothing has been fetched of
+        // yet, so that no folder sits empty while a large one ahead of it is
+        // fetched whole. A page is asked for newest first.
+        for folder in &folders {
+            let state = self.db.messages_sync(&folder.id)?;
+            if state.link.is_none() && !state.complete {
+                self.now(Some(Doing::Messages(folder.id.clone())));
+                let mut page = Synced::default();
+                self.messages_page(&folder.id, &mut page).await?;
+                synced.add(page);
+            }
+        }
+
+        // Then each folder whole, carrying on from the page it has.
+        for folder in &folders {
+            self.now(Some(Doing::Messages(folder.id.clone())));
             synced.add(self.sync_messages(&folder.id).await?);
         }
 
@@ -125,40 +174,43 @@ impl MailSync {
     /// wherever the last attempt reached.
     pub async fn sync_messages(&self, folder_id: &str) -> Result<Synced, SyncError> {
         let mut synced = Synced::default();
+        while !self.messages_page(folder_id, &mut synced).await? {}
 
-        loop {
-            let state = self.db.messages_sync(folder_id)?;
-            let page = match self
-                .graph
-                .messages_delta(folder_id, state.link.as_deref(), self.page_size)
-                .await
-            {
-                Ok(page) => page,
-                Err(GraphError::SyncStateGone) => {
-                    self.restarted(&mut synced, "a folder")?;
-                    self.db.restart_messages_sync(folder_id)?;
-                    continue;
-                }
-                // The folder was deleted since the folder tree was read. Its
-                // messages go when the next folder sync says it has gone.
-                Err(GraphError::Refused { status: 404, .. }) => return Ok(synced),
-                Err(other) => return Err(other.into()),
-            };
+        Ok(synced)
+    }
 
-            let (changed, removed) = split(page.items, message_change);
-            let round = round(&page.next);
-            self.db
-                .apply_messages(folder_id, &changed, &removed, page.next.url(), round)?;
-            synced.pages += 1;
-            synced.changed += count(&changed);
-            synced.removed += count(&removed);
-
-            // As for folders: a full pass is followed at once by the round
-            // that carries what changed while it ran.
-            if round == Round::Finished && !state.reconciling {
-                return Ok(synced);
+    /// Fetch the next page of a folder's messages. True when that leaves the
+    /// folder up to date, and there is no more to ask for now.
+    async fn messages_page(&self, folder_id: &str, synced: &mut Synced) -> Result<bool, SyncError> {
+        let state = self.db.messages_sync(folder_id)?;
+        let page = match self
+            .graph
+            .messages_delta(folder_id, state.link.as_deref(), self.page_size)
+            .await
+        {
+            Ok(page) => page,
+            Err(GraphError::SyncStateGone) => {
+                self.restarted(synced, "a folder")?;
+                self.db.restart_messages_sync(folder_id)?;
+                return Ok(false);
             }
-        }
+            // The folder was deleted since the folder tree was read. Its
+            // messages go when the next folder sync says it has gone.
+            Err(GraphError::Refused { status: 404, .. }) => return Ok(true),
+            Err(other) => return Err(other.into()),
+        };
+
+        let (changed, removed) = split(page.items, message_change);
+        let round = round(&page.next);
+        self.db
+            .apply_messages(folder_id, &changed, &removed, page.next.url(), round)?;
+        synced.pages += 1;
+        synced.changed += count(&changed);
+        synced.removed += count(&removed);
+
+        // As for folders: a full pass is followed at once by the round
+        // that carries what changed while it ran.
+        Ok(round == Round::Finished && !state.reconciling)
     }
 
     /// Fetch the bodies of recent messages that are not here yet, newest

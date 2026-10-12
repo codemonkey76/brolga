@@ -14,10 +14,11 @@ use brolga_core::{Core, CoreOptions, DEFAULT_CLIENT_ID, safe_file_name};
 use brolga_platform::{SystemSecrets, data_dir, downloads_dir, open_in_browser};
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::mpsc;
 
 /// A command that did not run, as the frontend receives it.
@@ -108,6 +109,122 @@ fn notify(app: tauri::AppHandle, title: String, body: String) {
         .show();
 }
 
+/// A newer Brolga that has been found, kept so that it can be put in when
+/// asked for.
+#[derive(Default)]
+struct Newer(tokio::sync::Mutex<Option<tauri_plugin_updater::Update>>);
+
+/// The line in the tray's menu that says whether there is a newer Brolga.
+struct TrayUpdate(tauri::menu::MenuItem<tauri::Wry>);
+
+/// A newer Brolga, as the window is told of it.
+#[derive(Clone, Serialize)]
+struct Found {
+    version: String,
+    /// It can be fetched and put in place of this one from here. Where it
+    /// cannot, `page` is where a person gets it.
+    installs: bool,
+    page: &'static str,
+}
+
+/// Where every release is described and can be downloaded by hand.
+const RELEASES: &str = "https://github.com/codemonkey76/brolga/releases/latest";
+
+/// Whether this copy can replace itself with what is at `url`. That goes by
+/// how it was installed: a copy built from source, or a Flatpak, was put
+/// where it is by something else, which is what has to bring the next one.
+/// A package is replaced only by a package of its own kind.
+fn installs_itself(url: &str) -> bool {
+    use tauri::utils::{config::BundleType, platform::bundle_type};
+
+    match bundle_type() {
+        Some(BundleType::Deb) => url.ends_with(".deb"),
+        Some(BundleType::Rpm) => url.ends_with(".rpm"),
+        Some(_) => true,
+        None => false,
+    }
+}
+
+fn told(error: impl std::fmt::Display) -> Failure {
+    Failure {
+        code: "failed",
+        message: error.to_string(),
+    }
+}
+
+/// Look for a newer Brolga than this one, and remember it if there is one.
+async fn look(app: &tauri::AppHandle) -> Result<Option<Found>, Failure> {
+    let update = app
+        .updater()
+        .map_err(told)?
+        .check()
+        .await
+        .map_err(|error| {
+            told(format!(
+                "Could not find out whether there is a newer Brolga. {error}"
+            ))
+        })?;
+    let found = update.as_ref().map(|update| Found {
+        version: update.version.clone(),
+        installs: installs_itself(update.download_url.as_str()),
+        page: RELEASES,
+    });
+    if let Some(newer) = app.try_state::<Newer>() {
+        *newer.0.lock().await = update;
+    }
+    if let (Some(found), Some(line)) = (&found, app.try_state::<TrayUpdate>()) {
+        let _ = line
+            .0
+            .set_text(format!("Brolga {} is available…", found.version));
+    }
+
+    Ok(found)
+}
+
+/// Whether there is a newer Brolga. It is looked for by itself only where
+/// the person has not turned that off; `asked` is a person asking now.
+#[tauri::command]
+async fn check_update(
+    app: tauri::AppHandle,
+    registry: State<'_, Arc<Registry>>,
+    asked: bool,
+) -> Result<Option<Found>, Failure> {
+    if !asked {
+        let chosen = registry
+            .execute("app.desktop.get", serde_json::json!({}))
+            .await?;
+        if chosen["check_for_updates"] == false {
+            return Ok(None);
+        }
+    }
+
+    look(&app).await
+}
+
+/// Put in the newer Brolga that was found, and start again as it. Where
+/// this copy cannot replace itself, the page it is downloaded from is
+/// opened instead. The download is checked against the key this copy was
+/// built with before anything is replaced.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, newer: State<'_, Newer>) -> Result<(), Failure> {
+    let Some(update) = newer.0.lock().await.clone() else {
+        return Err(told("There is no newer Brolga to install."));
+    };
+    if !installs_itself(update.download_url.as_str()) {
+        return open_in_browser(RELEASES).map_err(told);
+    }
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| {
+            told(format!(
+                "The new version could not be installed, and this one is untouched. {error}"
+            ))
+        })?;
+
+    app.restart()
+}
+
 /// Messages the window has been asked to start, by a `mailto:` link, each
 /// waiting for the window to take it.
 struct Asked(tokio::sync::Mutex<mpsc::UnboundedReceiver<Value>>);
@@ -164,17 +281,44 @@ async fn apply_desktop(
 fn tray(app: &tauri::AppHandle, registry: Arc<Registry>) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
+    let update = MenuItemBuilder::with_id("update", "Check for a new version").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&MenuItemBuilder::with_id("open", "Open Brolga").build(app)?)
         .item(&MenuItemBuilder::with_id("write", "New message").build(app)?)
         .separator()
+        .item(&update)
+        .separator()
         .item(&MenuItemBuilder::with_id("quit", "Quit").build(app)?)
         .build()?;
+    app.manage(TrayUpdate(update));
     let mut icon = tauri::tray::TrayIconBuilder::with_id("main")
         .tooltip("Brolga")
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
+            // Looked for now, and said either way. One that is found is
+            // installed from the window, which is brought forward to do it.
+            "update" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let (title, body) = match look(&app).await {
+                        Ok(Some(found)) => {
+                            let _ = app.emit("update-found", found.clone());
+                            bring_forward(&app);
+                            (
+                                format!("Brolga {} is available", found.version),
+                                "It is offered along the bottom of the window.".to_owned(),
+                            )
+                        }
+                        Ok(None) => (
+                            "Brolga is up to date".to_owned(),
+                            "This is the newest version.".to_owned(),
+                        ),
+                        Err(failure) => ("Brolga".to_owned(), failure.message),
+                    };
+                    notify(app, title, body);
+                });
+            }
             "write" => {
                 let registry = registry.clone();
                 tauri::async_runtime::spawn(async move {
@@ -271,6 +415,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(Newer::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
@@ -327,7 +473,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             choose_files,
             notify,
             next_request,
-            apply_desktop
+            apply_desktop,
+            check_update,
+            install_update
         ])
         .build(tauri::generate_context!())?
         .run(|_app, _event| {

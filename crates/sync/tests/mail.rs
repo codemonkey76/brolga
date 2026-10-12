@@ -161,6 +161,51 @@ async fn the_newest_messages_arrive_first() {
 }
 
 #[tokio::test]
+async fn every_folder_has_its_newest_mail_before_any_is_fetched_whole() {
+    let f = Fixture::new().await;
+    let sent = f.graph.folder_id("sentitems");
+    f.graph.add_messages(&f.inbox, 6);
+    f.graph
+        .add_message(&sent, message("Old reply", "2026-01-01T09:00:00Z"));
+    f.graph
+        .add_message(&sent, message("New reply", "2026-10-01T09:00:00Z"));
+
+    f.sync(1).sync_all().await.unwrap();
+
+    // Which folder each page of messages was asked of, in the order asked.
+    let asked: Vec<bool> = f
+        .graph
+        .requests()
+        .iter()
+        .filter(|request| request.contains("/messages/delta"))
+        .map(|request| request.contains(&f.inbox))
+        .collect();
+    let first_of_sent = asked.iter().position(|inbox| !inbox).unwrap();
+    let second_of_inbox = asked
+        .iter()
+        .enumerate()
+        .filter(|(_, inbox)| **inbox)
+        .nth(1)
+        .unwrap()
+        .0;
+    assert!(
+        first_of_sent < second_of_inbox,
+        "Sent Items waited for the whole inbox: {asked:?}"
+    );
+    // And it all arrives in the end, as before.
+    f.assert_in_step();
+
+    // A sync after that has no first pages to fetch: one look at each folder.
+    let before = f.graph.requests().len();
+    f.sync(1).sync_all().await.unwrap();
+    let again = f.graph.requests()[before..]
+        .iter()
+        .filter(|request| request.contains(&f.inbox) && request.contains("/messages/delta"))
+        .count();
+    assert_eq!(again, 1);
+}
+
+#[tokio::test]
 async fn later_syncs_pick_up_every_kind_of_change() {
     let f = Fixture::new().await;
     let ids = f.graph.add_messages(&f.inbox, 40);

@@ -12,6 +12,8 @@ export interface Folder {
     favourite: boolean;
     /** How far below the top of the tree. The list comes in tree order. */
     depth: number;
+    /** Its messages have all been fetched once. Until then what is here of it is a part, or nothing. */
+    synced?: boolean;
 }
 
 export interface Person {

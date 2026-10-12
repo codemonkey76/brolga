@@ -208,8 +208,16 @@ export interface FakeCore {
     repliesRefused?: string;
     /** The files the file dialog says were chosen. Left out, it is dismissed. */
     pickFiles?: string[];
+    /** A newer Brolga that the app finds when it looks. Left out, this is the newest. */
+    newer?: { version: string; installs: boolean; page: string };
+    /** Why the newer one cannot be installed, if it cannot. */
+    installFails?: string;
     /** The sync is still going for as long as the test runs. */
     syncNeverEnds?: boolean;
+    /** What `app.sync.status` says of each account, over what it would say of one that is up to date. */
+    status?: Record<string, unknown>;
+    /** Folders whose messages have not been fetched yet, by id. */
+    unfetched?: string[];
     /** Why Microsoft 365 will not send anything, if it will not. */
     sendRefused?: string;
     /** Changes Microsoft 365 refused, to be told of after the next sync. */
@@ -266,8 +274,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const draft = (id: unknown) => drafts.find((each) => each.id === id);
         let signature = { text: "", on_replies: false };
         const notified: { title: string; body: string }[] = [];
-        const desktop = { keep_running: false, start_at_login: false };
+        const desktop = { keep_running: false, start_at_login: false, check_for_updates: true };
         const applied: (typeof desktop)[] = [];
+        /** Each look for a newer Brolga: whether a person asked for it. */
+        const looked: boolean[] = [];
+        /** The versions that were installed. */
+        const installed: string[] = [];
         /** What has been done about each reminder: dismissed, or put off until a time. */
         const done = new Map<unknown, number>();
         const diaries = [
@@ -409,6 +421,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             unread: inFolder(id).filter((m) => !m.is_read).length,
             total: inFolder(id).length,
             hidden: false,
+            synced: !(core.unfetched ?? []).includes(id),
         });
 
         const sync = () => ({
@@ -424,6 +437,20 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
             "app.desktop.get": () => ({ ...desktop }),
             "app.desktop.set": (args) => ({ ...Object.assign(desktop, args) }),
+            "app.sync.status": () => ({
+                accounts: accounts.map((a) => ({
+                    account_id: a.id,
+                    username: a.username,
+                    needs_sign_in: a.needs_sign_in,
+                    syncing: false,
+                    now: null,
+                    folders: 10,
+                    folders_synced: 10,
+                    messages: mail.length,
+                    synced_at: "2026-10-09T04:30:00Z",
+                    ...core.status,
+                })),
+            }),
             "mail.sync": () => {
                 syncs += 1;
                 if (syncs === 2) mail.unshift(...(core.arrives ?? []));
@@ -1000,6 +1027,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         Object.assign(window, {
             notified,
             applied,
+            looked,
+            installed,
             arrive: () =>
                 mail.push({
                     id: "arrived",
@@ -1036,6 +1065,21 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                         core.asked = undefined;
                         return link ?? new Promise(() => {});
                     }
+                    // Which Brolga this is, as the app itself says.
+                    if (name === "plugin:app|version") return "0.1.5";
+                    // Whether there is a newer one. Looked for unasked only where that is not turned off.
+                    if (name === "check_update") {
+                        looked.push((payload as unknown as { asked: boolean }).asked);
+                        return (payload as unknown as { asked: boolean }).asked || desktop.check_for_updates ? (core.newer ?? null) : null;
+                    }
+                    if (name === "install_update") {
+                        if (core.installFails) throw { code: "failed", message: core.installFails };
+                        installed.push(core.newer?.version ?? "");
+                        return null;
+                    }
+                    // What the tray's menu found is not heard of in a test.
+                    if (name === "plugin:event|listen") return 0;
+                    if (name === "plugin:event|unlisten") return null;
                     if (name !== "execute_command") throw new Error(`The frontend called ${name}, which is not a command.`);
                     const run = commands[payload.command];
                     if (!run) throw { code: "unknown_command", message: `there is no command called \`${payload.command}\`` };

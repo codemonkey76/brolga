@@ -190,14 +190,19 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             let Some(_turn) = mailbox.sync_turn().map_err(|e| e.to_string())? else {
                 return Ok(None);
             };
+            // Each part says it has begun, so that whoever is waiting can be told which.
+            let _staged = mailbox.staging();
             // Of a mailbox whose calendar alone was shared there is no mail to fetch.
             let (synced, bodies) = if mailbox.calendar_only {
                 (brolga_sync::Synced::default(), 0)
             } else {
                 // What was changed here goes up before the server's side comes
                 // down. A change that cannot go now waits; it does not stop the sync.
+                mailbox.stage(Some("sending"));
                 let _ = mailbox.outbox.drain().await;
+                mailbox.stage(Some("mail"));
                 let synced = mailbox.sync.sync_all().await.map_err(|e| e.to_string())?;
+                mailbox.stage(Some("bodies"));
                 // Then the bodies of recent mail, a batch at a time. Failing to
                 // get these is not a failed sync: they are fetched when opened.
                 let bodies = mailbox
@@ -210,6 +215,7 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             // And the calendar. Trouble with it is said beside the mail's
             // result and does not make the mail's sync a failure: a sign-in
             // from before calendars were built has no leave to read them.
+            mailbox.stage(Some("calendar"));
             let calendar = mailbox
                 .calendars
                 .sync_all(jiff::Timestamp::now())
@@ -227,6 +233,7 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                 });
             // And contacts, the same way. A mailbox someone shared brings
             // its mail and its calendar, and no contacts of its own.
+            mailbox.stage(Some("contacts"));
             let contacts = if mailbox.shared.is_some() {
                 Ok(None)
             } else {
@@ -271,11 +278,32 @@ async fn status(context: Context) -> Result<Value, CommandError> {
         let mailbox = context.open(&account).await.map_err(failed)?;
         let (folders, messages, folders_synced, synced_at) =
             mailbox.db.sync_summary().map_err(failed)?;
+        // The mail is fetched a folder at a time, and says which it has reached.
+        let now = match (mailbox.staged(), mailbox.sync.doing()) {
+            (Some("mail"), Some(brolga_sync::Doing::Folders)) => json!({ "doing": "folders" }),
+            (Some("mail"), Some(brolga_sync::Doing::Messages(folder_id))) => {
+                let (folder, counted) = mailbox
+                    .db
+                    .messages_progress(&folder_id)
+                    .map_err(failed)?
+                    .unwrap_or_default();
+                json!({
+                    "doing": "mail",
+                    "folder_id": folder_id,
+                    "folder": folder,
+                    "fetched": counted.map(|(fetched, _)| fetched),
+                    "total": counted.map(|(_, total)| total),
+                })
+            }
+            (Some(stage), _) => json!({ "doing": stage }),
+            (None, _) => Value::Null,
+        };
         accounts.push(json!({
             "account_id": account.id,
             "username": account.username,
             "needs_sign_in": account.needs_sign_in,
             "syncing": mailbox.syncing.try_lock().is_err(),
+            "now": now,
             "folders": folders,
             "folders_synced": folders_synced,
             "messages": messages,
@@ -291,7 +319,11 @@ async fn folders(context: Context, args: Folders) -> Result<Value, CommandError>
         .account(args.account_id.as_deref())
         .map_err(failed)?;
     let mailbox = context.open(&account).await.map_err(failed)?;
-    let folders = mailbox.db.folders().map_err(failed)?;
+    let mut folders = mailbox.db.folders().map_err(failed)?;
+    // An archive is all here from the moment it is read in.
+    if mailbox.archive {
+        folders.iter_mut().for_each(|each| each.synced = true);
+    }
 
     Ok(json!({ "account_id": account.id, "folders": folders }))
 }
@@ -965,8 +997,9 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
         CommandSpec {
             id: "app.sync.status".to_owned(),
             title: "Sync status".to_owned(),
-            description: "For each account: whether it is syncing now, whether it needs to sign in again, how many folders and messages are on this computer, \
-                          how many folders have finished their first sync, and when the least recently synced of those was last brought up to date."
+            description: "For each account: whether it is syncing now and what the sync has reached, whether it needs to sign in again, how many folders and messages are on this computer, \
+                          how many folders have finished their first sync, and when the least recently synced of those was last brought up to date. \
+                          Mail is fetched a folder at a time, the inbox first, so until a folder's turn comes it is empty here: mail.folders.list says which have been fetched."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -984,6 +1017,18 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "username": { "type": "string" },
                                 "needs_sign_in": { "type": "boolean" },
                                 "syncing": { "type": "boolean" },
+                                "now": {
+                                    "type": ["object", "null"],
+                                    "description": "What a sync running in this copy of Brolga is busy with. Null when none is, or when another copy is doing the syncing.",
+                                    "properties": {
+                                        "doing": { "type": "string", "enum": ["sending", "folders", "mail", "bodies", "calendar", "contacts"], "description": "sending: changes made here are going up. folders: the folder list is being read. mail: a folder's messages are being fetched. bodies: recent messages are being fetched whole, to read offline." },
+                                        "folder_id": { "type": "string", "description": "With `mail`: the folder being fetched." },
+                                        "folder": { "type": "string", "description": "Its name." },
+                                        "fetched": { "type": ["integer", "null"], "description": "How many of its messages have been fetched, while it is being fetched whole. Null while it is only being checked for what is new." },
+                                        "total": { "type": ["integer", "null"], "description": "How many the server says it has." }
+                                    },
+                                    "required": ["doing"]
+                                },
                                 "folders": { "type": "integer" },
                                 "folders_synced": { "type": "integer" },
                                 "messages": { "type": "integer" },
@@ -1033,7 +1078,8 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "unread": { "type": "integer" },
                                 "total": { "type": "integer" },
                                 "favourite": { "type": "boolean" },
-                                "depth": { "type": "integer", "minimum": 0 }
+                                "depth": { "type": "integer", "minimum": 0 },
+                                "synced": { "type": "boolean", "description": "Its messages have all been fetched once. Until then what is here of it is a part, or nothing: mail is fetched a folder at a time." }
                             },
                             "required": ["id", "name", "unread", "total", "favourite", "depth"]
                         }
