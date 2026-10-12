@@ -89,6 +89,17 @@ impl Outbox {
         for draft in self.db.queued_drafts()? {
             match self.send_draft(&draft).await {
                 Ok(()) => {
+                    // An answer or a forward marks the message it was made
+                    // from, here and now: the server does not say so in a sync.
+                    let done = match draft.kind.as_str() {
+                        "reply" => Some("replied"),
+                        "reply_all" => Some("replied_all"),
+                        "forward" => Some("forwarded"),
+                        _ => None,
+                    };
+                    if let (Some(done), Some(source)) = (done, &draft.source_id) {
+                        self.db.mark_last_action(source, done)?;
+                    }
                     self.db.draft_sent(&draft.id)?;
                     drained.sent += 1;
                 }

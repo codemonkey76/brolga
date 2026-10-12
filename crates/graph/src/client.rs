@@ -1050,6 +1050,36 @@ impl GraphClient {
     }
 
     /// GET a URL. A GET changes nothing, so it is always safe to send again.
+    /// Ask Graph one read-only question about the mailbox and give back its
+    /// answer as it came: the status and the words, whether it took the
+    /// request or refused it. This is for finding out, on a real mailbox,
+    /// what the server makes of a request before anything is built on it;
+    /// the documentation has been wrong about that. `path` is what follows
+    /// `/me`, such as `/messages?$top=1`. Asked once, and never again by
+    /// itself. At most five things are asked for at a time.
+    pub async fn probe(&self, path: &str) -> Result<(u16, String), GraphError> {
+        if !path.starts_with('/') {
+            return Err(GraphError::Decode(
+                "a path begins with `/`, and is what follows `/me`".to_owned(),
+            ));
+        }
+        let url = Url::parse(&self.addressed(&format!("{}/me{path}", self.base)))
+            .map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
+        let token = self.tokens.token().await?;
+        let response = self
+            .http
+            .get(url)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header("Prefer", "IdType=\"ImmutableId\", odata.maxpagesize=5")
+            .send()
+            .await
+            .map_err(GraphError::Network)?;
+        let status = response.status().as_u16();
+        let said = response.text().await.map_err(GraphError::Network)?;
+
+        Ok((status, said))
+    }
+
     async fn get(&self, url: &str, page_size: Option<u32>) -> Result<Vec<u8>, GraphError> {
         self.send(reqwest::Method::GET, url, page_size, None, true)
             .await

@@ -863,6 +863,17 @@ impl AccountDb {
         Ok(())
     }
 
+    /// Note what was last done with a message: `replied`, `replied_all` or
+    /// `forwarded`. One that is not here is left alone.
+    pub fn mark_last_action(&self, id: &str, action: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE messages SET last_action = ?2 WHERE id = ?1",
+            params![id, action],
+        )?;
+
+        Ok(())
+    }
+
     /// Take a message off this computer, with everything kept about it,
     /// because it is gone from the server for good. Its folder's counts
     /// follow. False if it was not here.

@@ -322,6 +322,19 @@ async fn a_reply_goes_out_above_the_original_and_in_its_conversation() {
         sent.conversation.as_deref(),
         Some(format!("conversation-{}", f.ids[0]).as_str())
     );
+    // The message answered is marked as answered, and the other is not.
+    let did = |id: &str| f.db.message(id).unwrap().unwrap().last_action;
+    assert_eq!(
+        (did(&f.ids[0]), did(&f.ids[1])),
+        ("replied".to_owned(), String::new())
+    );
+
+    let on =
+        f.db.create_draft("forward", Some(&f.ids[1]), &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&on.id).unwrap();
+    f.outbox.drain().await.unwrap();
+    assert_eq!(did(&f.ids[1]), "forwarded");
 }
 
 #[tokio::test]

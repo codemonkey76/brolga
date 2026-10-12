@@ -91,6 +91,7 @@ pub enum CoreError {
 
 pub struct Core {
     accounts: Arc<Accounts>,
+    mailboxes: Arc<mailboxes::Mailboxes>,
     registry: Arc<Registry>,
     window: Arc<std::sync::OnceLock<ShowWindow>>,
 }
@@ -133,6 +134,7 @@ impl Core {
         sharing_commands::register(&mut registry, mailboxes.clone())?;
         archive_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;
+        let probed = mailboxes.clone();
         mail_commands::register(
             &mut registry,
             mail_commands::Context {
@@ -156,9 +158,27 @@ impl Core {
 
         Ok(Self {
             accounts,
+            mailboxes: probed,
             registry: Arc::new(registry),
             window,
         })
+    }
+
+    /// Ask Microsoft Graph one read-only question as an account, and give
+    /// back the status and the words of its answer, taken or refused.
+    ///
+    /// This is a developer's tool for learning what the server makes of a
+    /// request before anything is built on it. It is not a command: nothing
+    /// that runs commands, an agent least of all, can reach it.
+    pub async fn probe(
+        &self,
+        account_id: Option<&str>,
+        path: &str,
+    ) -> Result<(u16, String), String> {
+        let account = self.mailboxes.account(account_id)?;
+        let mailbox = self.mailboxes.open(&account).await?;
+
+        mailbox.graph.probe(path).await.map_err(|e| e.to_string())
     }
 
     /// Every command the client has.

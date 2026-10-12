@@ -55,6 +55,17 @@ enum Command {
         #[arg(long)]
         tenant: Option<String>,
     },
+    /// For developers: ask Microsoft Graph read-only questions as a signed-in account, and print how it answers.
+    ///
+    /// With no path, it asks each way there might be of learning that a message was answered or
+    /// forwarded, and says which the server takes. Only message ids are asked for: no mail is printed.
+    Probe {
+        /// What follows `/me` in the request, such as `/messages?$top=1`. Put it in single quotes.
+        path: Option<String>,
+        /// Which account, by its id. May be left out when there is only one.
+        #[arg(long)]
+        account: Option<String>,
+    },
     /// Serve the commands as MCP tools on standard input and output.
     Mcp {
         /// Only work through the running app, so it shows what the agent does. Fails if the app is not running.
@@ -110,6 +121,21 @@ async fn run(command: Command) -> Result<(), Failure> {
                 }
                 Ok(())
             }
+        }
+        Command::Probe { path, account } => {
+            let core = core()?;
+            let asked: Vec<(String, String)> = match path {
+                Some(path) => vec![("asked for".to_owned(), path)],
+                None => last_action_probes(),
+            };
+            for (what, path) in asked {
+                println!("{what}\n  GET /me{path}");
+                match core.probe(account.as_deref(), &path).await {
+                    Ok((status, said)) => println!("  {status}: {}\n", summed_up(status, &said)),
+                    Err(error) => println!("  not asked: {error}\n"),
+                }
+            }
+            Ok(())
         }
         Command::Run { id, json } => {
             let args: Value = serde_json::from_str(&json)
@@ -181,6 +207,113 @@ async fn run(command: Command) -> Result<(), Failure> {
             serve_stdio(server).await.map_err(failed)
         }
     }
+}
+
+/// Each way there might be of learning from Graph that a message was answered
+/// or forwarded: the property `Integer 0x1081` ([MS-OXOMSG],
+/// PidTagLastVerbExecuted), which is 102 for a reply, 103 for a reply to all
+/// and 104 for a forward. Which of these the server takes is what is being
+/// found out. Only ids are asked for.
+fn last_action_probes() -> Vec<(String, String)> {
+    const EXPAND: &str = "$expand=singleValueExtendedProperties($filter=id eq 'Integer 0x1081')";
+    let has = |test: &str| {
+        format!(
+            "singleValueExtendedProperties/Any(ep: ep/id eq 'Integer 0x1081' and cast(ep/value, Edm.Int32) {test})"
+        )
+    };
+    let all =
+        |what: &str, query: String| (what.to_owned(), format!("/messages?$select=id&{query}"));
+
+    vec![
+        all(
+            "1. Any messages, with the property given beside each",
+            EXPAND.to_owned(),
+        ),
+        all(
+            "2. Only messages replied to",
+            format!("$filter={}", has("eq 102")),
+        ),
+        all(
+            "3. Only messages forwarded",
+            format!("$filter={}", has("eq 104")),
+        ),
+        all(
+            "4. Only messages answered or forwarded, of any kind",
+            format!("$filter={}", has("ge 102")),
+        ),
+        all(
+            "5. Those, with the property given beside each",
+            format!("$filter={}&{EXPAND}", has("ge 102")),
+        ),
+        all(
+            "6. Those changed since the start of the month",
+            format!(
+                "$filter=lastModifiedDateTime ge 2026-10-01T00:00:00Z and {}",
+                has("ge 102")
+            ),
+        ),
+        (
+            "7. Those in the inbox alone, with the property".to_owned(),
+            format!(
+                "/mailFolders/inbox/messages?$select=id&$filter={}&{EXPAND}",
+                has("ge 102")
+            ),
+        ),
+        (
+            "8. A sync of the inbox with the property and nothing else chosen".to_owned(),
+            format!("/mailFolders/inbox/messages/delta?{EXPAND}"),
+        ),
+        (
+            "9. A sync of the inbox with the property and ids chosen (what 0.1.5 asked, cut down)"
+                .to_owned(),
+            format!("/mailFolders/inbox/messages/delta?$select=id&{EXPAND}"),
+        ),
+    ]
+}
+
+/// An answer from Graph in a line: how many things it gave and what the
+/// property was on them, or why it refused. No mail is repeated.
+fn summed_up(status: u16, said: &str) -> String {
+    let Ok(answer) = serde_json::from_str::<Value>(said) else {
+        return said.chars().take(300).collect();
+    };
+    if !(200..300).contains(&status) {
+        let error = &answer["error"];
+        return format!(
+            "refused ({}): {}",
+            error["code"].as_str().unwrap_or("no code"),
+            error["message"].as_str().unwrap_or("no reason given")
+        );
+    }
+    let Some(given) = answer["value"].as_array() else {
+        return "taken, and one thing given".to_owned();
+    };
+    let values: Vec<String> = given
+        .iter()
+        .flat_map(|each| {
+            each["singleValueExtendedProperties"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .map(|property| property["value"].to_string())
+        .collect();
+    let more = if answer["@odata.nextLink"].is_string() {
+        ", and more to come"
+    } else {
+        ""
+    };
+
+    format!(
+        "taken; {} given{more}; the property on {} of them{}",
+        given.len(),
+        values.len(),
+        if values.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", values.join(", "))
+        }
+    )
 }
 
 /// How often mail is brought up to date when there is no window to do it.

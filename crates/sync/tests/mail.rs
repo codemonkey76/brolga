@@ -664,3 +664,40 @@ async fn a_hundred_thousand_messages_sync_resumably_and_stay_fast() {
     drop(db);
     let _ = std::fs::remove_dir_all(folder);
 }
+
+#[tokio::test]
+async fn a_question_put_to_the_server_comes_back_as_it_was_answered_taken_or_refused() {
+    let f = Fixture::new().await;
+    f.graph.add_messages(&f.inbox, 3);
+    let client = GraphClient::new(
+        f.graph.base_url(),
+        Arc::new(FixedToken),
+        RetryPolicy::impatient(),
+    )
+    .unwrap();
+
+    let (status, said) = client
+        .probe(&format!("/mailFolders/{}/messages/delta", f.inbox))
+        .await
+        .unwrap();
+    assert_eq!(status, 200);
+    assert!(said.contains("\"value\""), "{said}");
+
+    // A refusal is an answer too, and is not tried again or made an error of.
+    let before = f.graph.requests().len();
+    let (status, said) = client
+        .probe(&format!(
+            "/mailFolders/{}/messages/delta?$expand=singleValueExtendedProperties($filter=id eq 'Integer 0x1081')",
+            f.inbox
+        ))
+        .await
+        .unwrap();
+    assert_eq!(status, 400);
+    assert!(
+        said.contains("Parsing OData Select and Expand failed"),
+        "{said}"
+    );
+    assert_eq!(f.graph.requests().len(), before + 1);
+
+    assert!(client.probe("messages").await.is_err());
+}
