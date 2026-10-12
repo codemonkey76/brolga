@@ -393,3 +393,28 @@ async fn mail_kept_under_a_mailbox_s_former_file_name_is_found_under_its_new_one
 
     let _ = std::fs::remove_dir_all(folder);
 }
+
+#[tokio::test]
+async fn signing_in_again_as_someone_else_is_said_and_changes_nothing() {
+    let f = Fixture::signed_in(None).await;
+    let account = f.run("accounts.list", json!({})).await["accounts"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.identity
+        .sign_in_as("00000000-0000-4000-8000-000000000002", "sam@example.test");
+
+    let renewed = f
+        .registry
+        .execute("accounts.sign_in", json!({ "account_id": account }))
+        .await;
+
+    let said = renewed.unwrap_err().to_string();
+    assert!(
+        said.contains("sam@example.test") && said.contains("robin@example.test"),
+        "{said}"
+    );
+    let accounts = f.run("accounts.list", json!({})).await;
+    assert_eq!(accounts["accounts"].as_array().unwrap().len(), 1);
+    assert_eq!(accounts["accounts"][0]["id"], account.as_str());
+}

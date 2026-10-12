@@ -116,6 +116,22 @@ impl Context {
         })?;
         let tokens = sign_in.finish(client, BROWSER_WAIT).await.map_err(failed)?;
 
+        // Signing in again to an account is for that account. Whoever
+        // signs in is offered its name, but may choose another: then
+        // nothing is kept, and it is said, since the account asked about
+        // would otherwise stay as it was beside a new one nobody asked for.
+        if let (Some(asked), Some(identity)) = (&args.account_id, &tokens.identity) {
+            let signed_in = format!("{}.{}", identity.tenant_id, identity.object_id);
+            if &signed_in != asked {
+                let wanted = login_hint.unwrap_or_default();
+                return Err(failed(format!(
+                    "That was a sign-in as {}, and the account to sign in to again is {wanted}. Nothing was changed: \
+                     {wanted} still needs to sign in. Sign in again and choose {wanted}, or add {} as an account of its own.",
+                    identity.username, identity.username
+                )));
+            }
+        }
+
         self.added(&registration, tokens).await
     }
 
