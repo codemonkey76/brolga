@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { inbox, ran, robin, sam, withCore } from "./core";
+import { inbox, ran, refuse, robin, sam, withCore } from "./core";
 
 /** Pictures for the README, taken only when asked for: `SCREENSHOTS=1 bun run test`. */
 const picture = async (page: import("@playwright/test").Page, name: string) => {
@@ -605,4 +605,104 @@ test("looking for new versions is on until it is turned off, and then nothing is
     await box.uncheck();
     await expect(box).not.toBeChecked();
     expect((await ran(page)).filter((r) => r.command === "app.desktop.set").at(-1)?.args).toEqual({ check_for_updates: false });
+});
+
+const contact = (id: string, name: string, more: Record<string, unknown> = {}) => ({
+    id,
+    folder_id: "",
+    name,
+    given_name: name.split(" ")[0],
+    surname: name.split(" ")[1] ?? "",
+    nickname: "",
+    company: "",
+    job_title: "",
+    department: "",
+    office: "",
+    emails: [],
+    business_phones: [],
+    home_phones: [],
+    mobile: "",
+    notes: "",
+    birthday: null,
+    ...more,
+});
+
+test("with two accounts, whose contacts are shown is chosen, and each is asked for its own", async ({ page }) => {
+    const second = { ...sam, needs_sign_in: false };
+    await withCore(page, { accounts: [robin, second], contacts: [contact("c1", "Sam Taylor")] });
+    await page.getByRole("button", { name: "People" }).click();
+    const whose = page.getByRole("complementary", { name: "Folders of contacts" }).getByLabel("Account");
+    const list = page.getByRole("list", { name: "Contacts" });
+
+    await expect(whose).toHaveValue(robin.id);
+    await list.getByRole("button", { name: /Sam Taylor/ }).click();
+    await whose.selectOption({ label: second.username });
+
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "contacts.list").at(-1)?.args.account_id).toBe(second.id);
+    // Nobody of the other account's is left open.
+    await expect(page.getByRole("region", { name: "Contact" })).toContainText("Choose a contact");
+});
+
+test("with one account there is no choice of whose contacts", async ({ page }) => {
+    await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "People" }).click();
+
+    await expect(page.getByRole("button", { name: "New contact" })).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "Folders of contacts" }).getByLabel("Account")).toHaveCount(0);
+});
+
+test("Escape closes a contact form with nothing written in it, and asks before one with something is thrown away", async ({ page }) => {
+    await withCore(page, { accounts: [robin], contacts: [contact("c1", "Sam Taylor")] });
+    await page.getByRole("button", { name: "People" }).click();
+    const form = page.getByRole("form", { name: "New contact" });
+    const asked = page.getByRole("alertdialog", { name: "Discard the contact" });
+
+    await page.getByRole("button", { name: "New contact" }).click();
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
+
+    await page.getByRole("button", { name: "New contact" }).click();
+    await form.getByLabel("First name").fill("Kim");
+    await page.keyboard.press("Escape");
+    await expect(asked).toBeVisible();
+    await asked.getByRole("button", { name: "Keep" }).click();
+    await expect(form.getByLabel("First name")).toHaveValue("Kim");
+
+    // Escape in the search box is for the search.
+    await page.getByRole("searchbox", { name: "Search people" }).press("Escape");
+    await expect(asked).toHaveCount(0);
+    await expect(form.getByLabel("First name")).toHaveValue("Kim");
+
+    await form.getByLabel("Last name").press("Escape");
+    await asked.getByRole("button", { name: "Discard for good?" }).click();
+    await expect(form).toHaveCount(0);
+});
+
+test("contacts that could not be read say so only until they are read", async ({ page }) => {
+    await withCore(page, { accounts: [robin], contacts: [contact("c1", "Sam Taylor")] });
+    await page.getByRole("button", { name: "People" }).click();
+    const list = page.getByRole("region", { name: "People" });
+    await expect(list.getByRole("button", { name: /Sam Taylor/ })).toBeVisible();
+
+    await refuse(page, "contacts.list", "Your contacts could not be read just now.");
+    await page.getByRole("searchbox", { name: "Search people" }).fill("s");
+    await expect(list.getByRole("alert")).toHaveText("Your contacts could not be read just now.");
+
+    await refuse(page, "contacts.list", null);
+    await page.getByRole("searchbox", { name: "Search people" }).fill("sa");
+    await expect(list.getByRole("button", { name: /Sam Taylor/ })).toBeVisible();
+    await expect(list.getByRole("alert")).toHaveCount(0);
+});
+
+test("a contact with the same number or address twice shows both", async ({ page }) => {
+    const twice = contact("c1", "Sam Taylor", { emails: [{ address: "sam@example.test", name: "" }, { address: "sam@example.test", name: "" }], business_phones: ["07 5550 0001", "07 5550 0001"] });
+    await withCore(page, { accounts: [robin], contacts: [twice, contact("c2", "Jo Nguyen", { business_phones: ["07 5550 0001"] })] });
+    await page.getByRole("button", { name: "People" }).click();
+    const card = page.getByRole("region", { name: "Contact" });
+
+    await page.getByRole("list", { name: "Contacts" }).getByRole("button", { name: /Jo Nguyen/ }).click();
+    await expect(card.getByText("07 5550 0001")).toHaveCount(1);
+    await page.getByRole("list", { name: "Contacts" }).getByRole("button", { name: /Sam Taylor/ }).click();
+    await expect(card.getByText("07 5550 0001")).toHaveCount(2);
+    await expect(card.getByText("sam@example.test")).toHaveCount(2);
 });
