@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { bulk, inbox, lunch, notified, ran, robin, sam, sent, withCore } from "./core";
+import { bulk, inbox, lunch, notified, ran, robin, sam, sent, told, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -9,6 +9,17 @@ const messages = (page: Page) => page.getByRole("listbox", { name: "Messages" })
 const tree = (page: Page) => page.getByRole("list", { name: "Folders" });
 const folder = (page: Page, name: string) => tree(page).getByRole("button", { name: new RegExp(`^${name}`) });
 const body = (page: Page) => page.frameLocator('iframe[title="Message body"]');
+/** How many times the stand-in core has been asked for something. */
+const asked = async (page: Page, command: string) => (await ran(page)).filter((r) => r.command === command).length;
+
+/** An invitation, which has a box for a note to the organiser. */
+const invitation = {
+    ...inbox[0],
+    id: "inv",
+    subject: "Budget review",
+    received_at: "2026-10-09T05:00:00Z",
+    meeting: { kind: "invitation", start: "2026-10-14T04:00:00Z", end: "2026-10-14T05:00:00Z", is_all_day: false, location: "Harbour Room", event_id: "e2", response: "notResponded", conflicts: [], complete: true },
+};
 
 test("the window opens on the inbox, newest first, and syncs", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
@@ -1552,4 +1563,58 @@ test("the version in the bar looks for a newer one when pressed, and says when t
     await bar.getByRole("button", { name: "Brolga 0.1.5" }).click();
     await expect(bar).toContainText("This is the newest version.");
     expect(await looked(page)).toEqual([false, true]);
+});
+
+test("keys typed into a note are words for the note, not keys for the message", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [invitation, ...inbox] });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    const card = page.getByRole("region", { name: "Meeting" });
+    await card.getByText("Options").click();
+    const note = card.getByRole("textbox", { name: "Note to the organiser" });
+
+    await note.fill("See you thenn");
+    await note.press("Backspace");
+    await note.press("Delete");
+    await note.press("Insert");
+    await note.press("Control+u");
+
+    await expect(note).toHaveValue("See you then");
+    await expect(rows).toHaveCount(5);
+    await expect(rows.first().getByLabel("Flagged")).toHaveCount(0);
+    expect(await asked(page, "mail.messages.move")).toBe(0);
+    expect((await ran(page)).filter((r) => r.command === "mail.messages.set_read" && r.args.is_read === false)).toEqual([]);
+});
+
+test("the keys for a new meeting do not also mark the message read", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    await first.click();
+    await page.keyboard.press("Control+u");
+    await expect(first).toHaveClass(/unread/);
+
+    await page.keyboard.press("Control+Shift+Q");
+
+    await expect(page.getByRole("form", { name: "New event" })).toBeVisible();
+    expect((await ran(page)).filter((r) => r.command === "mail.messages.set_read").at(-1)?.args.is_read).toBe(false);
+});
+
+test("while an agent's question is waiting, keys do nothing to the mail behind it", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, asking: [{ id: 1, client: "Claude", command: "mail.messages.delete_permanently", args: {} }] });
+    const rows = messages(page).getByRole("option");
+    await expect(rows).toHaveCount(4);
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    // The list is given the keys without a click, which the question is in the way of.
+    await messages(page).focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(rows.first()).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+
+    await page.keyboard.press("Delete");
+    await page.keyboard.press("Control+2");
+
+    await page.getByRole("button", { name: "Don't allow" }).click();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    await expect(rows).toHaveCount(4);
+    expect(await asked(page, "mail.messages.move")).toBe(0);
 });

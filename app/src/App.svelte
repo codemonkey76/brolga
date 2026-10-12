@@ -12,6 +12,7 @@
     import StatusBar from "./lib/StatusBar.svelte";
     import Palette, { type Action } from "./lib/Palette.svelte";
     import People from "./lib/People.svelte";
+    import { inDialog } from "./lib/typing";
     import { tick } from "svelte";
 
     type View = "mail" | "calendar" | "people" | "accounts" | "agents";
@@ -124,7 +125,9 @@
     function keydown(event: KeyboardEvent) {
         if (!(event.ctrlKey || event.metaKey)) return;
         const key = event.key.toLowerCase();
-        if (key === "k") palette = !palette;
+        // The palette is put away by the keys that brought it. Nothing else is done behind it, or behind a question.
+        if (key === "k" && (palette || !inDialog(event))) palette = !palette;
+        else if (inDialog(event)) return;
         else if (key === "1") go("mail");
         else if (key === "2") go("calendar");
         else if (key === "3" || (event.shiftKey && key === "b")) go("people");

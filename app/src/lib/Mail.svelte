@@ -8,6 +8,7 @@
     import ReadingPane from "./ReadingPane.svelte";
     import Toolbar from "./Toolbar.svelte";
     import { type Answer, type Proposed, respond } from "./calendar";
+    import { inDialog, typing } from "./typing";
 
     interface Props {
         accounts: Account[];
@@ -859,6 +860,8 @@
     });
 
     function keydown(event: KeyboardEvent) {
+        // A question or the palette over the window has the keys, not the mail behind it.
+        if (inDialog(event)) return;
         if (event.key === "F9") {
             event.preventDefault();
             sync();
@@ -890,8 +893,9 @@
         } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
             event.preventDefault();
             write("forward");
-        } else if (targets.length > 0 && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) {
-            const ctrl = event.ctrlKey || event.metaKey;
+        } else if (targets.length > 0 && !typing(event)) {
+            // With Shift these are other things: Ctrl+Shift+Q is a new meeting.
+            const ctrl = (event.ctrlKey || event.metaKey) && !event.shiftKey;
             if (ctrl && event.key.toLowerCase() === "q") {
                 event.preventDefault();
                 markRead(true);
@@ -913,7 +917,7 @@
                 selectOne();
             }
         }
-        if (undoable && !writing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !(event.target instanceof HTMLInputElement)) {
+        if (undoable && !writing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !typing(event)) {
             event.preventDefault();
             takeBack();
         }

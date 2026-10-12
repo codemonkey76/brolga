@@ -390,6 +390,11 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         let syncs = 0;
         let slow: unknown = null;
         const waiting: (() => void)[] = [];
+        /** Commands whose answers a test is holding back, with how many more times each is to be; and those waiting. */
+        const held = new Map<string, number>();
+        const stuck: { command: string; go: () => void }[] = [];
+        /** Commands a test has said are to fail, each once it has worked so many times. */
+        const failing = new Map<string, { worked: number; message: string }>();
         const shown = (m: (typeof mail)[number]) => ({
             id: m.id,
             folder_id: m.folder_id,
@@ -1013,7 +1018,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 const found = mail
                     .filter((m) => !args.folder_id || m.folder_id === args.folder_id)
                     .filter((m) => words.every((w) => `${m.subject} ${m.preview} ${m.from.name}`.toLowerCase().includes(w)));
-                return { messages: found.map(shown), note: "" };
+                return { messages: found.slice(0, (args.limit as number) ?? 50).map(shown), note: "" };
             },
             "app.open_link": () => ({ opened: true }),
             "accounts.list": () => ({ accounts }),
@@ -1078,6 +1083,19 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 slow = null;
                 waiting.splice(0).forEach((go) => go());
             },
+            /** Hold back the answers to a command, every time it is run or only so many times, until `letGo`. */
+            hold: (command: string, times = Infinity) => held.set(command, times),
+            heldBack: (command: string) => stuck.filter((each) => each.command === command).length,
+            letGo: (command: string) => {
+                held.delete(command);
+                for (const each of stuck.splice(0)) {
+                    if (each.command === command) each.go();
+                    else stuck.push(each);
+                }
+            },
+            /** Make a command fail with these words, once it has worked so many times. `mend` puts it right. */
+            failAfter: (command: string, worked: number, message: string) => failing.set(command, { worked, message }),
+            mend: (command: string) => failing.delete(command),
             __TAURI_INTERNALS__: {
                 invoke: async (name: string, payload: { command: string; args?: Record<string, unknown> }) => {
                     // The save dialog: the place this test says was chosen, or dismissed.
@@ -1119,6 +1137,13 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     const run = commands[payload.command];
                     if (!run) throw { code: "unknown_command", message: `there is no command called \`${payload.command}\`` };
                     ran.push({ command: payload.command, args: payload.args ?? {} });
+                    const left = held.get(payload.command) ?? 0;
+                    if (left > 0) {
+                        held.set(payload.command, left - 1);
+                        await new Promise<void>((go) => stuck.push({ command: payload.command, go }));
+                    }
+                    const fails = failing.get(payload.command);
+                    if (fails && fails.worked-- <= 0) throw { code: "failed", message: fails.message };
                     return run(payload.args ?? {});
                 },
             },
@@ -1186,6 +1211,10 @@ export const week: FakeEvent[] = [
     { id: "e7", subject: "London sync", start: "2026-10-14T07:00:00Z", end: "2026-10-14T07:30:00Z", time_zone: "Europe/London" },
     { id: "e8", subject: "Next month", start: "2026-11-03T01:00:00Z", end: "2026-11-03T02:00:00Z" },
 ];
+
+/** Ask something of the stand-in core that it does for a test: `hold`, `heldBack`, `letGo`, `failAfter` or `mend`. */
+export const told = (page: Page, what: string, ...args: (string | number)[]) =>
+    page.evaluate(([what, args]) => (window as unknown as Record<string, (...args: (string | number)[]) => unknown>)[what](...args), [what, args] as const);
 
 /** What the stand-in core has sent. */
 export const sent = (page: Page) => page.evaluate(() => (window as unknown as { sent: Record<string, unknown>[] }).sent);
