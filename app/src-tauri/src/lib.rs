@@ -46,7 +46,9 @@ async fn execute_command(
 ) -> Result<Value, Failure> {
     let args = args.unwrap_or_else(|| Value::Object(serde_json::Map::new()));
 
-    Ok(registry.execute(&command, args).await?)
+    // The window is where the person is, so it alone may run what is
+    // theirs to do, such as answering an agent's question.
+    Ok(registry.execute_from_window(&command, args).await?)
 }
 
 /// Ask where to save a file, with the system's own dialog. Gives back the

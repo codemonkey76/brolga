@@ -26,3 +26,14 @@ pub const NEVER: &[&str] = &[
     "app.open_link",
     "mail.trusted_senders.set",
 ];
+
+/// The person's own side of a say-so: seeing what an agent is waiting on,
+/// whole, and answering it. These run only when the window asks; the
+/// registry refuses them to the command line, the control channel and the
+/// MCP server alike, so a program that can reach the client from outside
+/// cannot answer for the person or pass itself off as a window.
+pub const WINDOW_ONLY: &[&str] = &[
+    "app.confirmations.answer",
+    "app.confirmations.get",
+    "app.confirmations.list",
+];

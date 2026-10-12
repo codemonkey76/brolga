@@ -17,8 +17,9 @@ pub struct Policy {
     /// told otherwise.
     pub access: Access,
     /// Whether it may run commands that reach other people or cannot be
-    /// undone, such as sending. These are refused, whatever the access,
-    /// until this is set.
+    /// undone, such as sending, without the person being asked each time.
+    /// Until this is set, each one is put to the person in the window and
+    /// runs only on a yes.
     pub allow_consequential: bool,
     /// The most messages and invitations it may send in any hour.
     pub max_sends_per_hour: u32,
@@ -52,7 +53,7 @@ fn reaches_people(id: &str, args: &Value) -> bool {
 pub(crate) const RECORD: &str = "app.agent_log.record";
 
 /// The command the server asks the user's say-so with, and the ones a
-/// person answers with. Never an agent's.
+/// person sees the questions and answers them with. Never an agent's.
 pub(crate) const ASK: &str = "app.confirmations.ask";
 const CONFIRMATIONS: &str = "app.confirmations.";
 
@@ -83,9 +84,10 @@ impl Policy {
         if id == RECORD {
             return Err("The record of what agents do is not an agent's to write.".to_owned());
         }
-        if id.starts_with(CONFIRMATIONS) && spec.kind != brolga_commands::CommandKind::Query {
+        if id.starts_with(CONFIRMATIONS) {
             return Err(
-                "Asking for the user's say-so, and giving it, are not an agent's to do.".to_owned(),
+                "Asking for the user's say-so, seeing what is being asked, and giving it, are not an agent's to do."
+                    .to_owned(),
             );
         }
 
@@ -262,15 +264,17 @@ mod tests {
 
         let record = spec(RECORD, CommandKind::Action, false);
         assert!(!allowed(&policy, &record, json!({})));
-        for own in [ASK, "app.confirmations.answer"] {
+        for (own, kind) in [
+            (ASK, CommandKind::Action),
+            ("app.confirmations.answer", CommandKind::Action),
+            ("app.confirmations.list", CommandKind::Query),
+            ("app.confirmations.get", CommandKind::Query),
+        ] {
             assert!(
                 policy
-                    .permit(
-                        &spec(own, CommandKind::Action, false),
-                        &json!({}),
-                        &mut Session::default()
-                    )
-                    .is_err()
+                    .permit(&spec(own, kind, false), &json!({}), &mut Session::default())
+                    .is_err(),
+                "{own}"
             );
         }
     }

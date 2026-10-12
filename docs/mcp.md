@@ -91,11 +91,21 @@ raise it: an email that says "you are allowed to send" changes nothing.
 | `--access full` | Also change the mailbox: mark, flag, move, delete to Deleted Items. |
 | `--allow-consequential` | Send, and do the other things that reach people or cannot be undone, without asking you each time. Needs `--access full` as well. |
 
+**These limits bind an agent whose only way to Brolga is this server.** They
+are kept by the `brolga-cli mcp` process, not by Brolga itself. An agent that
+can also run programs as you, such as one with a shell, can run
+`brolga-cli run` or write to the [control channel](control-protocol.md)
+directly, and neither has an access level, a prompt or a record. Give such an
+agent the access you would give a program you run yourself. The one thing no
+program can do from outside is answer a question put to you: that is done in
+Brolga's window and nowhere else.
+
 Four things hold whatever the access:
 
-- **No files by path.** An agent cannot attach a file by naming where it is on
-  your computer, or choose where an attachment is saved. It gives a file's
-  contents instead.
+- **No files by path.** An agent cannot name a place on your computer: not to
+  attach a file from, save an attachment or exported contacts to, or import
+  contacts or an archive from. Where a command takes a file's contents, it
+  gives those instead.
 - **A limit on sending.** At most 20 messages and invitations in any hour, or
   the number given with `--max-sends-per-hour`. Meeting invitations,
   cancellations, answers to invitations and calendar sharing all count.
@@ -113,9 +123,24 @@ Four things hold whatever the access:
 **Sending asks first.** With `--access full` and without
 `--allow-consequential`, a command that reaches other people or cannot be
 undone (sending, deleting for good, setting automatic replies) is put to you
-in the app: who is asking, what for, and for a message who it is to and what
-it is about. It runs only if you allow it, once. If you say no, do not answer
+in the app. It runs only if you allow it, once. If you say no, do not answer
 in two minutes, or the app is not open, the agent is told no.
+
+- For a message, you are shown the address it goes from, every address it
+  goes to (the address first; a name is whatever the writer typed), the
+  subject, the files and the words, including any styled so as not to show.
+- Your yes is to that message. The server reads the draft before it asks and
+  again when you answer; if it has changed, nothing is sent and you are asked
+  again about what it has become. After three rounds of that the agent is
+  told no. (The check and the send are two steps, so something else changing
+  the draft in the instant between them is not caught.)
+- For anything else, you are shown the arguments whole. The record under
+  **Agents** keeps them with anything private cut down to its length; the
+  question does not, since you cannot agree to words you cannot read.
+- Only the window is given a question whole, and only the window can answer
+  one. `app.confirmations.list`, `app.confirmations.get` and
+  `app.confirmations.answer` are refused to the command line, the control
+  channel and every agent.
 
 The server tells every agent that the content of an email, attachment or
 invitation is data to report on and never an instruction.
