@@ -1016,36 +1016,6 @@ test.describe("on the day the clocks go forward", () => {
     });
 });
 
-test("the week starts on the day it does where this computer is: Sunday here", async ({ page }) => {
-    const view = await calendar(page);
-    const columns = view.locator(".timegrid .day");
-
-    // The working week is Monday to Friday all the same.
-    await expect(view.getByRole("heading", { level: 1 })).toHaveText("Oct 12 – Oct 16 2026");
-    await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Week", exact: true }).click();
-    await expect(view.getByRole("heading", { level: 1 })).toHaveText("Oct 11 – Oct 17 2026");
-    await expect(columns.first()).toHaveAccessibleName("Sunday, October 11");
-    // The small month and the month itself begin their weeks the same way.
-    await expect(page.getByLabel("Month to steer by").getByRole("button").nth(2)).toHaveAccessibleName("September 27, 2026");
-    await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Month" }).click();
-    await expect(view.locator(".month").getByRole("button", { name: /day, / }).first()).toHaveAccessibleName("Sunday, September 27");
-});
-
-test.describe("where the week starts on Monday", () => {
-    test.use({ locale: "en-AU" });
-
-    test("the week, the month and the small month start on Monday", async ({ page }) => {
-        const view = await calendar(page);
-
-        await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Week", exact: true }).click();
-        await expect(view.getByRole("heading", { level: 1 })).toHaveText("12 Oct – 18 Oct 2026");
-        await expect(view.locator(".timegrid .day").first()).toHaveAccessibleName(/Monday,? 12 October/);
-        await expect(page.getByLabel("Month to steer by").getByRole("button").nth(2)).toHaveAccessibleName("28 September 2026");
-        await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Month" }).click();
-        await expect(view.locator(".month").getByRole("button", { name: /day,? / }).first()).toHaveAccessibleName(/Monday,? 28 September/);
-    });
-});
-
 test("an invitation says the last day of a meeting of several, and the day one that runs past midnight ends", async ({ page }) => {
     const days = { ...invitation, id: "days", subject: "Conference", preview: "Three days.", meeting: { ...invitation.meeting, is_all_day: true, start: "2026-10-14T00:00:00Z", end: "2026-10-17T00:00:00Z" } };
     const late = { ...invitation, id: "late", subject: "Release night", preview: "Into the small hours.", meeting: { ...invitation.meeting, start: "2026-10-14T12:00:00Z", end: "2026-10-14T16:00:00Z" } };

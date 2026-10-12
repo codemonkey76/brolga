@@ -213,37 +213,17 @@ export const calendarColour = (calendars: Calendar[], id: string) => {
 export const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
 export const addDays = (date: Date, days: number) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 export const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-
-/**
- * The day a week starts on where this computer is, as `getDay` counts them:
- * 0 for Sunday. Monday where the browser cannot say.
- */
-export const firstDay: number = (() => {
-    try {
-        const locale = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale) as Intl.Locale & {
-            getWeekInfo?: () => { firstDay: number };
-            weekInfo?: { firstDay: number };
-        };
-        // Monday is 1 and Sunday is 7.
-        const first = (locale.getWeekInfo?.() ?? locale.weekInfo)?.firstDay;
-        return typeof first === "number" ? first % 7 : 1;
-    } catch {
-        return 1;
-    }
-})();
-
-/** The first day of the week a day is in. */
-export const startOfWeek = (date: Date) => addDays(date, -((date.getDay() - firstDay + 7) % 7));
+/** The Monday on or before a day. */
+export const startOfWeek = (date: Date) => addDays(date, -((date.getDay() + 6) % 7));
 
 /** The days a view shows, given a day in it. */
 export function daysOf(view: View, anchor: Date): Date[] {
     const day = startOfDay(anchor);
     if (view === "day") return [day];
-    // Monday to Friday of that week, whichever day the week starts on.
-    if (view === "work_week") return Array.from({ length: 5 }, (_, i) => addDays(startOfWeek(day), ((8 - firstDay) % 7) + i));
+    if (view === "work_week") return Array.from({ length: 5 }, (_, i) => addDays(startOfWeek(day), i));
     if (view === "week") return Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(day), i));
     if (view === "agenda") return Array.from({ length: 30 }, (_, i) => addDays(day, i));
-    // A month: whole weeks, from the start of the week its first day is in, six of them.
+    // A month: whole weeks, from the Monday on or before its first day, six of them.
     const first = startOfWeek(new Date(day.getFullYear(), day.getMonth(), 1));
     return Array.from({ length: 42 }, (_, i) => addDays(first, i));
 }
