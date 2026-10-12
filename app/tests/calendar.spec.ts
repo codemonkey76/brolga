@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { inbox, notified, ran, robin, week, withCore } from "./core";
+import { inbox, notified, ran, refuse, robin, week, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -1061,4 +1061,29 @@ test("an invitation says the last day of a meeting of several, and the day one t
     await expect(card).toContainText(/Wed, Oct 14, 2026, 10:00\s?PM to Thu, Oct 15, 2026, 2:00\s?AM/);
     await rows.filter({ hasText: "Planning day" }).click();
     await expect(card).toContainText("Wed, Oct 14, 2026, all day");
+});
+
+test("a reminder that could not be dismissed is shown again, and one within two hours says the minutes", async ({ page }) => {
+    // Ten to two in Brisbane: the meeting started at twenty past twelve, an hour and a half ago.
+    await page.clock.install({ time: new Date("2026-10-14T03:50:00Z") });
+    await withCore(page, { accounts: [robin], events: [{ id: "r1", subject: "Workshop", start: "2026-10-14T02:20:00Z", end: "2026-10-14T05:00:00Z" }] });
+    const reminders = page.getByRole("region", { name: "Reminders" });
+
+    await expect(reminders).toContainText("started an hour and 30 minutes ago");
+
+    await refuse(page, "calendar.reminders.dismiss");
+    await reminders.getByRole("button", { name: "Dismiss" }).click();
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "calendar.reminders.dismiss").length).toBe(1);
+    await expect(reminders.getByRole("article")).toHaveCount(1);
+    // It was not put off either, and the desktop is not told of it twice for that.
+    await refuse(page, "calendar.reminders.snooze");
+    await reminders.getByRole("combobox", { name: "Snooze Workshop" }).selectOption("5");
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "calendar.reminders.snooze").length).toBe(1);
+    await expect(reminders.getByRole("article")).toHaveCount(1);
+    await page.clock.fastForward(31_000);
+    expect(await notified(page)).toHaveLength(1);
+
+    await refuse(page, "calendar.reminders.dismiss", null);
+    await reminders.getByRole("button", { name: "Dismiss" }).click();
+    await expect(reminders).toHaveCount(0);
 });

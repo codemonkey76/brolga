@@ -20,12 +20,16 @@
     let reminders = $state<Reminder[]>([]);
     /** The reminders the desktop has already been told of, so each is told once. */
     const told = new Set<string>();
+    /** Bumped with each look, and whenever a reminder is dismissed or put off, so that a look begun before then does not bring it back. */
+    let looks = 0;
 
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
     /** How long until it starts, or since it did, as a person would say it. */
     function awaySaid(minutes: number): string {
-        const span = (n: number) => (n >= 120 ? `${Math.round(n / 60)} hours` : n >= 60 ? "an hour" : n === 1 ? "a minute" : `${n} minutes`);
+        const less = (n: number) => (n === 1 ? "a minute" : `${n} minutes`);
+        // Within two hours the minutes over the hour are said: an hour and fifty minutes is not an hour.
+        const span = (n: number) => (n >= 120 ? `${Math.round(n / 60)} hours` : n > 60 ? `an hour and ${less(n - 60)}` : n === 60 ? "an hour" : less(n));
         if (minutes > 0) return `in ${span(minutes)}`;
         if (minutes === 0) return "now";
         return `started ${span(-minutes)} ago`;
@@ -35,6 +39,7 @@
         reminder.event.is_all_day ? "All day" : `${timeSaid(span(reminder.event).start)} · ${awaySaid(reminder.starts_in_minutes)}`;
 
     async function look() {
+        const mine = ++looks;
         const found: Reminder[] = [];
         for (const account of accounts) {
             try {
@@ -44,6 +49,7 @@
                 // Nothing to remind of until the client can be asked again.
             }
         }
+        if (mine !== looks) return;
         reminders = found;
         for (const reminder of found) {
             if (told.has(reminder.event.id)) continue;
@@ -61,16 +67,27 @@
         return () => clearInterval(timer);
     });
 
-    async function dismiss(reminder: Reminder) {
+    /** Take a reminder off the list and tell the core what was done with it. True if the core took that. */
+    async function put(reminder: Reminder, command: string, more: Record<string, unknown> = {}): Promise<boolean> {
         reminders = reminders.filter((each) => each !== reminder);
-        await execute("calendar.reminders.dismiss", { account_id: reminder.account_id, event_id: reminder.event.id }).catch(() => {});
+        looks += 1;
+        try {
+            await execute(command, { account_id: reminder.account_id, event_id: reminder.event.id, ...more });
+            // A look begun while that was being done may have been answered before it was.
+            looks += 1;
+            return true;
+        } catch {
+            // It was not taken, so the reminder is still to be given: it is shown again.
+            await look();
+            return false;
+        }
     }
 
+    const dismiss = (reminder: Reminder) => put(reminder, "calendar.reminders.dismiss");
+
     async function snooze(reminder: Reminder, minutes: number) {
-        reminders = reminders.filter((each) => each !== reminder);
         // When it comes back, the desktop is told again.
-        told.delete(reminder.event.id);
-        await execute("calendar.reminders.snooze", { account_id: reminder.account_id, event_id: reminder.event.id, minutes }).catch(() => {});
+        if (await put(reminder, "calendar.reminders.snooze", { minutes })) told.delete(reminder.event.id);
     }
 </script>
 
