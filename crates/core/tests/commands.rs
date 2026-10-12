@@ -191,7 +191,10 @@ async fn every_command_is_described_and_its_examples_run() {
                 example["path"] = json!(archive.to_string_lossy());
             }
             let example = &example;
-            let result = registry.execute(&spec.id, example.clone()).await;
+            // As the window, which may run every command there is.
+            let result = registry
+                .execute_from_window(&spec.id, example.clone())
+                .await;
             assert!(
                 result.is_ok(),
                 "`{}` failed on its own example {example}: {result:?}",
@@ -429,9 +432,39 @@ async fn the_commands_an_agent_may_draft_with_are_real_and_are_all_drafting() {
         assert!(!spec.consequential, "`{id}` reaches other people");
     }
     // The ids an agent is limited or refused by name all answer to something.
-    use brolga_commands::agents::{INVITES, NEVER, WRITES_TO_PEOPLE};
-    for id in NEVER.iter().chain(WRITES_TO_PEOPLE).chain(INVITES) {
+    use brolga_commands::agents::{
+        ASKS_WHEN_GIVEN, INVITES, NEVER, NEVER_ARGUMENTS, WINDOW_ONLY, WRITES_TO_PEOPLE,
+    };
+    for id in NEVER
+        .iter()
+        .chain(WRITES_TO_PEOPLE)
+        .chain(INVITES)
+        .chain(WINDOW_ONLY)
+    {
         assert!(registry.spec(id).is_some(), "`{id}` is not a command");
+    }
+    // The arguments an agent is refused or asked about are ones the
+    // commands really take.
+    for (id, argument) in NEVER_ARGUMENTS.iter().chain(ASKS_WHEN_GIVEN) {
+        let takes = registry
+            .spec(id)
+            .is_some_and(|spec| spec.args_schema["properties"].get(argument).is_some());
+        assert!(takes, "`{id}` takes no `{argument}`");
+    }
+    // A file on this computer is always named by `path`, which is the one
+    // argument the MCP server refuses every agent.
+    for spec in registry.specs() {
+        let properties = spec.args_schema["properties"].as_object();
+        for (name, schema) in properties.into_iter().flatten() {
+            let about_a_place = schema["description"]
+                .as_str()
+                .is_some_and(|said| said.contains("full path"));
+            assert!(
+                !about_a_place || name == "path",
+                "`{}` takes a file's place as `{name}`",
+                spec.id
+            );
+        }
     }
     for id in WRITES_TO_PEOPLE.iter().chain(INVITES) {
         assert!(
@@ -458,7 +491,26 @@ async fn the_commands_an_agent_may_draft_with_are_real_and_are_all_drafting() {
 async fn a_question_for_the_user_waits_for_the_window_and_takes_its_answer() {
     let identity = FakeIdentity::start().await.unwrap();
     let registry = core(&identity, Some(CLIENT_ID)).registry();
-    let question = json!({ "client": "an-agent", "command": "mail.drafts.send", "args": { "draft_id": "draft-1", "body": "private words" } });
+    let question = json!({
+        "client": "an-agent",
+        "command": "mail.drafts.send",
+        "args": { "draft_id": "draft-1", "body": "private words" },
+        "draft": { "id": "draft-1", "to": [{ "name": "Len Smith", "address": "x@elsewhere.test" }], "body": "<p>Hello</p><p>Len</p>", "format": "html" }
+    });
+
+    // Nothing but the window sees the questions or answers them, and
+    // looking from outside does not pass for a window being there.
+    for (own, args) in [
+        ("app.confirmations.list", json!({})),
+        ("app.confirmations.get", json!({ "id": 1 })),
+        (
+            "app.confirmations.answer",
+            json!({ "id": 1, "allow": true }),
+        ),
+    ] {
+        let refused = registry.execute(own, args).await.unwrap_err();
+        assert_eq!(refused.code(), "window_only", "{own}");
+    }
 
     // With no window looking, nobody can be asked.
     let unasked = registry
@@ -470,7 +522,7 @@ async fn a_question_for_the_user_waits_for_the_window_and_takes_its_answer() {
     for allow in [true, false] {
         // The window looks, and so is known to be there.
         registry
-            .execute("app.confirmations.list", json!({}))
+            .execute_from_window("app.confirmations.list", json!({}))
             .await
             .unwrap();
         let asking = {
@@ -485,7 +537,7 @@ async fn a_question_for_the_user_waits_for_the_window_and_takes_its_answer() {
         };
         let waiting = loop {
             let listed = registry
-                .execute("app.confirmations.list", json!({}))
+                .execute_from_window("app.confirmations.list", json!({}))
                 .await
                 .unwrap();
             if let Some(first) = listed["questions"].get(0) {
@@ -494,11 +546,23 @@ async fn a_question_for_the_user_waits_for_the_window_and_takes_its_answer() {
             tokio::task::yield_now().await;
         };
         assert_eq!(waiting["client"], "an-agent");
-        // What the person is shown has nothing private in it.
+        // The list of what is waiting has nothing private in it.
         assert_eq!(waiting["args"]["body"], "[13 characters]");
+        // The question itself, which only the window can read, has every
+        // word, and the message as it stood when it was asked.
+        let whole = registry
+            .execute_from_window("app.confirmations.get", json!({ "id": waiting["id"] }))
+            .await
+            .unwrap();
+        assert_eq!(whole["question"]["args"]["body"], "private words");
+        assert_eq!(
+            whole["question"]["draft"]["to"][0]["address"],
+            "x@elsewhere.test"
+        );
+        assert_eq!(whole["question"]["draft"]["text"], "Hello\n\nLen");
 
         let answered = registry
-            .execute(
+            .execute_from_window(
                 "app.confirmations.answer",
                 json!({ "id": waiting["id"], "allow": allow }),
             )
@@ -508,12 +572,12 @@ async fn a_question_for_the_user_waits_for_the_window_and_takes_its_answer() {
         assert_eq!(asking.await.unwrap()["allowed"], allow);
         // Answered, it is no longer waiting, and cannot be answered again.
         let after = registry
-            .execute("app.confirmations.list", json!({}))
+            .execute_from_window("app.confirmations.list", json!({}))
             .await
             .unwrap();
         assert!(after["questions"].as_array().unwrap().is_empty());
         let again = registry
-            .execute(
+            .execute_from_window(
                 "app.confirmations.answer",
                 json!({ "id": waiting["id"], "allow": true }),
             )

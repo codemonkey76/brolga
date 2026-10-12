@@ -39,29 +39,30 @@ impl RemoteImages {
 
     /// Replace each `<img src="https://…">` in cleaned HTML with the image
     /// itself. Returns the HTML and how many images could not be had.
+    ///
+    /// Only the `src` of an `<img>` is ever replaced or fetched. The same
+    /// characters written out in the message's words are words.
     pub async fn inline(&self, html: &str) -> (String, u32) {
-        self.inline_any(html, "src=\"https://").await
+        self.inline_any(html, "https://").await
     }
 
-    /// As `inline`, of images whose `src` opens as `open` does: tests
+    /// As `inline`, of images whose address opens as `open` does: tests
     /// have no `https` server to fetch from.
     async fn inline_any(&self, html: &str, open: &str) -> (String, u32) {
         let mut out = String::with_capacity(html.len());
-        let mut rest = html;
+        let mut from = 0;
         let (mut asked, mut missing) = (0usize, 0u32);
         let deadline = tokio::time::Instant::now() + ALL_WITHIN;
         // Each host is looked up once for the message, and asked through
         // the one client held to the addresses that were checked.
         let mut hosts = HashMap::new();
 
-        while let Some(at) = rest.find(open) {
-            let start = at + "src=\"".len();
-            let Some(length) = rest[start..].find('"') else {
-                break;
-            };
-            // The cleaner writes attribute values with `&` as `&amp;`.
-            let url = rest[start..start + length].replace("&amp;", "&");
-            out.push_str(&rest[..at]);
+        for source in brolga_mail::image_sources(html) {
+            if !source.address.starts_with(open) {
+                continue;
+            }
+            out.push_str(&html[from..source.at.start]);
+            from = source.at.end;
 
             // All of a message's pictures are had within the one stretch of
             // time, so that slow ones cannot hold the message up for long.
@@ -70,7 +71,7 @@ impl RemoteImages {
             // otherwise have every one of them looked up and asked for.
             let image = if asked < MAX_IMAGES {
                 asked += 1;
-                tokio::time::timeout_at(deadline, self.fetch(&url, &mut hosts))
+                tokio::time::timeout_at(deadline, self.fetch(&source.address, &mut hosts))
                     .await
                     .ok()
                     .flatten()
@@ -86,9 +87,8 @@ impl RemoteImages {
                 // No `src` at all, so the view has nothing to try for itself.
                 None => missing += 1,
             }
-            rest = &rest[start + length + 1..];
         }
-        out.push_str(rest);
+        out.push_str(&html[from..]);
 
         (out, missing)
     }
@@ -374,7 +374,7 @@ mod tests {
         .await;
         let images = RemoteImages::new(true);
         let html = format!("<img src=\"{base}/x.png\">").repeat(MAX_IMAGES + 5);
-        let (out, missing) = images.inline_any(&html, "src=\"http://").await;
+        let (out, missing) = images.inline_any(&html, "http://").await;
 
         assert_eq!(missing as usize, MAX_IMAGES + 5);
         assert!(!out.contains("src="));

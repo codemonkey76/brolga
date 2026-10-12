@@ -78,6 +78,52 @@ async fn a_refused_command_comes_back_with_its_code() {
 }
 
 #[tokio::test]
+async fn what_is_the_persons_own_to_answer_cannot_be_run_over_the_channel() {
+    use brolga_commands::{CommandKind, CommandSpec};
+
+    let mut registry = builtin_registry().unwrap();
+    let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = answered.clone();
+    registry
+        .register(
+            CommandSpec {
+                id: "app.confirmations.answer".to_owned(),
+                title: "Answer a question".to_owned(),
+                description: "Stands in for the real one, for the test.".to_owned(),
+                kind: CommandKind::Action,
+                consequential: false,
+                mcp_tool: None,
+                args_schema: json!({ "type": "object" }),
+                result_schema: json!({ "type": "object" }),
+                examples: vec![json!({})],
+            },
+            Arc::new(move |_| {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async { Ok(json!({ "answered": true })) })
+            }),
+        )
+        .unwrap();
+    let endpoint = endpoint("own");
+    let server = Server::bind(&endpoint).await.unwrap();
+    tokio::spawn(server.run(Arc::new(registry)));
+    let mut client = Client::connect(&endpoint).await.unwrap();
+
+    let refused = client
+        .execute(
+            "app.confirmations.answer",
+            json!({ "id": 1, "allow": true }),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(refused, ClientError::Remote(ref e) if e.code == "window_only" && e.message.contains("window")),
+        "{refused:?}"
+    );
+    assert!(!answered.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn a_line_that_is_not_a_request_is_answered_not_dropped() {
     use interprocess::local_socket::tokio::{Stream, prelude::*};
     use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ToFsName, ToNsName};

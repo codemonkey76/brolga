@@ -185,15 +185,18 @@
         return !real || (real !== shown && !real.endsWith(`.${shown}`));
     }
 
-    /** Files that run, or can run something, when opened. */
-    const RUNS = new Set(
-        "exe msi msix bat cmd com scr pif cpl ps1 vbs vbe js jse wsf wsh hta lnk reg jar app command dmg pkg sh desktop appimage deb rpm run bin apk iso img docm xlsm pptm dotm xlam".split(" "),
-    );
-    /** A name's last extension, lower-cased and without the dot. */
-    const extension = (name: string) => (/\.([^.\s]{1,10})$/.exec(name.trim())?.[1] ?? "").toLowerCase();
+    /**
+     * The name a file is saved under, which is the name shown. The sender's
+     * own spelling can hide what a file is, with marks that turn the text
+     * about or a dot on the end; the core takes those out before it writes
+     * the file, and says here what is left.
+     */
+    const named = (attachment: Attachment, otherwise = "Attachment") => attachment.saved_name || attachment.name || otherwise;
 
+    // Whether a file can run is the core's to say, of the name it will
+    // really write, so that the warning and the saving cannot disagree.
     function save(attachment: Attachment, ask = false) {
-        if (RUNS.has(extension(attachment.name))) risky = { attachment, ask };
+        if (attachment.can_run) risky = { attachment, ask };
         else onSave(attachment, ask);
     }
 
@@ -341,15 +344,15 @@
                     <li>
                         {#if each.kind === "reference"}
                             <span class="attachment" title="A link to a file kept elsewhere. It cannot be saved from here.">
-                                🔗 {each.name || "Linked file"}
+                                🔗 {named(each, "Linked file")}
                             </span>
                         {:else}
                             <!-- The end of a name says what kind of file it is, so a long name is cut in the middle, never there. -->
-                            <button type="button" class="attachment" aria-label="{each.name || 'Attachment'}, {size(each.size)}" title="Save {each.name || 'attachment'} to your downloads folder" onclick={() => save(each)}>
-                                <span class="stem">📎 {(each.name || "Attachment").slice(0, -12) || (each.name || "Attachment")}</span><span class="end">{(each.name || "Attachment").length > 12 ? (each.name || "").slice(-12) : ""}</span>
+                            <button type="button" class="attachment" aria-label="{named(each)}, {size(each.size)}" title="Save {named(each, 'attachment')} to your downloads folder" onclick={() => save(each)}>
+                                <span class="stem">📎 {named(each).slice(0, -12) || named(each)}</span><span class="end">{named(each).length > 12 ? named(each).slice(-12) : ""}</span>
                                 <span class="muted">{size(each.size)}</span>
                             </button>
-                            <button type="button" class="attachment as" aria-label="Save {each.name || 'attachment'} as…" title="Choose where to save it" onclick={() => save(each, true)}>
+                            <button type="button" class="attachment as" aria-label="Save {named(each, 'attachment')} as…" title="Choose where to save it" onclick={() => save(each, true)}>
                                 Save as…
                             </button>
                         {/if}
@@ -359,7 +362,7 @@
         {/if}
         {#if risky}
             <p class="note caution" role="alert">
-                <span><strong>{risky.attachment.name}</strong> is a program, or a file that can run one. Save it only if you were expecting it from this sender.</span>
+                <span><strong>{named(risky.attachment)}</strong> is a program, or a file that can run one. Save it only if you were expecting it from this sender.</span>
                 <button
                     type="button"
                     onclick={() => {

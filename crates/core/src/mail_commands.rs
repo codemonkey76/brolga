@@ -470,8 +470,24 @@ async fn attached(
     Ok(rows)
 }
 
-/// How a cleaned body refers to a picture attached to its message.
-const CID: &str = "src=\"cid:";
+/// How a cleaned body's picture refers to one attached to its message.
+const CID: &str = "cid:";
+
+/// The name after `cid:`, where a picture's address is one.
+fn content_id_of(address: &str) -> Option<&str> {
+    let address = address.trim();
+    address
+        .get(..CID.len())
+        .filter(|scheme| scheme.eq_ignore_ascii_case(CID))
+        .map(|_| address[CID.len()..].trim())
+}
+
+/// Whether cleaned HTML has a picture that refers to an attached one.
+fn has_inline_images(html: &str) -> bool {
+    brolga_mail::image_sources(html)
+        .iter()
+        .any(|source| content_id_of(&source.address).is_some())
+}
 /// The most pictures put into one message, and the largest of them.
 const MAX_INLINE_IMAGES: usize = 40;
 const MAX_INLINE_BYTES: i64 = 3 * 1024 * 1024;
@@ -522,23 +538,24 @@ async fn inline_images(mailbox: &crate::mailboxes::Mailbox, message_id: &str) ->
 
 /// Put each picture in place of the `cid:` name that refers to it. A name
 /// with no picture loses its `src`, so the view has nothing to try.
+///
+/// Only the `src` of an `<img>` is ever replaced. The same characters
+/// written out in the message's words are words, and stay as they are.
 fn with_inline_images(html: &str, images: &[InlineImage]) -> String {
     let mut out = String::with_capacity(html.len());
-    let mut rest = html;
+    let mut from = 0;
 
-    while let Some(at) = rest.find(CID) {
-        let start = at + CID.len();
-        let Some(length) = rest[start..].find('"') else {
-            break;
+    for source in brolga_mail::image_sources(html) {
+        let Some(name) = content_id_of(&source.address) else {
+            continue;
         };
-        // The cleaner writes attribute values with `&` as `&amp;`.
-        let name = rest[start..start + length].replace("&amp;", "&");
-        out.push_str(&rest[..at]);
+        out.push_str(&html[from..source.at.start]);
+        from = source.at.end;
         // The type goes into the page as it is, so it is one of the few
         // plain ones or the picture is left out.
         if let Some(image) = images
             .iter()
-            .find(|i| i.content_id.eq_ignore_ascii_case(name.trim()))
+            .find(|i| i.content_id.eq_ignore_ascii_case(name))
             .filter(|i| PICTURE_TYPES.contains(&i.content_type.as_str()))
         {
             out.push_str(&format!(
@@ -546,9 +563,8 @@ fn with_inline_images(html: &str, images: &[InlineImage]) -> String {
                 image.content_type, image.data
             ));
         }
-        rest = &rest[start + length + 1..];
     }
-    out.push_str(rest);
+    out.push_str(&html[from..]);
 
     out
 }
@@ -559,8 +575,27 @@ async fn attachments(context: Context, args: Attachments) -> Result<Value, Comma
         .map_err(failed)?;
     let mailbox = context.open(&account).await.map_err(failed)?;
     let rows = attached(&mailbox, &args.message_id).await?;
+    // Beside the sender's name for each file goes the name it would be
+    // saved under, and whether a file of that name runs. Whatever warns
+    // about a file goes by these, so it warns about the file that is
+    // really written.
+    let listed: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let saved_name = crate::saving::safe_name(&row.name);
+            // An attached message, event or contact is saved as one, with
+            // `.eml`, `.ics` or `.vcf` on the end, and a link is not saved.
+            let can_run = row.kind == "file" && crate::saving::can_run(&saved_name);
+            let mut listed = serde_json::to_value(row).unwrap_or_default();
+            if let Some(listed) = listed.as_object_mut() {
+                listed.insert("saved_name".to_owned(), json!(saved_name));
+                listed.insert("can_run".to_owned(), json!(can_run));
+            }
+            listed
+        })
+        .collect();
 
-    Ok(json!({ "attachments": rows, "note": UNTRUSTED_ATTACHMENTS }))
+    Ok(json!({ "attachments": listed, "note": UNTRUSTED_ATTACHMENTS }))
 }
 
 async fn save_attachment(context: Context, args: SaveAttachment) -> Result<Value, CommandError> {
@@ -703,7 +738,7 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
                 RemoteContent::Allowed => context.images.inline(&clean.html).await,
                 RemoteContent::Blocked => (clean.html, 0),
             };
-            let content = if content.contains(CID) {
+            let content = if has_inline_images(&content) {
                 let images = inline_images(&mailbox, &args.message_id).await;
                 with_inline_images(&content, &images)
             } else {
@@ -711,7 +746,16 @@ async fn get_message(context: Context, args: GetMessage) -> Result<Value, Comman
             };
             json!({ "format": "html", "content": content, "styles": clean.styles, "blocked_remote_content": clean.blocked_remote + missing })
         }
-        _ => json!({ "format": "text", "content": as_text(&body), "blocked_remote_content": 0 }),
+        _ => {
+            // Words the message hides from the person reading it are not
+            // given out as what it says.
+            let (content, hidden) = if body.content_type == "html" {
+                brolga_mail::html_to_visible_text(&body.content)
+            } else {
+                (body.content.clone(), false)
+            };
+            json!({ "format": "text", "content": content, "blocked_remote_content": 0, "hidden_text_left_out": hidden })
+        }
     };
 
     let meeting = if row.is_meeting {
@@ -1293,7 +1337,9 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             title: "List a message's attachments".to_owned(),
             description: "What is attached to a message, without the contents: each attachment's id, name, type and size in bytes. \
                           `kind` is file, item (an attached message, event or contact) or reference (a link to a file kept elsewhere). \
-                          `is_inline` marks one shown within the body, such as a picture in a signature. The first time, this needs the network."
+                          `is_inline` marks one shown within the body, such as a picture in a signature. `name` is the sender's own word for the file; \
+                          `saved_name` is the plain file name it would be saved under, and `can_run` says whether a file of that name is a program or can run one. \
+                          The first time, this needs the network."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -1320,9 +1366,11 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "content_type": { "type": "string" },
                                 "size": { "type": "integer" },
                                 "is_inline": { "type": "boolean" },
-                                "kind": { "enum": ["file", "item", "reference"] }
+                                "kind": { "enum": ["file", "item", "reference"] },
+                                "saved_name": { "type": "string", "description": "The file name it is saved under: the sender's, cut down to a plain name, with nothing in it that hides what kind of file it is. An item gains `.eml`, `.ics` or `.vcf` when it is saved." },
+                                "can_run": { "type": "boolean", "description": "True for a file whose saved name is a program's, or one that can run a program when opened." }
                             },
-                            "required": ["id", "name", "content_type", "size", "is_inline", "kind"]
+                            "required": ["id", "name", "content_type", "size", "is_inline", "kind", "saved_name", "can_run"]
                         }
                     },
                     "note": { "type": "string" }
@@ -1379,7 +1427,9 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             description: "One message with its body. The body comes as plain text unless format is `html`, which gives HTML with \
                           everything unsafe removed. Remote images are taken out unless allow_remote_content is true, \
                           when Brolga fetches them itself and puts them in the message; \
-                          `blocked_remote_content` says how many were left out. Reading a message here does not mark it as read."
+                          `blocked_remote_content` says how many were left out. An agent cannot ask for remote images: that is the person's to choose. \
+                          As plain text the body is the words a person reading the message would see: words styled so as not to show are left out, \
+                          and `hidden_text_left_out` says when some were. Reading a message here does not mark it as read."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -1412,7 +1462,8 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                             "format": { "type": "string", "enum": ["text", "html"] },
                             "content": { "type": "string" },
                             "styles": { "type": "string", "description": "The message's own style sheets, made safe, as CSS. For showing the message in a frame of its own: put anywhere else it would style more than the message." },
-                            "blocked_remote_content": { "type": "integer" }
+                            "blocked_remote_content": { "type": "integer" },
+                            "hidden_text_left_out": { "type": "boolean", "description": "With format `text`: true when the message held words styled so that its reader would not see them, which are not in `content`." }
                         },
                         "required": ["format", "content", "blocked_remote_content"]
                     },

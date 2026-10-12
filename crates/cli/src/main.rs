@@ -36,6 +36,10 @@ enum Command {
         json: bool,
     },
     /// Run one command and print what it gives back as JSON.
+    ///
+    /// This runs the command as you, with none of the limits `mcp` puts on an agent: no access
+    /// level, no asking first, no record. Answering an agent's question is the one thing it
+    /// cannot do: that is done in the app's window.
     Run {
         /// The command's id, such as `app.version`.
         id: String,
@@ -69,6 +73,9 @@ enum Command {
         account: Option<String>,
     },
     /// Serve the commands as MCP tools on standard input and output.
+    ///
+    /// The access level and the asking bind an agent whose only way to Brolga is this server. An
+    /// agent that can also run programs as you can run `brolga-cli run` itself, which has no limits.
     Mcp {
         /// Only work through the running app, so it shows what the agent does. Fails if the app is not running.
         #[arg(long)]
@@ -77,8 +84,9 @@ enum Command {
         /// `draft` lets it also write drafts, which reach nobody until sent; `full` lets it change the mailbox.
         #[arg(long, default_value = "read")]
         access: AgentAccess,
-        /// Let the agent run commands that reach other people or cannot be undone, such as sending.
-        /// Without this they are refused whatever the access.
+        /// Let the agent run commands that reach other people or cannot be undone, such as sending,
+        /// without asking you. Without this, and with `--access full`, each one is put to you in the
+        /// app's window and runs only if you allow it; with no window open the answer is no.
         #[arg(long)]
         allow_consequential: bool,
         /// The most messages the agent may send in any hour.

@@ -185,7 +185,8 @@ export interface FakeCore {
     /** What is in the calendar. */
     events?: FakeEvent[];
     /** What agents are waiting for the user's say-so on. */
-    asking?: { id: number; client: string; command: string; args: Record<string, unknown> }[];
+    /** `whole` is the arguments with every word, and `draft` the message a send is about: what only the window is given. */
+    asking?: { id: number; client: string; command: string; args: Record<string, unknown>; whole?: Record<string, unknown>; draft?: Record<string, unknown> }[];
     /** Microsoft 365 cannot be reached. */
     offline?: boolean;
     /** Mailboxes other people have shared with an account. */
@@ -816,7 +817,11 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 if (!found) throw { code: "failed", message: "There is no such event on this computer." };
                 return { event: event(found), description: found.description ?? "", description_complete: !core.offline, repeat: found.repeat ?? null, note: "" };
             },
-            "app.confirmations.list": () => ({ questions: asking }),
+            "app.confirmations.list": () => ({ questions: asking.map(({ id, client, command, args }) => ({ id, client, command, args })) }),
+            "app.confirmations.get": (args) => {
+                const found = asking.find((each) => each.id === args.id);
+                return { question: found ? { id: found.id, client: found.client, command: found.command, args: found.whole ?? found.args, draft: found.draft ?? null } : null };
+            },
             "app.confirmations.answer": (args) => {
                 const at = asking.findIndex((each) => each.id === args.id);
                 if (at >= 0) asking.splice(at, 1);
@@ -1000,7 +1005,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { dismissed: true };
             },
             "mail.attachments.list": (args) => ({
-                attachments: mail.find((each) => each.id === args.message_id)?.attachments ?? [],
+                // As the core does: the name a file is saved under, and whether a file of that name runs.
+                attachments: (mail.find((each) => each.id === args.message_id)?.attachments ?? []).map((each) => {
+                    const saved_name = each.name.replace(/[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, "").replace(/[. ]+$/, "").trim() || "attachment";
+                    const can_run = each.kind === "file" && ["exe", "url", "docm", "html", "lnk"].includes(saved_name.split(".").pop()?.trim().toLowerCase() ?? "");
+                    return { ...each, saved_name, can_run };
+                }),
                 note: "",
             }),
             "mail.attachments.save": (args) => {

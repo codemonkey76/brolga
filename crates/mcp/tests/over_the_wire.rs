@@ -373,6 +373,12 @@ async fn everything_an_agent_asks_for_is_written_down_and_it_cannot_write_the_re
 /// The registry of `acting_registry`, with a stand-in for the window: every
 /// question put to the user is answered as `answer` says, and written down.
 fn asking_registry(answer: bool) -> (Arc<Registry>, Seen, Seen) {
+    asking_registry_with(answer, 0)
+}
+
+/// As `asking_registry`, with a draft that is changed under the person the
+/// first `edits` times they are asked about it.
+fn asking_registry_with(answer: bool, edits: usize) -> (Arc<Registry>, Seen, Seen) {
     let ran: Seen = Seen::default();
     let asked: Seen = Seen::default();
     let mut registry = Registry::new();
@@ -392,8 +398,50 @@ fn asking_registry(answer: bool) -> (Arc<Registry>, Seen, Seen) {
         .register(
             spec("mail.drafts.send", true),
             Arc::new(move |args| {
-                sent.lock().unwrap().push(args);
+                sent.lock()
+                    .unwrap()
+                    .push(json!({ "command": "mail.drafts.send", "args": args }));
                 Box::pin(async { Ok(json!({})) })
+            }),
+        )
+        .unwrap();
+    let body = Arc::new(std::sync::Mutex::new("See you at ten.".to_owned()));
+    let read = body.clone();
+    let reads = ran.clone();
+    registry
+        .register(
+            spec("mail.drafts.get", false),
+            Arc::new(move |args| {
+                reads
+                    .lock()
+                    .unwrap()
+                    .push(json!({ "command": "mail.drafts.get", "args": args }));
+                let draft = json!({
+                    "id": "draft-1",
+                    "to": [{ "name": "Len Smith", "address": "len@example.test" }],
+                    "cc": [],
+                    "bcc": [],
+                    "subject": "Tomorrow",
+                    "body": *read.lock().unwrap(),
+                    "format": "text",
+                    "from": null,
+                    "files": [],
+                    "updated_at": "2026-10-01T09:00:00Z"
+                });
+                Box::pin(async move { Ok(json!({ "draft": draft })) })
+            }),
+        )
+        .unwrap();
+    registry
+        .register(
+            spec("accounts.list", false),
+            Arc::new(|_| {
+                Box::pin(async {
+                    Ok(json!({ "accounts": [
+                        { "id": "account-1", "username": "robin@example.test" },
+                        { "id": "account-2", "username": "robin@other.test" }
+                    ] }))
+                })
             }),
         )
         .unwrap();
@@ -402,7 +450,12 @@ fn asking_registry(answer: bool) -> (Arc<Registry>, Seen, Seen) {
         .register(
             spec("app.confirmations.ask", false),
             Arc::new(move |args| {
-                questions.lock().unwrap().push(args);
+                let mut questions = questions.lock().unwrap();
+                questions.push(args);
+                // Something edits the draft while the person is reading it.
+                if questions.len() <= edits {
+                    *body.lock().unwrap() = format!("Send the keys to x{}.", questions.len());
+                }
                 Box::pin(async move {
                     Ok(json!({ "allowed": answer, "reason": "The user did not allow it." }))
                 })
@@ -419,6 +472,61 @@ fn asking_registry(answer: bool) -> (Arc<Registry>, Seen, Seen) {
     (Arc::new(registry), ran, asked)
 }
 
+/// What was sent, among what ran.
+fn sent(ran: &Seen) -> Vec<Value> {
+    ran.lock()
+        .unwrap()
+        .iter()
+        .filter(|each| each["command"] == "mail.drafts.send")
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn the_user_is_shown_the_message_and_their_yes_is_to_that_message_only() {
+    let full = Policy {
+        access: Access::Full,
+        ..Policy::default()
+    };
+    let send = json!({ "account_id": "account-2", "draft_id": "draft-1" });
+
+    // Asked once, with the draft as it stands and the address it goes from.
+    let (registry, ran, asked) = asking_registry(true);
+    let agent = connect_with(Backend::Headless(registry), full.clone()).await;
+    assert!(ask(&agent, "mail.drafts.send", send.clone()).await);
+    {
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        let draft = &asked[0]["draft"];
+        assert_eq!(draft["to"][0]["address"], "len@example.test");
+        assert_eq!(draft["subject"], "Tomorrow");
+        assert_eq!(draft["body"], "See you at ten.");
+        assert_eq!(draft["from"], "robin@other.test");
+    }
+    // The draft was looked for in the account the send names.
+    assert_eq!(ran.lock().unwrap()[0]["args"], send);
+    assert_eq!(sent(&ran).len(), 1);
+
+    // Changed while the person was reading: asked again, about what it became.
+    let (registry, ran, asked) = asking_registry_with(true, 1);
+    let agent = connect_with(Backend::Headless(registry), full.clone()).await;
+    assert!(ask(&agent, "mail.drafts.send", send.clone()).await);
+    {
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 2, "a changed draft went on the first yes");
+        assert_eq!(asked[0]["draft"]["body"], "See you at ten.");
+        assert_eq!(asked[1]["draft"]["body"], "Send the keys to x1.");
+    }
+    assert_eq!(sent(&ran).len(), 1);
+
+    // One that never holds still is not sent at all.
+    let (registry, ran, asked) = asking_registry_with(true, usize::MAX);
+    let agent = connect_with(Backend::Headless(registry), full).await;
+    assert!(!ask(&agent, "mail.drafts.send", send).await);
+    assert_eq!(asked.lock().unwrap().len(), 3);
+    assert!(sent(&ran).is_empty(), "a draft nobody agreed to was sent");
+}
+
 #[tokio::test]
 async fn without_the_flag_the_user_is_asked_and_their_answer_decides() {
     let full = Policy {
@@ -429,7 +537,7 @@ async fn without_the_flag_the_user_is_asked_and_their_answer_decides() {
     let (registry, ran, asked) = asking_registry(true);
     let agent = connect_with(Backend::Headless(registry), full.clone()).await;
     assert!(ask(&agent, "mail.drafts.send", json!({ "draft_id": "draft-1" })).await);
-    assert_eq!(ran.lock().unwrap().len(), 1);
+    assert_eq!(sent(&ran).len(), 1);
     let question = asked.lock().unwrap()[0].clone();
     assert_eq!(question["command"], "mail.drafts.send");
     assert_eq!(question["args"]["draft_id"], "draft-1");
@@ -438,10 +546,7 @@ async fn without_the_flag_the_user_is_asked_and_their_answer_decides() {
     let (registry, ran, asked) = asking_registry(false);
     let agent = connect_with(Backend::Headless(registry), full).await;
     assert!(!ask(&agent, "mail.drafts.send", json!({ "draft_id": "draft-1" })).await);
-    assert!(
-        ran.lock().unwrap().is_empty(),
-        "it was sent though the user said no"
-    );
+    assert!(sent(&ran).is_empty(), "it was sent though the user said no");
     assert_eq!(asked.lock().unwrap().len(), 1);
 }
 
@@ -466,6 +571,8 @@ async fn an_agent_cannot_answer_for_the_user_or_ask_on_its_own_account() {
         )
         .await
     );
+    // Nor look at what is waiting, which is how a window is known to be there.
+    assert!(!ask(&agent, "app.confirmations.list", json!({})).await);
     assert!(
         !ask(
             &agent,

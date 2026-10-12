@@ -82,6 +82,10 @@ export interface Attachment {
     /** Shown within the body, as a picture in a signature is. */
     is_inline: boolean;
     kind: "file" | "item" | "reference";
+    /** The plain file name it is saved under, with nothing in it that hides what kind of file it is. */
+    saved_name?: string;
+    /** Whether a file of that name is a program, or can run one. The core's to say. */
+    can_run?: boolean;
 }
 
 /** What a message about a meeting says of it. */

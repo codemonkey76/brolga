@@ -73,6 +73,45 @@ pub(crate) fn redacted(args: &Value) -> Value {
     cut(None, args)
 }
 
+/// Arguments as the person deciding is shown them: every word, since they
+/// cannot agree to what they cannot read. Only a file's contents, which
+/// nobody reads, are cut down to their size.
+fn for_the_person(args: &Value) -> Value {
+    match args {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| match value {
+                    Value::String(text) if key == "content_base64" => (
+                        key.clone(),
+                        json!(format!("[{} characters]", text.chars().count())),
+                    ),
+                    other => (key.clone(), for_the_person(other)),
+                })
+                .collect(),
+        ),
+        Value::Array(list) => Value::Array(list.iter().map(for_the_person).collect()),
+        other => other.clone(),
+    }
+}
+
+/// A draft with `text` added: its body as plain words, every one of them.
+/// A formatted body can hold words styled so as not to show, and they
+/// would be sent with the rest, so the person is shown those too.
+fn with_its_words(draft: &Value) -> Value {
+    let mut draft = draft.clone();
+    let body = draft["body"].as_str().unwrap_or_default();
+    let text = if draft["format"] == "html" {
+        brolga_mail::html_to_all_text(body)
+    } else {
+        body.to_owned()
+    };
+    if let Some(parts) = draft.as_object_mut() {
+        parts.insert("text".to_owned(), json!(text));
+    }
+
+    draft
+}
+
 /// How long a person is given to answer before the answer is no.
 const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
 /// A window that has not looked for questions for this long is not there
@@ -84,8 +123,12 @@ struct Question {
     id: u64,
     client: String,
     command: String,
-    /// As asked, with anything long or private cut down to its size.
+    /// As asked, whole. Only the window is given them so; the list of
+    /// what is waiting has them cut down, as the log does.
     args: Value,
+    /// For a message to be sent: the draft as the asker read it, which is
+    /// what the person is shown and what the asker holds the send to.
+    draft: Option<Value>,
     answer: tokio::sync::oneshot::Sender<bool>,
 }
 
@@ -102,6 +145,12 @@ struct Ask {
     client: String,
     command: String,
     args: Value,
+    draft: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct Get {
+    id: u64,
 }
 
 #[derive(Deserialize)]
@@ -126,7 +175,8 @@ fn register_questions(registry: &mut Registry) -> Result<(), RegistryError> {
             id: "app.confirmations.ask".to_owned(),
             title: "Ask the user's say-so".to_owned(),
             description: "Ask the person at the window whether an agent may run a command that reaches other people or cannot be undone, and wait for the answer. \
-                          Used by the MCP server; an agent cannot run it. The answer is no if nobody answers in two minutes, or if no window is open to ask in."
+                          Used by the MCP server; an agent cannot run it. The answer is no if nobody answers in two minutes, or if no window is open to ask in. \
+                          `draft` is for a message to be sent: the draft as it was just read, which the person is shown, and which the asker must find unchanged before it sends."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: false,
@@ -136,7 +186,8 @@ fn register_questions(registry: &mut Registry) -> Result<(), RegistryError> {
                 "properties": {
                     "client": { "type": "string", "maxLength": 200 },
                     "command": { "type": "string", "maxLength": 200 },
-                    "args": {}
+                    "args": {},
+                    "draft": { "type": ["object", "null"], "description": "For a send: the draft as `mail.drafts.get` gave it, with `from` filled in." }
                 },
                 "required": ["client", "command", "args"],
                 "additionalProperties": false
@@ -166,7 +217,8 @@ fn register_questions(registry: &mut Registry) -> Result<(), RegistryError> {
                         id,
                         client: ask.client,
                         command: ask.command,
-                        args: redacted(&ask.args),
+                        args: ask.args,
+                        draft: ask.draft,
                         answer,
                     });
                     id
@@ -193,7 +245,8 @@ fn register_questions(registry: &mut Registry) -> Result<(), RegistryError> {
             id: "app.confirmations.list".to_owned(),
             title: "Questions waiting".to_owned(),
             description: "What agents are waiting for the user's say-so on: for each, the program asking, the command and its arguments with anything private cut out. \
-                          The window asks this every few seconds, which is also how the client knows there is a window to ask in."
+                          The window asks this every few seconds, which is also how the client knows there is a window to ask in. \
+                          Only the window can run it: from the command line, the control channel or an agent it is refused."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -228,10 +281,67 @@ fn register_questions(registry: &mut Registry) -> Result<(), RegistryError> {
                 let waiting: Vec<Value> = questions
                     .waiting
                     .iter()
-                    .map(|q| json!({ "id": q.id, "client": q.client, "command": q.command, "args": q.args }))
+                    .map(|q| json!({ "id": q.id, "client": q.client, "command": q.command, "args": redacted(&q.args) }))
                     .collect();
 
                 Ok(json!({ "questions": waiting }))
+            })
+        }),
+    )?;
+
+    let getting = questions.clone();
+    registry.register(
+        CommandSpec {
+            id: "app.confirmations.get".to_owned(),
+            title: "Read a question whole".to_owned(),
+            description: "One question an agent is waiting on, as the person deciding needs to see it: the arguments with every word in them, \
+                          and for a message to be sent the draft as it stood when the question was asked. `question` is null if it is no longer waiting. \
+                          Only the window can run it: from the command line, the control channel or an agent it is refused."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "id": { "type": "integer" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": ["object", "null"],
+                        "properties": {
+                            "id": { "type": "integer" },
+                            "client": { "type": "string" },
+                            "command": { "type": "string" },
+                            "args": { "description": "As asked, whole. Only a file's contents are cut down to their size." },
+                            "draft": { "type": ["object", "null"], "description": "For a send: the draft the answer is about, with `text`, its body as plain words including any styled so as not to show. It is sent only if it still stands so." }
+                        },
+                        "required": ["id", "client", "command", "args", "draft"]
+                    }
+                },
+                "required": ["question"]
+            }),
+            examples: vec![json!({ "id": 0 })],
+        },
+        Arc::new(move |args| {
+            let questions = getting.clone();
+            Box::pin(async move {
+                let get: Get = serde_json::from_value(args).map_err(failed)?;
+                let questions = lock(&questions)?;
+                let question = questions.waiting.iter().find(|q| q.id == get.id).map(|q| {
+                    json!({
+                        "id": q.id,
+                        "client": q.client,
+                        "command": q.command,
+                        "args": for_the_person(&q.args),
+                        "draft": q.draft.as_ref().map(with_its_words),
+                    })
+                });
+
+                Ok(json!({ "question": question }))
             })
         }),
     )?;
@@ -240,8 +350,8 @@ fn register_questions(registry: &mut Registry) -> Result<(), RegistryError> {
         CommandSpec {
             id: "app.confirmations.answer".to_owned(),
             title: "Answer a question".to_owned(),
-            description: "Say whether an agent may go ahead with what it asked. The person at the window does this; an agent cannot. \
-                          `answered` is false if the question is no longer waiting."
+            description: "Say whether an agent may go ahead with what it asked. The person at the window does this, and only the window can run it: \
+                          from the command line, the control channel or an agent it is refused. `answered` is false if the question is no longer waiting."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: false,
@@ -406,6 +516,24 @@ pub(crate) fn register(registry: &mut Registry, db: Arc<GlobalDb>) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_person_deciding_is_shown_every_word_but_not_a_files_contents() {
+        let long = "word ".repeat(100);
+        let args = json!({
+            "subject": "Budget",
+            "body": long,
+            "attendees": [{ "address": "kim@example.test" }],
+            "files": [{ "name": "a.txt", "content_base64": "QUJD".repeat(1000) }]
+        });
+
+        let shown = for_the_person(&args);
+
+        assert_eq!(shown["subject"], "Budget");
+        assert_eq!(shown["body"], json!(long));
+        assert_eq!(shown["attendees"][0]["address"], "kim@example.test");
+        assert_eq!(shown["files"][0]["content_base64"], "[4000 characters]");
+    }
 
     #[test]
     fn what_is_private_or_long_is_kept_only_as_its_size() {

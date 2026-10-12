@@ -26,3 +26,28 @@ pub const NEVER: &[&str] = &[
     "app.open_link",
     "mail.trusted_senders.set",
 ];
+
+/// The person's own side of a say-so: seeing what an agent is waiting on,
+/// whole, and answering it. These run only when the window asks; the
+/// registry refuses them to the command line, the control channel and the
+/// MCP server alike, so a program that can reach the client from outside
+/// cannot answer for the person or pass itself off as a window.
+pub const WINDOW_ONLY: &[&str] = &[
+    "app.confirmations.answer",
+    "app.confirmations.get",
+    "app.confirmations.list",
+];
+
+/// Arguments only a person gives, by command: an agent that sets one is
+/// refused. Loading a message's remote pictures tells the sender it was
+/// opened, and is the person's to choose.
+pub const NEVER_ARGUMENTS: &[(&str, &str)] = &[
+    ("mail.messages.get", "allow_remote_content"),
+    ("mail.messages.get", "allow_for_trusted_senders"),
+];
+
+/// Commands that need the person's say-so only when they are given a
+/// certain argument. Changing the addresses a contact is written to at
+/// would send later mail astray, so that asks, while changing a phone
+/// number or a note does not.
+pub const ASKS_WHEN_GIVEN: &[(&str, &str)] = &[("contacts.update", "emails")];

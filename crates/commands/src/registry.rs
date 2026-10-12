@@ -90,6 +90,10 @@ pub enum CommandError {
     InvalidArguments { id: String, reason: String },
     #[error("{0}")]
     Failed(String),
+    #[error(
+        "`{0}` is the person's own to do, in Brolga's window. It cannot be run from the command line, the control channel or an agent."
+    )]
+    WindowOnly(String),
     #[error("`{id}` gave back something its own schema does not allow: {reason}")]
     InvalidResult { id: String, reason: String },
 }
@@ -101,6 +105,7 @@ impl CommandError {
             Self::UnknownCommand(_) => "unknown_command",
             Self::InvalidArguments { .. } => "invalid_arguments",
             Self::Failed(_) => "failed",
+            Self::WindowOnly(_) => "window_only",
             Self::InvalidResult { .. } => "invalid_result",
         }
     }
@@ -202,10 +207,30 @@ impl Registry {
         self.specs().find(|s| s.mcp_tool.as_deref() == Some(tool))
     }
 
-    /// Run a command. The arguments are checked against its schema before it
-    /// runs and what it gives back is checked after, so neither side of the
-    /// contract can drift without something saying so.
+    /// Run a command for a caller that is not the window: the command line,
+    /// the control channel, the MCP server. The arguments are checked against
+    /// its schema before it runs and what it gives back is checked after, so
+    /// neither side of the contract can drift without something saying so.
+    ///
+    /// What is the person's own side of a say-so
+    /// ([`WINDOW_ONLY`](crate::agents::WINDOW_ONLY)) is refused here, so that
+    /// nothing reaching the client from outside can answer for them.
     pub async fn execute(&self, id: &str, args: Value) -> Result<Value, CommandError> {
+        if crate::agents::WINDOW_ONLY.contains(&id) {
+            return Err(CommandError::WindowOnly(id.to_owned()));
+        }
+
+        self.run(id, args).await
+    }
+
+    /// Run a command for the window, which is where the person is. Only
+    /// the window's own shell calls this; everything else calls
+    /// [`execute`](Self::execute).
+    pub async fn execute_from_window(&self, id: &str, args: Value) -> Result<Value, CommandError> {
+        self.run(id, args).await
+    }
+
+    async fn run(&self, id: &str, args: Value) -> Result<Value, CommandError> {
         let entry = self
             .entries
             .get(id)
@@ -334,6 +359,29 @@ mod tests {
         assert_eq!(
             error,
             CommandError::UnknownCommand("mail.nothing".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn what_is_the_persons_own_runs_only_from_the_window() {
+        let mut registry = Registry::new();
+        let mut own = spec("app.confirmations.answer");
+        own.kind = CommandKind::Action;
+        registry.register(own, echo()).unwrap();
+        let args = json!({ "text": "yes" });
+
+        let outside = registry
+            .execute("app.confirmations.answer", args.clone())
+            .await
+            .unwrap_err();
+
+        assert_eq!(outside.code(), "window_only");
+        assert!(outside.to_string().contains("window"), "{outside}");
+        assert_eq!(
+            registry
+                .execute_from_window("app.confirmations.answer", args)
+                .await,
+            Ok(json!("yes"))
         );
     }
 

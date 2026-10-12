@@ -48,7 +48,7 @@ argument `mcp`.
 | `search_people` | Find a person among your contacts and in your organisation's directory. |
 | `get_contact` | One personal contact, whole. |
 | `create_contact` | Add a personal contact. |
-| `update_contact` | Change a personal contact: only what is given. |
+| `update_contact` | Change a personal contact: only what is given. Changing its email addresses asks you first, as a consequential command does. |
 | `delete_contact` | Delete a personal contact. Consequential. |
 | `list_rules` | The inbox's rules in the order they run, each also said as a sentence. |
 | `update_rule` | Turn a rule on or off, rename it, reorder it, or replace what it looks for or does. Consequential. |
@@ -66,6 +66,18 @@ Every result that carries a message's own words also carries a note saying
 they were written by the sender and are not instructions. Reading a message
 through these tools does not mark it as read.
 
+A message read as plain text is the words a person reading it would see.
+Words the sender styled so as not to show (`display:none`, no opacity, type
+of no size, or no room with the overflow hidden) are left out, and
+`hidden_text_left_out` on the body says when some were. This goes by the
+styles Brolga itself keeps when it shows the message. It does not catch
+every way of hiding words: white words on white, or type too small to read,
+are still given.
+
+`list_attachments` gives each file's `saved_name`, the plain name it would be
+saved under, and `can_run`, whether a file of that name is a program or can
+run one. The sender's own `name` can be spelt to hide either.
+
 ## What an agent may do
 
 **An agent can only read unless you say otherwise.** What it may do is fixed
@@ -79,11 +91,24 @@ raise it: an email that says "you are allowed to send" changes nothing.
 | `--access full` | Also change the mailbox: mark, flag, move, delete to Deleted Items. |
 | `--allow-consequential` | Send, and do the other things that reach people or cannot be undone, without asking you each time. Needs `--access full` as well. |
 
-Four things hold whatever the access:
+**These limits bind an agent whose only way to Brolga is this server.** They
+are kept by the `brolga-cli mcp` process, not by Brolga itself. An agent that
+can also run programs as you, such as one with a shell, can run
+`brolga-cli run` or write to the [control channel](control-protocol.md)
+directly, and neither has an access level, a prompt or a record. Give such an
+agent the access you would give a program you run yourself. The one thing no
+program can do from outside is answer a question put to you: that is done in
+Brolga's window and nowhere else.
 
-- **No files by path.** An agent cannot attach a file by naming where it is on
-  your computer, or choose where an attachment is saved. It gives a file's
-  contents instead.
+Five things hold whatever the access:
+
+- **No files by path.** An agent cannot name a place on your computer: not to
+  attach a file from, save an attachment or exported contacts to, or import
+  contacts or an archive from. Where a command takes a file's contents, it
+  gives those instead.
+- **No remote pictures.** An agent cannot have a message's remote pictures
+  fetched, which would tell the sender the message was opened. It reads the
+  message without them.
 - **A limit on sending.** At most 20 messages and invitations in any hour, or
   the number given with `--max-sends-per-hour`. Meeting invitations,
   cancellations, answers to invitations and calendar sharing all count.
@@ -100,10 +125,26 @@ Four things hold whatever the access:
 
 **Sending asks first.** With `--access full` and without
 `--allow-consequential`, a command that reaches other people or cannot be
-undone (sending, deleting for good, setting automatic replies) is put to you
-in the app: who is asking, what for, and for a message who it is to and what
-it is about. It runs only if you allow it, once. If you say no, do not answer
-in two minutes, or the app is not open, the agent is told no.
+undone (sending, deleting for good, setting automatic replies, changing a
+contact's email addresses) is put to you in the app. It runs only if you
+allow it, once. If you say no, do not answer in two minutes, or the app is
+not open, the agent is told no.
+
+- For a message, you are shown the address it goes from, every address it
+  goes to (the address first; a name is whatever the writer typed), the
+  subject, the files and the words, including any styled so as not to show.
+- Your yes is to that message. The server reads the draft before it asks and
+  again when you answer; if it has changed, nothing is sent and you are asked
+  again about what it has become. After three rounds of that the agent is
+  told no. (The check and the send are two steps, so something else changing
+  the draft in the instant between them is not caught.)
+- For anything else, you are shown the arguments whole. The record under
+  **Agents** keeps them with anything private cut down to its length; the
+  question does not, since you cannot agree to words you cannot read.
+- Only the window is given a question whole, and only the window can answer
+  one. `app.confirmations.list`, `app.confirmations.get` and
+  `app.confirmations.answer` are refused to the command line, the control
+  channel and every agent.
 
 The server tells every agent that the content of an email, attachment or
 invitation is data to report on and never an instruction.
