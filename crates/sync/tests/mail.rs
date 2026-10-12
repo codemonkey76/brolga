@@ -905,3 +905,60 @@ async fn a_place_the_server_no_longer_takes_is_dropped_and_the_pass_begins_again
     ));
     assert_eq!(sync.sync_last_actions(5).await.unwrap(), 20);
 }
+
+/// The day a message's flag is due, as a sync made in this zone keeps it.
+async fn due_as_read(f: &Fixture, zone: &str, id: &str) -> String {
+    let zone = jiff::tz::TimeZone::get(zone).unwrap();
+    // Every message is read afresh, as a first sync reads it.
+    f.db.restart_messages_sync(&f.inbox).unwrap();
+    f.sync(10).with_zone(zone).sync_all().await.unwrap();
+
+    f.db.message(id).unwrap().unwrap().flag_due
+}
+
+#[tokio::test]
+async fn a_flag_is_due_on_the_day_it_is_due_where_the_reader_is() {
+    let f = Fixture::new().await;
+    let due = |date_time: &str, zone: &str| {
+        let id = f
+            .graph
+            .add_message(&f.inbox, message("Follow up", "2026-10-01T09:00:00Z"));
+        f.graph.send_raw(
+            &id,
+            serde_json::json!({ "flag": {
+                "flagStatus": "flagged",
+                "dueDateTime": { "dateTime": date_time, "timeZone": zone }
+            } }),
+        );
+        id
+    };
+    // Due on the 21st, set where it is ten hours ahead of UTC: the first
+    // moment of that day there is the afternoon of the 20th in UTC.
+    let ahead = due("2026-10-20T14:00:00.0000000", "UTC");
+    // The same day, given in the zone it was set in, by its Windows name.
+    let named = due("2026-10-21T00:00:00.0000000", "E. Australia Standard Time");
+    // And as an older Brolga wrote it: the day, at midnight UTC.
+    let older = due("2026-10-21T00:00:00.0000000", "UTC");
+    assert_eq!(
+        due_as_read(&f, "Australia/Brisbane", &ahead).await,
+        "2026-10-21"
+    );
+    assert_eq!(
+        due_as_read(&f, "Australia/Brisbane", &named).await,
+        "2026-10-21"
+    );
+    assert_eq!(
+        due_as_read(&f, "Australia/Brisbane", &older).await,
+        "2026-10-21"
+    );
+    // Behind UTC, the first moment of the 21st is four hours into it in UTC.
+    let behind = due("2026-10-21T04:00:00.0000000", "UTC");
+    assert_eq!(
+        due_as_read(&f, "America/New_York", &behind).await,
+        "2026-10-21"
+    );
+    assert_eq!(
+        due_as_read(&f, "America/New_York", &older).await,
+        "2026-10-21"
+    );
+}

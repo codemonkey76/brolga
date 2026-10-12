@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use brolga_graph::{
-    DeltaItem, GraphClient, GraphError, MailFolder, Message, Next, Recipient, WELL_KNOWN_FOLDERS,
+    DateTimeTimeZone, DeltaItem, GraphClient, GraphError, MailFolder, Message, Next, Recipient,
+    WELL_KNOWN_FOLDERS,
 };
 use brolga_mail::html_to_text;
 use brolga_store::{AccountDb, Body, FolderChange, MessageChange, Round};
@@ -57,6 +58,8 @@ pub struct MailSync {
     graph: Arc<GraphClient>,
     db: Arc<AccountDb>,
     page_size: u32,
+    /// Where the person reading the mail is, for the day a flag is due.
+    zone: jiff::tz::TimeZone,
     doing: Mutex<Option<Doing>>,
 }
 
@@ -66,8 +69,15 @@ impl MailSync {
             graph,
             db,
             page_size: 100,
+            zone: jiff::tz::TimeZone::system(),
             doing: Mutex::new(None),
         }
+    }
+
+    /// Take this to be the zone the mail is read in, and not the system's.
+    pub fn with_zone(mut self, zone: jiff::tz::TimeZone) -> Self {
+        self.zone = zone;
+        self
     }
 
     /// Ask for this many messages a page. Smaller pages save progress more often.
@@ -265,7 +275,7 @@ impl MailSync {
             Err(other) => return Err(other.into()),
         };
 
-        let (changed, removed) = split(page.items, message_change);
+        let (changed, removed) = split(page.items, |message| message_change(message, &self.zone));
         let round = round(&page.next);
         self.db
             .apply_messages(folder_id, &changed, &removed, page.next.url(), round)?;
@@ -445,7 +455,39 @@ fn folder_change(folder: MailFolder) -> FolderChange {
     }
 }
 
-fn message_change(message: Message) -> MessageChange {
+/// The day a flag is due, `YYYY-MM-DD`, for someone reading in `zone`.
+///
+/// Graph gives the moment with the zone it is written in
+/// ("dateTimeTimeZone resource type", SOURCES.md), and "followupFlag
+/// resource type" and "Get message" name no way to ask for it in another.
+/// A day set where the reader is, is the first moment of that day there,
+/// which written in UTC is often a time on the day before. So the moment
+/// is read in the zone Graph names and the day taken where the reader is.
+///
+/// One moment is not treated so: midnight in UTC exactly. Brolga up to
+/// 0.1.10 wrote the day that way, and west of Greenwich that moment is the
+/// evening before. It is taken as the day it names. East of Greenwich that
+/// is the same day either way, and to the west the first moment of a day
+/// is never midnight in UTC, so a day set properly is not misread by it.
+fn flag_due_day(due: &DateTimeTimeZone, zone: &jiff::tz::TimeZone) -> Option<String> {
+    let written_in = due
+        .time_zone
+        .as_deref()
+        .filter(|zone| !zone.is_empty())
+        .unwrap_or("UTC");
+    let Some(moment) = brolga_calendar::utc(&due.date_time, written_in) else {
+        // A zone that is not known: the day as written is the best there is.
+        return due.date_time.get(..10).map(str::to_owned);
+    };
+    if moment.ends_with("T00:00:00Z") {
+        return moment.get(..10).map(str::to_owned);
+    }
+    let moment: jiff::Timestamp = moment.parse().ok()?;
+
+    Some(moment.to_zoned(zone.clone()).date().to_string())
+}
+
+fn message_change(message: Message, zone: &jiff::tz::TimeZone) -> MessageChange {
     let recipients = |list: Option<Vec<Recipient>>| {
         list.map(|list| {
             let list: Vec<_> = list
@@ -501,9 +543,8 @@ fn message_change(message: Message) -> MessageChange {
         flag_due: message.flag.as_ref().map(|flag| {
             flag.due_date_time
                 .as_ref()
-                .and_then(|due| due.date_time.get(..10))
+                .and_then(|due| flag_due_day(due, zone))
                 .unwrap_or_default()
-                .to_owned()
         }),
         flag_status: message.flag.and_then(|f| f.flag_status),
         categories: message
