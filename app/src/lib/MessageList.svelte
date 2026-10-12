@@ -56,6 +56,16 @@
 
     $effect(() => onSeen?.(first, last));
 
+    // While another screen is shown the list is hidden and has no height,
+    // and what is hidden does not keep its place. It is put back where it
+    // was when the list is shown again.
+    function scrolled() {
+        if (viewport && viewport.clientHeight > 0) scrollTop = viewport.scrollTop;
+    }
+    $effect(() => {
+        if (height > 0 && viewport && viewport.scrollTop !== scrollTop) viewport.scrollTop = scrollTop;
+    });
+
     $effect(() => {
         for (const index of visible) {
             if (!rows[index]) {
@@ -132,7 +142,7 @@
     tabindex="0"
     bind:this={viewport}
     bind:clientHeight={height}
-    onscroll={() => (scrollTop = viewport?.scrollTop ?? 0)}
+    onscroll={scrolled}
     onkeydown={keydown}
 >
     <div class="spacer" style:height="{total * ROW}px">

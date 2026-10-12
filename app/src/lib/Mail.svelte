@@ -9,9 +9,12 @@
     import Toolbar from "./Toolbar.svelte";
     import { type Answer, type Proposed, respond } from "./calendar";
     import { inDialog, typing } from "./typing";
+    import { untrack } from "svelte";
 
     interface Props {
         accounts: Account[];
+        /** False while another screen is shown. Mail is then kept as it is, out of sight, and does nothing. */
+        shown?: boolean;
         /** Show a day in the calendar. */
         onCalendar: (day: Date) => void;
         /** A message a mailto: link asked to be started. */
@@ -20,7 +23,7 @@
         onLinked?: () => void;
     }
 
-    let { accounts, onCalendar, linked = null, onLinked }: Props = $props();
+    let { accounts, shown = true, onCalendar, linked = null, onLinked }: Props = $props();
 
     const PAGE = 100;
     let accountId = $state<string | null>(null);
@@ -1058,13 +1061,24 @@
         }
     }
 
-    // New mail is fetched every two minutes while the window is open, and
-    // when the window is come back to after half a minute or more away.
+    // New mail is fetched every two minutes while the window is open on
+    // mail, and when it is come back to after half a minute or more away.
+    // Come back to sooner from another screen, what is on this computer is
+    // shown as it now is, without a sync.
     const EVERY = 2 * 60_000;
     let lastSync = 0;
     $effect(() => {
-        const timer = setInterval(sync, EVERY);
+        if (!shown) return;
         const back = () => Date.now() - lastSync > 30_000 && sync();
+        untrack(() => {
+            // Not at the start, when the first account is still to be chosen and is then synced.
+            if (!accountId || back()) return;
+            loadFolders()
+                .then(refresh)
+                .then(loadDrafts)
+                .catch(() => {});
+        });
+        const timer = setInterval(sync, EVERY);
         window.addEventListener("focus", back);
 
         return () => {
@@ -1074,8 +1088,8 @@
     });
 
     function keydown(event: KeyboardEvent) {
-        // A question or the palette over the window has the keys, not the mail behind it.
-        if (inDialog(event)) return;
+        // Another screen is shown, or a question or the palette over the window has the keys, not the mail behind it.
+        if (!shown || inDialog(event)) return;
         if (event.key === "F9") {
             event.preventDefault();
             sync();
@@ -1170,9 +1184,10 @@
     }
 
     // Show what is already on this computer at once, then fetch what is new.
+    // The same when the account shown has been removed: the first of those left is.
     $effect(() => {
         const firstAccount = accounts[0];
-        if (!accountId && firstAccount) {
+        if (firstAccount && !accounts.some((each) => each.id === accountId)) {
             chooseAccount(firstAccount.id).then(sync);
         }
     });
@@ -1180,7 +1195,7 @@
 
 <svelte:window onkeydown={keydown} />
 
-<div class="mailview">
+<div class="mailview" hidden={!shown}>
 <Toolbar
     message={writing || many ? null : current}
     several={writing ? [] : chosen}
@@ -1462,6 +1477,10 @@
         min-height: 0;
         display: flex;
         flex-direction: column;
+    }
+
+    .mailview[hidden] {
+        display: none;
     }
 
     .mail {

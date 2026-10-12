@@ -1889,3 +1889,55 @@ test("choosing another account leaves nothing of the one before: no message come
     await expect(pane).toContainText("Select a message to read it.");
     await expect(page.getByRole("button", { name: "Reply", exact: true })).toBeDisabled();
 });
+
+test("mail is found as it was left after a look at another screen: the folder, the place in it, the message, and no new sync", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(300)] });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await folder(page, "Archive").click();
+    await messages(page).evaluate((list) => (list.scrollTop = 68 * 150));
+    await rows.filter({ hasText: "Archived message 152" }).click();
+    await expect(pane.getByRole("heading")).toHaveText("Archived message 152");
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    const syncs = await asked(page, "mail.sync");
+
+    await page.getByRole("button", { name: "People" }).click();
+    await expect(page.getByRole("searchbox").first()).toBeVisible();
+    await expect(messages(page)).toBeHidden();
+    // The keys for mail do nothing to it while it is out of sight.
+    await page.keyboard.press("Delete");
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+
+    await expect(page.getByText("Archive · 300 messages")).toBeVisible();
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Archived message 152");
+    await expect(pane.getByRole("heading")).toHaveText("Archived message 152");
+    expect(await asked(page, "mail.sync")).toBe(syncs);
+    expect(await asked(page, "mail.messages.move")).toBe(0);
+});
+
+test("a message being written is still there after a look at another screen", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Half written");
+
+    await page.getByRole("button", { name: "People" }).click();
+    await expect(form).toBeHidden();
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Half written");
+});
+
+test("the calendar opens on a meeting's day when asked to from its message, and on today the next time", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));
+    await withCore(page, { accounts: [robin], mail: [invitation, ...inbox] });
+    await messages(page).getByRole("option").first().click();
+
+    await page.getByRole("region", { name: "Meeting" }).getByRole("button", { name: "Show in calendar" }).click();
+    const heading = page.getByRole("region", { name: "Calendar" }).getByRole("heading", { level: 1 });
+    await expect(heading).toHaveText(/12 Oct – 16 Oct 2026|Oct 12 – Oct 16 2026/);
+
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await expect(heading).toHaveText(/5 Oct – 9 Oct 2026|Oct 5 – Oct 9 2026/);
+});

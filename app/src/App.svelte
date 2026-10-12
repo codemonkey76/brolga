@@ -22,6 +22,10 @@
     let started = $state(false);
     /** A day the calendar is to open on, when it is come to from a message about a meeting. */
     let calendarDay = $state<Date | null>(null);
+    // The day is for that one visit: once the calendar is left, the next opens on today.
+    $effect(() => {
+        if (view === "calendar") return () => (calendarDay = null);
+    });
 
     /** Mailboxes other people have shared, which are read beside the accounts' own. */
     let shared = $state<SharedMailbox[]>([]);
@@ -171,11 +175,12 @@
     </nav>
 
     <main>
-        {#if !started}
-            <p class="muted starting" role="status">Starting…</p>
-        {:else if view === "mail" && accounts.length > 0}
+        {#if started && accounts.length > 0}
+            <!-- Kept while another screen is shown, and only hidden, so that it is found as it was left:
+                 the folder, a search, the lines chosen, what can be undone, a message being written. -->
             <Mail
                 accounts={mailboxes(accounts, shared, false, archives)}
+                shown={view === "mail"}
                 linked={asked}
                 onLinked={() => (asked = null)}
                 onCalendar={(day) => {
@@ -183,6 +188,11 @@
                     view = "calendar";
                 }}
             />
+        {/if}
+        {#if !started}
+            <p class="muted starting" role="status">Starting…</p>
+        {:else if view === "mail" && accounts.length > 0}
+            <!-- Mail, above. -->
         {:else if view === "calendar" && accounts.length > 0}
             <Calendar accounts={mailboxes(accounts, shared, true)} startOn={calendarDay} writing={newEvent} />
         {:else if view === "people" && accounts.length > 0}
