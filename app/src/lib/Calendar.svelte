@@ -449,7 +449,7 @@
                         aria-label={day.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}
                         onclick={() => (anchor = day)}
                     >
-                        {day.getDate()}
+                        <span class="num">{day.getDate()}</span>
                     </button>
                 {/each}
             </div>
@@ -1058,19 +1058,45 @@
     }
 
     .mini-grid button {
+        display: grid;
+        place-items: center;
+        margin: 1px 0;
+        padding: 0;
         font-size: 0.75rem;
-        border-radius: 999px;
+        border-radius: 0;
+    }
+
+    .mini-grid .num {
+        display: grid;
+        place-items: center;
+        width: 1.45rem;
+        height: 1.45rem;
+        border-radius: 50%;
     }
 
     .mini-grid button.outside {
         color: var(--muted);
     }
 
+    /* The days on show are one band along each week, rounded where it starts and where it ends. */
     .mini-grid button.shown {
         background: color-mix(in srgb, var(--accent) 16%, transparent);
     }
 
-    .mini-grid button.today {
+    .mini-grid button.shown:nth-child(7n + 1),
+    .mini-grid button.shown:not(.shown + .shown) {
+        border-top-left-radius: 999px;
+        border-bottom-left-radius: 999px;
+    }
+
+    .mini-grid button.shown:nth-child(7n),
+    .mini-grid button.shown:not(:has(+ .shown)) {
+        border-top-right-radius: 999px;
+        border-bottom-right-radius: 999px;
+    }
+
+    /* Today is a circle, on the band or off it. */
+    .mini-grid button.today .num {
         background: var(--accent-fill);
         color: var(--on-accent);
         font-weight: 700;
