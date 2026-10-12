@@ -8,12 +8,15 @@ open.
 
 | System | Endpoint |
 |---|---|
-| Linux | The Unix socket `$XDG_RUNTIME_DIR/brolga/control.sock` |
+| Linux | The Unix socket `$XDG_RUNTIME_DIR/brolga/control.sock`, or `~/.cache/brolga/control.sock` where there is no runtime directory |
 | macOS | The Unix socket `$TMPDIR/brolga/control.sock` |
 | Windows | The named pipe `\\.\pipe\brolga-control-<user name>` |
 
 On Linux and macOS the `brolga` directory is readable by its owner only, which
-keeps other users of the machine out.
+keeps other users of the machine out. Brolga makes it so, and will not use a
+`brolga` that is a link, or that belongs to another user: it fails to start
+the channel instead. A shared temporary directory such as `/tmp` is never
+used on Linux.
 
 ## Who may call
 
