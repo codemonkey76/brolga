@@ -328,10 +328,18 @@
         }
     }
 
-    function keydown(event: KeyboardEvent) {
+    /** The boxes of one line each, and then the words: where Enter goes on to. */
+    const FIELDS = 'input[type="text"], textarea, [contenteditable="true"]';
+
+    function keydown(event: KeyboardEvent & { currentTarget: HTMLFormElement }) {
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
             send();
+        } else if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type === "text") {
+            // Enter in To or Subject is not Send: it goes on to the next thing to fill in.
+            event.preventDefault();
+            const fields = [...event.currentTarget.querySelectorAll<HTMLElement>(FIELDS)];
+            fields[fields.indexOf(event.target) + 1]?.focus();
         } else if (event.key === "Escape") {
             event.preventDefault();
             close();
@@ -346,7 +354,7 @@
     class="compose"
     class:over
     aria-label={titles[start.kind]}
-    onsubmit={(event) => (event.preventDefault(), send())}
+    onsubmit={(event) => event.preventDefault()}
     onkeydown={keydown}
     oninput={changed}
     ondragover={(event) => {
@@ -359,7 +367,7 @@
     ondrop={dropped}
 >
     <div class="bar">
-        <button type="submit" class="primary" disabled={sending} title="Ctrl+Enter"><Send size={16} aria-hidden="true" />{sending ? "Sending…" : "Send"}</button>
+        <button type="button" class="primary" disabled={sending} title="Ctrl+Enter" onclick={send}><Send size={16} aria-hidden="true" />{sending ? "Sending…" : "Send"}</button>
         <button type="button" disabled={choosing} onclick={attach}><Paperclip size={16} aria-hidden="true" />{choosing ? "Choosing…" : "Attach…"}</button>
         <button type="button" onclick={close} title="Escape">Close</button>
         <button type="button" class:danger={sure} onclick={discard}>{sure ? "Discard for good?" : "Discard"}</button>

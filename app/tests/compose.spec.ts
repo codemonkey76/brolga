@@ -115,6 +115,34 @@ test("someone invited with a comma in their name is still one person when the me
     ]);
 });
 
+test("Enter in a line of the heading goes on to the next, and does not send", async ({ page }) => {
+    const form = await newMessage(page);
+    const to = form.getByRole("combobox", { name: "To" });
+    const subject = form.getByRole("textbox", { name: "Subject" });
+
+    await to.fill("jo@example.test");
+    await to.press("Enter");
+    await expect(subject).toBeFocused();
+    await page.keyboard.type("Lunch on Friday");
+    await page.keyboard.press("Enter");
+    await expect(form.getByRole("textbox", { name: "Message" })).toBeFocused();
+    await page.keyboard.type("Are you free?");
+
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+    expect(await sent(page)).toHaveLength(0);
+    await expect(form).toBeVisible();
+
+    // With the copies showing, To goes on to Cc.
+    await form.getByRole("button", { name: "Cc Bcc" }).click();
+    await to.press("Enter");
+    await expect(form.getByRole("combobox", { name: "Cc", exact: true })).toBeFocused();
+
+    // Sending is still one key away.
+    await page.keyboard.press("Control+Enter");
+    await expect(form).toHaveCount(0);
+    expect((await sent(page))[0]).toMatchObject({ subject: "Lunch on Friday", to: [{ name: null, address: "jo@example.test" }] });
+});
+
 test("two people suggested with one address are both listed, and the list still changes", async ({ page }) => {
     const twice = [
         { name: "Sam Taylor", address: "sam.taylor@example.test" },
