@@ -433,6 +433,47 @@ test("an event that cannot be saved says so and the form is kept", async ({ page
     await expect(form.getByRole("alert")).toContainText("could not be reached");
     await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Dentist");
     await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Discard for good?" }).click();
+    await expect(form).toHaveCount(0);
+});
+
+test("Escape closes a form with nothing written in it, and asks before one with something is thrown away", async ({ page }) => {
+    await calendar(page);
+    const form = page.getByRole("form", { name: "New event" });
+    const asked = page.getByRole("alertdialog", { name: "Discard the event" });
+
+    // Nothing written: nothing to ask about.
+    await page.keyboard.press("n");
+    await expect(form).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
+
+    // Something written: it is asked, and Keep or Escape again leaves it as it was, back in the box it was typed in.
+    await page.keyboard.press("n");
+    await form.getByRole("textbox", { name: "Subject" }).fill("Dentist");
+    await page.keyboard.press("Escape");
+    await expect(asked).toBeVisible();
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Dentist");
+    await asked.getByRole("button", { name: "Keep" }).click();
+    await expect(asked).toHaveCount(0);
+    await expect(form.getByRole("textbox", { name: "Subject" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect(asked).toHaveCount(0);
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Dentist");
+
+    // Escape in a date box, a list or the box for a new calendar's name is for that, and the form is not asked about.
+    await form.getByLabel("Start day").press("Escape");
+    await form.getByLabel("Reminder").press("Escape");
+    await page.getByRole("button", { name: "New calendar" }).click();
+    await page.getByLabel("Name of the new calendar").press("Escape");
+    await expect(page.getByLabel("Name of the new calendar")).toHaveCount(0);
+    await expect(asked).toHaveCount(0);
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Dentist");
+
+    // Thrown away only once it is said to be.
+    await form.getByRole("textbox", { name: "Location" }).press("Escape");
+    await asked.getByRole("button", { name: "Discard for good?" }).click();
     await expect(form).toHaveCount(0);
 });
 

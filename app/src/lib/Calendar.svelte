@@ -382,9 +382,42 @@
         }
     }
 
+    /** True once something in the form has been typed or chosen: there is then something to lose. */
+    let touched = false;
+    /** Escape was pressed on a form with something written in it, and it is being asked whether to throw that away. */
+    let leaving = $state(false);
+    /** Where the keyboard was when it was asked, to go back there if the form is kept. */
+    let wasAt: HTMLElement | null = null;
+
+    // Each form opened starts with nothing written in it.
+    $effect(() => {
+        void editing;
+        void scope;
+        void selected?.id;
+        touched = false;
+        leaving = false;
+    });
+
+    function keepWriting() {
+        leaving = false;
+        wasAt?.focus();
+    }
+
+    /** Escape that is for something smaller than the form: a list or a picker that is open, or one of the small forms beside the calendar. */
+    const forItself = (target: EventTarget | null) =>
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLInputElement && ["date", "time", "datetime-local"].includes(target.type)) ||
+        (target instanceof Element && target.closest(".naming, .holidays, .drop") !== null);
+
     function keydown(event: KeyboardEvent) {
         if (event.key === "Escape" && editing) {
-            editing = null;
+            if (forItself(event.target)) return;
+            // The form goes at once only if nothing would go with it.
+            if (leaving) keepWriting();
+            else if (touched) {
+                wasAt = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                leaving = true;
+            } else editing = null;
             return;
         }
         if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
@@ -586,7 +619,15 @@
     </section>
 
     {#if editing}
-        <aside class="details" aria-label="Event">
+        <aside class="details" aria-label="Event" oninput={() => (touched = true)} onchange={() => (touched = true)}>
+            {#if leaving}
+                <div class="leaving" role="alertdialog" aria-label="Discard the event">
+                    <span>Discard what you have written?</span>
+                    <button type="button" class="danger" onclick={() => (editing = null)}>Discard for good?</button>
+                    <!-- svelte-ignore a11y_autofocus -->
+                    <button type="button" autofocus onclick={keepWriting}>Keep</button>
+                </div>
+            {/if}
             {#key editing + scope + (selected?.id ?? "")}
                 <EventEditor
                     accountId={accountId ?? ""}
@@ -817,6 +858,27 @@
         border-bottom: 1px solid var(--line);
         background: var(--raised);
         font-size: 0.9rem;
+    }
+
+    /* Over the top of the form, wherever it has been scrolled to. */
+    .leaving {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        margin-bottom: 0.5rem;
+        padding: 0.5rem;
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        background: var(--raised);
+        font-size: 0.85rem;
+    }
+
+    .leaving span {
+        flex-basis: 100%;
     }
 
     .bar .new {
