@@ -1,6 +1,8 @@
 <script lang="ts">
     import { Bold, Image, Italic, Link, List, ListOrdered, Paperclip, Send, Underline, X } from "@lucide/svelte";
+    import { onDestroy } from "svelte";
     import { chooseFiles, say } from "./commands";
+    import { isAddress, lineOf, peopleOn } from "./people-line";
     import Recipients from "./Recipients.svelte";
     import { type Draft, type DraftFile, type Person, attachContent, attachFile, base64Of, discardDraft, editDraft, readFile, removeFile, sendDraft, size } from "./mail";
 
@@ -18,7 +20,9 @@
     let { accountId, draft, fromChoices = [], onDone, onKept }: Props = $props();
 
     // svelte-ignore state_referenced_locally
-    let from = $state(draft.from ?? fromChoices[0] ?? "");
+    let from = $state(fromChoices.find((each) => each.toLowerCase() === draft.from?.toLowerCase()) ?? draft.from ?? fromChoices[0] ?? "");
+    /** The addresses offered, and the one the draft is from where it is none of them: a draft says who it is from, whoever that is. */
+    const froms = $derived(from && !fromChoices.includes(from) ? [...fromChoices, from] : fromChoices);
 
     /** Kept at once: who it is from is not something to lose to a slow save. */
     async function chooseFrom(address: string) {
@@ -30,25 +34,13 @@
         }
     }
 
-    /** People as they are typed: `Sam Taylor <sam@example.test>, jo@example.test`. */
-    const typed = (people: Person[]) => people.map((p) => (p.name && p.name !== p.address ? `${p.name} <${p.address}>` : p.address)).join(", ");
-    const people = (text: string): Person[] =>
-        text
-            .split(/[,;\n]/)
-            .map((each) => each.trim())
-            .filter(Boolean)
-            .map((each) => {
-                const named = each.match(/^(.*)<([^<>]*)>$/);
-                return named ? { name: named[1].trim().replace(/^"|"$/g, "") || null, address: named[2].trim() } : { name: null, address: each };
-            });
-
     // The draft is this component's to edit from here on: a new draft is a
     // new component (it is keyed by the draft's id), not new props.
     // svelte-ignore state_referenced_locally
     const start = draft;
-    let to = $state(typed(start.to));
-    let cc = $state(typed(start.cc));
-    let bcc = $state(typed(start.bcc));
+    let to = $state(lineOf(start.to));
+    let cc = $state(lineOf(start.cc));
+    let bcc = $state(lineOf(start.bcc));
     let subject = $state(start.subject);
     let body = $state(start.body);
     let format = $state<Draft["format"]>(start.format ?? "text");
@@ -240,7 +232,12 @@
         if (choosing) return;
         choosing = true;
         try {
-            const paths = await chooseFiles().catch(() => []);
+            let paths: string[] = [];
+            try {
+                paths = await chooseFiles();
+            } catch (failure) {
+                problem = say(failure);
+            }
             for (const path of paths) {
                 try {
                     files = [...files, await attachFile(accountId, start.id, path)];
@@ -269,6 +266,8 @@
     let problem = $state<string | null>(start.state === "failed" ? `This was not sent. ${start.error ?? ""}` : null);
     let sending = $state(false);
     let sure = $state(false);
+    /** Lets go of `sure` a few seconds after it was asked, so a later click does not throw the draft away unasked. */
+    let unsure: ReturnType<typeof setTimeout> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let first = $state<HTMLInputElement>();
     let words = $state<HTMLTextAreaElement>();
@@ -288,14 +287,18 @@
         timer = setTimeout(keep, 800);
     }
 
+    /** The people on a line whose address is whole. The core keeps none of a line with one on it that is not. */
+    const whole = (line: string): Person[] => peopleOn(line).filter((each) => isAddress(each.address));
+    /** What is typed where an address goes and is not one, or not yet. It stays in its box, and is not kept. */
+    const unfinished = $derived([to, cc, bcc].flatMap((line) => peopleOn(line).filter((each) => !isAddress(each.address)).map((each) => each.address)));
+
     /** Keep what is written. True if it was kept. */
     async function keep(): Promise<boolean> {
         clearTimeout(timer);
         if (kept === "kept") return true;
         kept = "keeping";
         try {
-            await editDraft(accountId, start.id, { to: people(to), cc: people(cc), bcc: people(bcc), subject, body, format });
-            await dropUnused();
+            await editDraft(accountId, start.id, { to: whole(to), cc: whole(cc), bcc: whole(bcc), subject, body, format });
             if (kept === "keeping") kept = "kept";
             problem = null;
             onKept();
@@ -312,6 +315,11 @@
         sending = true;
         try {
             if (!(await keep())) return;
+            if (unfinished.length > 0) {
+                problem = `\`${unfinished[0]}\` is not an email address. Finish it or take it out before sending.`;
+                return;
+            }
+            await dropUnused();
             await sendDraft(accountId, start.id);
             onDone("sent");
         } catch (failure) {
@@ -322,27 +330,48 @@
     }
 
     async function close() {
-        if (await keep()) onDone("closed");
+        if (!(await keep())) return;
+        await dropUnused();
+        onDone("closed");
     }
 
     async function discard() {
+        clearTimeout(unsure);
         if (!sure) {
             sure = true;
+            unsure = setTimeout(() => (sure = false), 5_000);
             return;
         }
         clearTimeout(timer);
         try {
             await discardDraft(accountId, start.id);
+            // There is nothing left to keep.
+            kept = "kept";
             onDone("discarded");
         } catch (failure) {
             problem = say(failure);
         }
     }
 
-    function keydown(event: KeyboardEvent) {
+    // Leaving the message another way than by Close, with something typed
+    // in the last moment: it is kept now, not when the timer would have.
+    onDestroy(() => {
+        clearTimeout(unsure);
+        if (kept === "changed") keep();
+    });
+
+    /** The boxes of one line each, and then the words: where Enter goes on to. */
+    const FIELDS = 'input[type="text"], textarea, [contenteditable="true"]';
+
+    function keydown(event: KeyboardEvent & { currentTarget: HTMLFormElement }) {
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
             send();
+        } else if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type === "text") {
+            // Enter in To or Subject is not Send: it goes on to the next thing to fill in.
+            event.preventDefault();
+            const fields = [...event.currentTarget.querySelectorAll<HTMLElement>(FIELDS)];
+            fields[fields.indexOf(event.target) + 1]?.focus();
         } else if (event.key === "Escape") {
             event.preventDefault();
             close();
@@ -357,7 +386,7 @@
     class="compose"
     class:over
     aria-label={titles[start.kind]}
-    onsubmit={(event) => (event.preventDefault(), send())}
+    onsubmit={(event) => event.preventDefault()}
     onkeydown={keydown}
     oninput={changed}
     ondragover={(event) => {
@@ -370,22 +399,25 @@
     ondrop={dropped}
 >
     <div class="bar">
-        <button type="submit" class="primary" disabled={sending} title="Ctrl+Enter"><Send size={16} aria-hidden="true" />{sending ? "Sending…" : "Send"}</button>
+        <button type="button" class="primary" disabled={sending} title="Ctrl+Enter" onclick={send}><Send size={16} aria-hidden="true" />{sending ? "Sending…" : "Send"}</button>
         <button type="button" disabled={choosing} onclick={attach}><Paperclip size={16} aria-hidden="true" />{choosing ? "Choosing…" : "Attach…"}</button>
         <button type="button" onclick={close} title="Escape">Close</button>
-        <button type="button" class:danger={sure} onclick={discard}>{sure ? "Discard for good?" : "Discard"}</button>
+        <button type="button" class:danger={sure} onclick={discard} onblur={() => (sure = false)}>{sure ? "Discard for good?" : "Discard"}</button>
         <span class="kept muted" role="status">{kept === "kept" ? "Draft kept on this computer" : kept === "keeping" ? "Keeping…" : ""}</span>
     </div>
 
     {#if problem}
         <p class="problem" role="alert">{problem}</p>
     {/if}
+    {#if kept === "kept" && unfinished.length > 0}
+        <p class="muted unfinished" role="status">`{unfinished[0]}` is not an email address yet, so it is not kept with the draft.</p>
+    {/if}
 
-    {#if fromChoices.length > 1}
+    {#if froms.length > 1}
         <label>
             <span>From</span>
             <select aria-label="From" value={from} onchange={(event) => chooseFrom(event.currentTarget.value)}>
-                {#each fromChoices as each (each)}
+                {#each froms as each (each)}
                     <option value={each}>{each}</option>
                 {/each}
             </select>
@@ -655,6 +687,14 @@
         padding: 0.5rem 1rem;
         background: color-mix(in srgb, var(--danger) 14%, var(--surface));
         font-size: 0.85rem;
+    }
+
+    .unfinished {
+        flex: none;
+        margin: 0;
+        padding: 0.4rem 1rem;
+        border-bottom: 1px solid var(--line);
+        font-size: 0.8rem;
     }
 
     .quoted {

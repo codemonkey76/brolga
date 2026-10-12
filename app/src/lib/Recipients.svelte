@@ -1,6 +1,7 @@
 <script lang="ts">
     import { tick } from "svelte";
     import { type Person, suggestPeople } from "./mail";
+    import { lastStarts, personWritten } from "./people-line";
 
     interface Props {
         accountId: string;
@@ -20,8 +21,8 @@
     let asking = 0;
     const listId = `people-${Math.random().toString(36).slice(2)}`;
 
-    /** What is being typed now: the part after the last comma or semicolon. */
-    const typing = (text: string) => text.slice(Math.max(text.lastIndexOf(","), text.lastIndexOf(";")) + 1).trim();
+    /** What is being typed now: the part after the last comma or semicolon that is not within a name. */
+    const typing = (text: string) => text.slice(lastStarts(text)).trim();
 
     function typed() {
         clearTimeout(soon);
@@ -41,10 +42,8 @@
     }
 
     async function choose(person: Person) {
-        const cut = Math.max(value.lastIndexOf(","), value.lastIndexOf(";")) + 1;
-        const before = value.slice(0, cut).trimEnd();
-        const shown = person.name && person.name !== person.address ? `${person.name} <${person.address}>` : person.address;
-        value = `${before ? `${before} ` : ""}${shown}, `;
+        const before = value.slice(0, lastStarts(value)).trimEnd();
+        value = `${before ? `${before} ` : ""}${personWritten(person)}, `;
         offered = [];
         asking += 1;
         input?.focus();
@@ -93,7 +92,8 @@
     />
     {#if offered.length > 0}
         <ul id={listId} role="listbox" aria-label="Suggested people">
-            {#each offered as person, index (person.address)}
+            <!-- Not keyed by address: two people offered may share one. -->
+            {#each offered as person, index}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <li id="{listId}-{index}" role="option" aria-selected={index === at} class:at={index === at} onmousedown={(event) => event.preventDefault()} onclick={() => choose(person)}>
                     {#if person.name}<span class="name">{person.name}</span>{/if}

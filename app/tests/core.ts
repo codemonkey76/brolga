@@ -209,6 +209,10 @@ export interface FakeCore {
     repliesRefused?: string;
     /** The files the file dialog says were chosen. Left out, it is dismissed. */
     pickFiles?: string[];
+    /** Why the file dialog could not be opened, if it could not. */
+    pickFails?: string;
+    /** Who is suggested for whatever is typed on a line of people. Left out, those who have written whose name or address it starts. */
+    suggested?: { name: string | null; address: string }[];
     /** A newer Brolga that the app finds when it looks. Left out, this is the newest. */
     newer?: { version: string; installs: boolean; page: string };
     /** Why the newer one cannot be installed, if it cannot. */
@@ -571,6 +575,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return replies;
             },
             "mail.people.suggest": (args) => {
+                if (core.suggested) return { people: core.suggested, note: "" };
                 const typed = String(args.typed).toLowerCase();
                 const known = [...new Map(mail.map((m) => [m.from.address, m.from])).values()];
                 return {
@@ -1093,7 +1098,10 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     // The save dialog: the place this test says was chosen, or dismissed.
                     if (name === "choose_save_path") return core.savePath ?? null;
                     // The file dialog: the files this test says were chosen.
-                    if (name === "choose_files") return core.pickFiles ?? [];
+                    if (name === "choose_files") {
+                        if (core.pickFails) throw core.pickFails;
+                        return core.pickFiles ?? [];
+                    }
                     // A notification on the desktop: written down, for a test to read.
                     if (name === "notify") {
                         notified.push(payload as unknown as { title: string; body: string });

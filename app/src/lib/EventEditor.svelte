@@ -54,6 +54,7 @@
             every: repeat?.every ?? 1,
             weekdays: [...(repeat?.days_of_week ?? [])].sort(),
             relative: Boolean(repeat?.week_of_month),
+            last: repeat?.week_of_month === "last",
             ends: repeat?.until ? "until" : repeat?.count ? "count" : "never",
             until: repeat?.until ?? "",
             count: repeat?.count ?? 10,
@@ -128,12 +129,19 @@
     let every = $state(was.every);
     let weekdays = $state(was.weekdays);
     let relative = $state(was.relative);
+    /** Of a day that is both the fourth of its kind in the month and the last: which of the two it repeats as. */
+    let last = $state(was.last);
     let ends = $state(was.ends);
     let until = $state(was.until);
     let count = $state(was.count);
     const WEEK = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
     const startDate = $derived(new Date(`${startDay}T00:00`));
     const place = $derived(placeInMonth(Number.isNaN(+startDate) ? new Date() : startDate));
+    // From the 22nd to the 28th a day is the fourth of its kind, and in some months the last as well. After the 28th it is only the last.
+    const either = $derived(place.isLast && startDate.getDate() >= 22 && startDate.getDate() <= 28);
+    const nth = $derived(either ? (last ? "last" : "fourth") : place.isLast && place.nth === "fourth" ? "last" : place.nth);
+    const weekday = $derived(place.weekday.slice(0, 1).toUpperCase() + place.weekday.slice(1));
+    const ofMonth = $derived(unit === "year" ? ` of ${startDate.toLocaleDateString(undefined, { month: "long" })}` : "");
 
     /** How it is to repeat, as asked for. Nothing if it is not to. */
     function repeatAsked(): Repeat | null {
@@ -141,7 +149,7 @@
         const asked: Repeat = { unit, every: Math.max(1, Math.round(every) || 1) };
         if (unit === "week" && weekdays.length > 0) asked.days_of_week = [...weekdays].sort();
         if ((unit === "month" || unit === "year") && relative) {
-            asked.week_of_month = place.isLast && place.nth === "fourth" ? "last" : place.nth;
+            asked.week_of_month = nth;
             asked.days_of_week = [place.weekday];
         }
         if (ends === "until" && until) asked.until = until;
@@ -178,6 +186,11 @@
         submitted.preventDefault();
         if (!startDay || !endDay || (!allDay && (!startTime || !endTime))) {
             problem = "Say when it starts and ends.";
+            return;
+        }
+        // The core refuses this too. Said here, nothing has been sent and the form says which part to change.
+        if (endDay < startDay || (!allDay && endDay === startDay && endTime < startTime)) {
+            problem = "It ends before it starts. Set the end to after the start.";
             return;
         }
         const fields: EventFields = {};
@@ -292,13 +305,21 @@
         {/if}
         {#if unit === "month" || unit === "year"}
             <label>On
-                <select aria-label="On which day" value={relative ? "weekday" : "date"} onchange={(e) => (relative = e.currentTarget.value === "weekday")}>
+                <select
+                    aria-label="On which day"
+                    value={!relative ? "date" : either && last ? "last" : "weekday"}
+                    onchange={(e) => {
+                        relative = e.currentTarget.value !== "date";
+                        last = e.currentTarget.value === "last";
+                    }}
+                >
                     <option value="date">{unit === "month" ? `Day ${startDate.getDate()} of the month` : startDate.toLocaleDateString(undefined, { day: "numeric", month: "long" })}</option>
-                    <option value="weekday">
-                        The {place.isLast && place.nth === "fourth" ? "last" : place.nth} {place.weekday.slice(0, 1).toUpperCase() + place.weekday.slice(1)}{unit === "year"
-                            ? ` of ${startDate.toLocaleDateString(undefined, { month: "long" })}`
-                            : ""}
-                    </option>
+                    {#if either}
+                        <option value="weekday">The fourth {weekday}{ofMonth}</option>
+                        <option value="last">The last {weekday}{ofMonth}</option>
+                    {:else}
+                        <option value="weekday">The {nth} {weekday}{ofMonth}</option>
+                    {/if}
                 </select>
             </label>
         {/if}
