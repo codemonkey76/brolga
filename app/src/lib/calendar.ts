@@ -1,4 +1,5 @@
 import { execute } from "./commands";
+import { lineOf, peopleOn } from "./people-line";
 
 export interface Calendar {
     id: string;
@@ -73,20 +74,11 @@ export interface Invited {
 
 /** A line of people as typed, `Sam Taylor <sam@example.test>, jo@example.test`, as those invited. */
 export function invitedFrom(line: string, kind: Invited["kind"]): Invited[] {
-    return line
-        .split(/[,;]/)
-        .map((each) => each.trim())
-        .filter(Boolean)
-        .map((each) => {
-            const named = /^(.*?)\s*<([^>]+)>$/.exec(each);
-            const name = named?.[1].replace(/^"|"$/g, "").trim();
-            return { address: (named?.[2] ?? each).trim(), ...(name ? { name } : {}), kind };
-        });
+    return peopleOn(line).map((each) => ({ address: each.address, ...(each.name ? { name: each.name } : {}), kind }));
 }
 
 /** Those invited, as a line to change. */
-export const invitedLine = (people: { name: string | null; address: string | null }[]) =>
-    people.map((each) => (each.name && each.name !== each.address ? `${each.name} <${each.address}>` : (each.address ?? ""))).join(", ");
+export const invitedLine = (people: { name: string | null; address: string | null }[]) => lineOf(people);
 
 /** What an event is made of, to make one or to change one. What is left out is left as it is. */
 export interface EventFields {

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { Bold, Image, Italic, Link, List, ListOrdered, Paperclip, Send, Underline, X } from "@lucide/svelte";
     import { chooseFiles, say } from "./commands";
+    import { lineOf, peopleOn } from "./people-line";
     import Recipients from "./Recipients.svelte";
     import { type Draft, type DraftFile, type Person, attachContent, attachFile, base64Of, discardDraft, editDraft, readFile, removeFile, sendDraft, size } from "./mail";
 
@@ -30,25 +31,13 @@
         }
     }
 
-    /** People as they are typed: `Sam Taylor <sam@example.test>, jo@example.test`. */
-    const typed = (people: Person[]) => people.map((p) => (p.name && p.name !== p.address ? `${p.name} <${p.address}>` : p.address)).join(", ");
-    const people = (text: string): Person[] =>
-        text
-            .split(/[,;\n]/)
-            .map((each) => each.trim())
-            .filter(Boolean)
-            .map((each) => {
-                const named = each.match(/^(.*)<([^<>]*)>$/);
-                return named ? { name: named[1].trim().replace(/^"|"$/g, "") || null, address: named[2].trim() } : { name: null, address: each };
-            });
-
     // The draft is this component's to edit from here on: a new draft is a
     // new component (it is keyed by the draft's id), not new props.
     // svelte-ignore state_referenced_locally
     const start = draft;
-    let to = $state(typed(start.to));
-    let cc = $state(typed(start.cc));
-    let bcc = $state(typed(start.bcc));
+    let to = $state(lineOf(start.to));
+    let cc = $state(lineOf(start.cc));
+    let bcc = $state(lineOf(start.bcc));
     let subject = $state(start.subject);
     let body = $state(start.body);
     let format = $state<Draft["format"]>(start.format ?? "text");
@@ -294,7 +283,7 @@
         if (kept === "kept") return true;
         kept = "keeping";
         try {
-            await editDraft(accountId, start.id, { to: people(to), cc: people(cc), bcc: people(bcc), subject, body, format });
+            await editDraft(accountId, start.id, { to: peopleOn(to), cc: peopleOn(cc), bcc: peopleOn(bcc), subject, body, format });
             await dropUnused();
             if (kept === "keeping") kept = "kept";
             problem = null;
