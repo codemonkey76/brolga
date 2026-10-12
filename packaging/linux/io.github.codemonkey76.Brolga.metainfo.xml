@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.9" date="2026-10-12">
+      <description>
+        <p>The mailbox you have chosen has its folders first, with the others under their own names, and a folder opened in a shared mailbox stays open while mail is fetched.</p>
+      </description>
+    </release>
     <release version="0.1.8" date="2026-10-12">
       <description>
         <p>A message that has been answered or forwarded is marked, whether that was done here or in another mail program.</p>
