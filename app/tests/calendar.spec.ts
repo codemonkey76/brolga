@@ -1015,3 +1015,33 @@ test.describe("on the day the clocks go forward", () => {
         await expect(cells.nth(3)).toHaveClass(/free/);
     });
 });
+
+test("the week starts on the day it does where this computer is: Sunday here", async ({ page }) => {
+    const view = await calendar(page);
+    const columns = view.locator(".timegrid .day");
+
+    // The working week is Monday to Friday all the same.
+    await expect(view.getByRole("heading", { level: 1 })).toHaveText("Oct 12 – Oct 16 2026");
+    await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Week", exact: true }).click();
+    await expect(view.getByRole("heading", { level: 1 })).toHaveText("Oct 11 – Oct 17 2026");
+    await expect(columns.first()).toHaveAccessibleName("Sunday, October 11");
+    // The small month and the month itself begin their weeks the same way.
+    await expect(page.getByLabel("Month to steer by").getByRole("button").nth(2)).toHaveAccessibleName("September 27, 2026");
+    await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Month" }).click();
+    await expect(view.locator(".month").getByRole("button", { name: /day, / }).first()).toHaveAccessibleName("Sunday, September 27");
+});
+
+test.describe("where the week starts on Monday", () => {
+    test.use({ locale: "en-AU" });
+
+    test("the week, the month and the small month start on Monday", async ({ page }) => {
+        const view = await calendar(page);
+
+        await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Week", exact: true }).click();
+        await expect(view.getByRole("heading", { level: 1 })).toHaveText("12 Oct – 18 Oct 2026");
+        await expect(view.locator(".timegrid .day").first()).toHaveAccessibleName(/Monday,? 12 October/);
+        await expect(page.getByLabel("Month to steer by").getByRole("button").nth(2)).toHaveAccessibleName("28 September 2026");
+        await view.getByRole("group", { name: "View" }).getByRole("button", { name: "Month" }).click();
+        await expect(view.locator(".month").getByRole("button", { name: /day,? / }).first()).toHaveAccessibleName(/Monday,? 28 September/);
+    });
+});
