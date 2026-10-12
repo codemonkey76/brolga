@@ -197,15 +197,22 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             // Each part says it has begun, so that whoever is waiting can be told which.
             let _staged = mailbox.staging();
             // Of a mailbox whose calendar alone was shared there is no mail to fetch.
-            let (synced, bodies) = if mailbox.calendar_only {
-                (brolga_sync::Synced::default(), 0)
+            let (synced, bodies, mail_problem) = if mailbox.calendar_only {
+                (brolga_sync::Synced::default(), 0, None)
             } else {
                 // What was changed here goes up before the server's side comes
                 // down. A change that cannot go now waits; it does not stop the sync.
                 mailbox.stage(Some("sending"));
                 let _ = mailbox.outbox.drain().await;
                 mailbox.stage(Some("mail"));
-                let synced = mailbox.sync.sync_all().await.map_err(|e| e.to_string())?;
+                // A folder that cannot be synced does not stop the others,
+                // nor what follows the mail. Only trouble that is the whole
+                // account's ends the sync here: with no connection, or the
+                // mailbox told to slow down, asking for more would not help.
+                let mail = mailbox.sync.sync_each().await;
+                if mail.stopped {
+                    return Err(mail.problem().unwrap_or_default());
+                }
                 mailbox.stage(Some("bodies"));
                 // Then the bodies of recent mail, a batch at a time. Failing to
                 // get these is not a failed sync: they are fetched when opened.
@@ -219,29 +226,28 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                 // only less well marked.
                 mailbox.stage(Some("markers"));
                 let _ = mailbox.sync.sync_last_actions(ACTION_PAGES_PER_SYNC).await;
-                (synced, bodies)
+                (mail.synced, bodies, mail.problem())
             };
             // And the calendar. Trouble with it is said beside the mail's
             // result and does not make the mail's sync a failure: a sign-in
             // from before calendars were built has no leave to read them.
+            // One calendar that cannot be read does not stop the others.
             mailbox.stage(Some("calendar"));
-            let calendar = mailbox
-                .calendars
-                .sync_all(jiff::Timestamp::now())
-                .await
-                .map(|synced| synced.changed + synced.removed)
-                .map_err(|error| match error {
-                    brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }) if mailbox.shared.is_some() => {
-                        "You have not been given this mailbox's calendar, or this sign-in is from before shared calendars could be read: \
-                         sign in to the account again, from the accounts screen, to grant that.".to_owned()
-                    }
-                    brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }) => {
-                        "This sign-in was not given permission to read the calendar. Sign in to the account again, from the accounts screen, to grant it.".to_owned()
-                    }
-                    other => other.to_string(),
-                });
+            let calendars = mailbox.calendars.sync_each(jiff::Timestamp::now()).await;
+            let events_changed = (!calendars.stopped)
+                .then_some(calendars.synced.changed + calendars.synced.removed);
+            let calendar_problem = match calendars.failed.first() {
+                Some((_, brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }))) if mailbox.shared.is_some() => Some(
+                    "You have not been given this mailbox's calendar, or this sign-in is from before shared calendars could be read: \
+                     sign in to the account again, from the accounts screen, to grant that.".to_owned(),
+                ),
+                Some((_, brolga_sync::SyncError::Graph(brolga_graph::GraphError::Refused { status: 403, .. }))) => Some(
+                    "This sign-in was not given permission to read the calendar. Sign in to the account again, from the accounts screen, to grant it.".to_owned(),
+                ),
+                _ => calendars.problem(),
+            };
             // With the calendars read, the holiday ones are filled a year further where one has come within reach.
-            if calendar.is_ok() {
+            if calendar_problem.is_none() {
                 crate::holiday_commands::top_up(&mailbox).await;
             }
             // And contacts, the same way. A mailbox someone shared brings
@@ -260,16 +266,18 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                     }
                     other => other.to_string(),
                 });
-            Ok::<_, String>(Some((synced, bodies, calendar, contacts)))
+            Ok::<_, String>(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts)))
         }
         .await;
 
         results.push(match outcome {
-            Ok(Some((synced, bodies, calendar, contacts))) => json!({
+            // Mail that synced in part is not a sync that went well: what
+            // stood in its way is the result, beside what was still done.
+            Ok(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts))) => json!({
                 "contacts_error": contacts.err(),
-                "account_id": account.id, "ok": true, "changed": synced.changed, "removed": synced.removed,
-                "bodies_downloaded": bodies, "syncing_elsewhere": false, "error": null,
-                "events_changed": calendar.as_ref().ok(), "calendar_error": calendar.as_ref().err(),
+                "account_id": account.id, "ok": mail_problem.is_none(), "changed": synced.changed, "removed": synced.removed,
+                "bodies_downloaded": bodies, "syncing_elsewhere": false, "error": mail_problem,
+                "events_changed": events_changed, "calendar_error": calendar_problem,
             }),
             Ok(None) => json!({
                 "account_id": account.id, "ok": true, "changed": 0, "removed": 0,

@@ -35,6 +35,9 @@ impl Next {
 pub struct DeltaPage<T> {
     pub items: Vec<DeltaItem<T>>,
     pub next: Next,
+    /// How many of the items had a part that could not be read, and are
+    /// here without that part.
+    pub damaged: u32,
 }
 
 #[derive(Deserialize)]
@@ -81,24 +84,71 @@ fn read<T: DeserializeOwned>(body: &[u8], list: bool) -> Result<DeltaPage<T>, Gr
         }
     };
 
-    let items =
-        raw.value
-            .into_iter()
-            .map(|entry| {
-                if entry.get("@removed").is_some() {
-                    let id = entry.get("id").and_then(Value::as_str).ok_or_else(|| {
-                        GraphError::Decode("a removed item with no id".to_owned())
-                    })?;
-                    Ok(DeltaItem::Removed { id: id.to_owned() })
-                } else {
-                    serde_json::from_value(entry)
-                        .map(DeltaItem::Changed)
-                        .map_err(|e| GraphError::Decode(e.to_string()))
-                }
-            })
-            .collect::<Result<_, _>>()?;
+    let mut damaged = 0;
+    let mut items = Vec::with_capacity(raw.value.len());
+    for entry in raw.value {
+        if entry.get("@removed").is_some() {
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| GraphError::Decode("a removed item with no id".to_owned()))?;
+            items.push(DeltaItem::Removed { id: id.to_owned() });
+        } else {
+            let (item, whole) = changed(entry)?;
+            damaged += u32::from(!whole);
+            items.push(DeltaItem::Changed(item));
+        }
+    }
 
-    Ok(DeltaPage { items, next })
+    Ok(DeltaPage {
+        items,
+        next,
+        damaged,
+    })
+}
+
+/// Read one new or changed item, and say whether all of it could be read.
+///
+/// An item with a property in a shape that cannot be read is not allowed to
+/// make its whole page unreadable, which would stop the sync of everything
+/// that shares the page, every time. Nor is it left out, because the place
+/// the page leaves the sync at is past it, and it would not be offered
+/// again. It is read without the properties that cannot be, which is how a
+/// delta gives any item of which only a part has changed. Only an item
+/// that cannot be told from any other, having no id that can be read, still
+/// fails the page: there is nothing of it to keep, and to go on past it
+/// would be to lose it without a word.
+fn changed<T: DeserializeOwned>(entry: Value) -> Result<(T, bool), GraphError> {
+    let error = match T::deserialize(&entry) {
+        Ok(item) => return Ok((item, true)),
+        Err(error) => GraphError::Decode(error.to_string()),
+    };
+    let Value::Object(properties) = entry else {
+        return Err(error);
+    };
+    let Some(id) = properties.get("id").cloned() else {
+        return Err(error);
+    };
+
+    // Each property is tried beside the id alone, and kept if that reads.
+    let mut readable = serde_json::Map::new();
+    for (name, value) in properties {
+        if name == "id" {
+            continue;
+        }
+        let mut alone = serde_json::Map::new();
+        alone.insert("id".to_owned(), id.clone());
+        alone.insert(name.clone(), value.clone());
+        if T::deserialize(&Value::Object(alone)).is_ok() {
+            readable.insert(name, value);
+        }
+    }
+    readable.insert("id".to_owned(), id);
+
+    match serde_json::from_value(Value::Object(readable)) {
+        Ok(item) => Ok((item, false)),
+        Err(_) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +159,16 @@ mod tests {
     #[derive(Debug, Deserialize, PartialEq)]
     struct Thing {
         id: String,
+        size: Option<u32>,
+        name: Option<String>,
+    }
+
+    fn thing(id: &str) -> Thing {
+        Thing {
+            id: id.to_owned(),
+            size: None,
+            name: None,
+        }
     }
 
     fn page(value: Value) -> Result<DeltaPage<Thing>, GraphError> {
@@ -126,7 +186,7 @@ mod tests {
         assert_eq!(
             read.items,
             [
-                DeltaItem::Changed(Thing { id: "a".to_owned() }),
+                DeltaItem::Changed(thing("a")),
                 DeltaItem::Removed { id: "b".to_owned() }
             ]
         );
@@ -155,5 +215,39 @@ mod tests {
             page(json!({ "value": [], "@odata.nextLink": "a", "@odata.deltaLink": "b" })).is_err()
         );
         assert!(page(json!({ "value": [{ "@removed": {} }], "@odata.deltaLink": "b" })).is_err());
+    }
+
+    #[test]
+    fn an_item_with_a_part_that_cannot_be_read_is_kept_without_that_part() {
+        let read = page(json!({
+            "value": [
+                { "id": "a", "size": "large", "name": "Ada" },
+                { "id": "b", "size": 2 }
+            ],
+            "@odata.deltaLink": "https://example.test/delta"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            read.items,
+            [
+                DeltaItem::Changed(Thing {
+                    name: Some("Ada".to_owned()),
+                    ..thing("a")
+                }),
+                DeltaItem::Changed(Thing {
+                    size: Some(2),
+                    ..thing("b")
+                })
+            ]
+        );
+        assert_eq!(read.damaged, 1);
+    }
+
+    #[test]
+    fn an_item_with_no_id_to_keep_it_by_still_fails_its_page() {
+        assert!(page(json!({ "value": [{ "name": "Ada" }], "@odata.deltaLink": "b" })).is_err());
+        assert!(page(json!({ "value": ["a"], "@odata.deltaLink": "b" })).is_err());
+        assert!(page(json!({ "value": [{ "id": 7 }], "@odata.deltaLink": "b" })).is_err());
     }
 }

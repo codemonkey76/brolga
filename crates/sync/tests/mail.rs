@@ -748,3 +748,108 @@ async fn messages_answered_or_forwarded_elsewhere_are_marked_a_part_at_a_time_an
     assert_eq!(f.graph.requests().len(), before + 1);
     assert_eq!(how(&ids[259]), "forwarded");
 }
+
+#[tokio::test]
+async fn a_folder_the_server_will_not_give_does_not_stop_the_folders_after_it() {
+    for status in [500, 403] {
+        let f = Fixture::new().await;
+        let (sent, archive) = (f.graph.folder_id("sentitems"), f.graph.folder_id("archive"));
+        f.graph
+            .add_message(&f.inbox, message("In", "2026-10-01T09:00:00Z"));
+        f.graph
+            .add_message(&sent, message("Sent", "2026-10-02T09:00:00Z"));
+        f.graph
+            .add_message(&archive, message("Kept", "2026-10-03T09:00:00Z"));
+        // The inbox is synced first, and is the one that cannot be read.
+        f.graph.break_folder(&f.inbox, status);
+
+        let outcome = f.sync(10).sync_each().await;
+
+        // Every other folder is as the server has it, and the trouble is said.
+        assert_eq!(f.db.message_count(&sent).unwrap(), 1, "{status}");
+        assert_eq!(f.db.message_count(&archive).unwrap(), 1, "{status}");
+        assert_eq!(outcome.failed.len(), 1, "{:?}", outcome.failed);
+        assert_eq!(outcome.failed[0].0, "Inbox");
+        assert!(!outcome.stopped);
+        assert!(f.sync(10).sync_all().await.is_err());
+
+        // Once it can be read again, nothing was lost by the wait.
+        f.graph.mend_folder(&f.inbox);
+        f.sync(10).sync_all().await.unwrap();
+        f.assert_in_step();
+    }
+}
+
+#[tokio::test]
+async fn an_account_that_cannot_be_reached_is_not_asked_folder_by_folder() {
+    let f = Fixture::new().await;
+    f.graph
+        .add_message(&f.inbox, message("In", "2026-10-01T09:00:00Z"));
+    f.sync(10).sync_all().await.unwrap();
+    let before = f.graph.requests().len();
+
+    // Throttled for good: every request is turned away.
+    f.graph.fail_next(std::iter::repeat_n(
+        Fault::Throttled {
+            retry_after_secs: 0,
+        },
+        500,
+    ));
+    let outcome = f.sync(10).sync_each().await;
+    f.graph.clear_faults();
+
+    // One request, tried as often as a request is, and no more folders after it.
+    assert!(outcome.stopped);
+    assert_eq!(outcome.failed.len(), 1);
+    assert_eq!(f.graph.requests().len() - before, 6);
+}
+
+#[tokio::test]
+async fn a_message_with_a_part_that_cannot_be_read_is_kept_without_that_part() {
+    let f = Fixture::new().await;
+    let odd = f
+        .graph
+        .add_message(&f.inbox, message("Odd one", "2026-10-02T09:00:00Z"));
+    let plain = f
+        .graph
+        .add_message(&f.inbox, message("Plain", "2026-10-01T09:00:00Z"));
+    // A sender with no address at all, and a recipient list that is no list.
+    f.graph.send_raw(
+        &odd,
+        serde_json::json!({ "from": { "emailAddress": null }, "toRecipients": "nobody", "isRead": "perhaps" }),
+    );
+
+    let outcome = f.sync(10).sync_each().await;
+
+    // Both are here: the odd one with what could be read of it.
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    assert_eq!(outcome.synced.damaged, 1);
+    let kept = f.db.message(&odd).unwrap().unwrap();
+    assert_eq!(kept.subject, "Odd one");
+    assert_eq!(kept.from_address, "");
+    assert_eq!(f.db.message(&plain).unwrap().unwrap().subject, "Plain");
+}
+
+#[tokio::test]
+async fn a_body_with_nothing_in_it_is_an_empty_body_and_the_ones_after_it_are_fetched() {
+    let f = Fixture::new().await;
+    let empty = f
+        .graph
+        .add_message(&f.inbox, message("Empty", "2026-10-02T09:00:00Z"));
+    let full = f.graph.add_message(
+        &f.inbox,
+        message("Full", "2026-10-01T09:00:00Z").body("<p>Words</p>"),
+    );
+    f.graph.send_raw(
+        &empty,
+        serde_json::json!({ "body": { "contentType": "html", "content": null } }),
+    );
+    let sync = f.sync(10);
+    sync.sync_all().await.unwrap();
+
+    let fetched = sync.download_bodies("2026-01-01", 10).await.unwrap();
+
+    assert_eq!(fetched, 2);
+    assert_eq!(f.db.body(&empty).unwrap().unwrap().content, "");
+    assert!(f.db.body(&full).unwrap().unwrap().content.contains("Words"));
+}

@@ -4832,3 +4832,60 @@ async fn holidays_cut_short_by_an_outage_are_finished_at_a_later_sync_without_do
         assert_eq!(days_in(&f, &calendar, year).await, known(year), "{year}");
     }
 }
+
+#[tokio::test]
+async fn a_folder_that_cannot_be_synced_is_said_and_the_rest_of_the_account_still_syncs() {
+    let f = Fixture::signed_in().await;
+    let sent = f.graph.folder_id("sentitems");
+    f.graph.add_message(
+        &sent,
+        message("Sent on", "Sam Taylor", "2026-10-01T09:00:00Z").body("<p>Pineapple.</p>"),
+    );
+    f.graph.add_event(
+        &f.graph.default_calendar(),
+        brolga_fake_graph::FakeEvent::new(
+            "Dentist",
+            "2026-10-20T01:00:00Z",
+            "2026-10-20T02:00:00Z",
+        ),
+    );
+    f.graph.break_folder(&f.inbox, 500);
+
+    let synced = f.sync().await;
+
+    // The trouble is the result, by the folder's name, so nothing claims all is well.
+    assert_eq!(synced["ok"], false, "{synced}");
+    assert!(
+        synced["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Inbox could not be synced."),
+        "{synced}"
+    );
+    // And everything else was still done: the other folders, the bodies, the calendar and contacts.
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": sent }))
+        .await;
+    assert_eq!(listed["total"], 1);
+    assert_eq!(synced["bodies_downloaded"], 1, "{synced}");
+    assert!(synced["events_changed"].as_u64().unwrap() >= 1, "{synced}");
+    assert_eq!(synced["calendar_error"], Value::Null);
+    assert_eq!(synced["contacts_error"], Value::Null);
+
+    // With no connection at all, nothing after the first failure is tried.
+    f.graph.mend_folder(&f.inbox);
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 500));
+    let before = f.graph.requests().len();
+    let offline = f.sync().await;
+    f.graph.clear_faults();
+    assert_eq!(offline["ok"], false);
+    assert!(offline["events_changed"].is_null(), "{offline}");
+    let asked = f.graph.requests()[before..].to_vec();
+    assert!(
+        !asked.iter().any(|each| each.contains("/messages/delta")),
+        "{asked:?}"
+    );
+
+    assert_eq!(f.sync().await["ok"], true);
+}

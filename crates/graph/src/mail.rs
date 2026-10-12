@@ -25,6 +25,18 @@ pub struct MailFolder {
     pub is_hidden: Option<bool>,
 }
 
+/// A property as Graph gives it, or as nothing at all where Graph gives
+/// `null`. The documentation's examples leave a property out when it has no
+/// value, but a `null` in its place means the same and is read the same,
+/// so that it does not make a whole message unreadable.
+pub(crate) fn or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmailAddress {
     pub name: Option<String>,
@@ -34,7 +46,7 @@ pub struct EmailAddress {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recipient {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     pub email_address: EmailAddress,
 }
 
@@ -48,10 +60,12 @@ pub struct Flag {
 }
 
 /// A date and time with the zone it is in.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DateTimeTimeZone {
-    /// Without an offset: `2026-10-20T00:00:00.0000000`.
+    /// Without an offset: `2026-10-20T00:00:00.0000000`. Empty where Graph
+    /// gave none, which no moment can be read from.
+    #[serde(default, deserialize_with = "or_default")]
     pub date_time: String,
     pub time_zone: Option<String>,
 }
@@ -59,8 +73,11 @@ pub struct DateTimeTimeZone {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemBody {
-    /// `text` or `html`.
+    /// `text` or `html`. Empty where Graph does not say.
+    #[serde(default, deserialize_with = "or_default")]
     pub content_type: String,
+    /// Empty for a message with nothing in it.
+    #[serde(default, deserialize_with = "or_default")]
     pub content: String,
 }
 

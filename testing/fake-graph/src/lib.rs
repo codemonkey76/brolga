@@ -99,6 +99,10 @@ struct Inner {
     uploads: HashMap<String, Upload>,
     /// Messages every change to which is refused.
     refused_updates: std::collections::HashSet<String>,
+    /// Folders whose messages cannot be asked after, and calendars whose
+    /// events cannot: each with the status every such request is answered with.
+    broken_folders: HashMap<String, u16>,
+    broken_calendars: HashMap<String, u16>,
     /// Where this server is, to write links to itself.
     base: String,
 }
@@ -734,6 +738,37 @@ impl FakeGraph {
 
     pub fn delete_message(&self, id: &str) {
         lock(&self.shared).mailbox.delete_message(id);
+    }
+
+    /// From now on answer every request for this folder's messages with
+    /// this status, such as 500 or 403: a folder the server cannot give,
+    /// while it gives every other.
+    pub fn break_folder(&self, folder: &str, status: u16) {
+        lock(&self.shared)
+            .broken_folders
+            .insert(folder.to_owned(), status);
+    }
+
+    pub fn mend_folder(&self, folder: &str) {
+        lock(&self.shared).broken_folders.remove(folder);
+    }
+
+    /// The same for a calendar's events.
+    pub fn break_calendar(&self, calendar: &str, status: u16) {
+        lock(&self.shared)
+            .broken_calendars
+            .insert(calendar.to_owned(), status);
+    }
+
+    pub fn mend_calendar(&self, calendar: &str) {
+        lock(&self.shared).broken_calendars.remove(calendar);
+    }
+
+    /// Give these properties of a message exactly as written here, whatever
+    /// the message has: for an entry in a shape the documentation does not
+    /// promise, such as `"from": { "emailAddress": null }`.
+    pub fn send_raw(&self, message: &str, properties: Value) {
+        lock(&self.shared).mailbox.send_raw(message, properties);
     }
 
     /// Make every delta link handed out so far stale, as Graph does when its
@@ -1437,6 +1472,10 @@ async fn events_delta(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let mut inner = lock(&shared);
+    let main = inner.calendars().default_calendar();
+    if let Some(status) = inner.broken_calendars.get(&main) {
+        return broken(*status);
+    }
     let link = format!("{}/me/calendarView/delta", inner.base);
     let size = page_size(&headers);
 
@@ -1450,6 +1489,9 @@ async fn calendar_view(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let mut inner = lock(&shared);
+    if let Some(status) = inner.broken_calendars.get(&calendar) {
+        return broken(*status);
+    }
     let link = format!("{}/me/calendars/{calendar}/calendarView", inner.base);
     let size = page_size(&headers);
 
@@ -1838,6 +1880,9 @@ async fn messages_delta(
         );
     }
     let inner = lock(&shared);
+    if let Some(status) = inner.broken_folders.get(&folder) {
+        return broken(*status);
+    }
     let link = format!("{}/me/mailFolders/{folder}/messages/delta", inner.base);
 
     delta_answer(
@@ -2528,6 +2573,19 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
     let body: Value = json!({ "error": { "code": code, "message": message } });
 
     (status, axum::Json(body)).into_response()
+}
+
+/// The answer for something a test has broken: an error of that status, in
+/// the shape every Graph error has.
+fn broken(status: u16) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let code = if status.is_server_error() {
+        "generalException"
+    } else {
+        "accessDenied"
+    };
+
+    error(status, code, "This cannot be given.")
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use brolga_mail::html_to_text;
 use brolga_store::{AccountDb, Body, FolderChange, MessageChange, Round};
 use serde_json::json;
 
-use crate::SyncError;
+use crate::{Outcome, SyncError};
 
 /// How many times in a row the server may ask for a fresh start before the
 /// sync gives up and reports it. One is ordinary; a stream of them is not.
@@ -28,6 +28,9 @@ pub struct Synced {
     pub removed: u32,
     /// How many times the server asked for a fresh start.
     pub restarts: u32,
+    /// How many items came with a part that could not be read, and were
+    /// kept without that part.
+    pub damaged: u32,
 }
 
 impl Synced {
@@ -36,6 +39,7 @@ impl Synced {
         self.changed += other.changed;
         self.removed += other.removed;
         self.restarts += other.restarts;
+        self.damaged += other.damaged;
     }
 }
 
@@ -85,38 +89,91 @@ impl MailSync {
     }
 
     /// Sync the folder tree, then every folder's messages, the inbox first.
+    /// Gives the first thing that went wrong, if anything did, having
+    /// still synced every folder that could be.
     pub async fn sync_all(&self) -> Result<Synced, SyncError> {
-        let synced = self.all().await;
+        self.sync_each().await.into_result()
+    }
+
+    /// Sync the folder tree, then every folder's messages, the inbox first.
+    /// A folder that cannot be synced is noted and does not stop the ones
+    /// after it, unless the trouble is the whole account's.
+    pub async fn sync_each(&self) -> Outcome {
+        let mut outcome = Outcome::default();
+        self.all(&mut outcome).await;
         // However it ended, it is busy with nothing now.
         self.now(None);
 
-        synced
+        outcome
     }
 
-    async fn all(&self) -> Result<Synced, SyncError> {
+    async fn all(&self, outcome: &mut Outcome) {
         self.now(Some(Doing::Folders));
-        let mut synced = self.sync_folders().await?;
+        // Without the folder tree, the folders known from before are still
+        // synced: what is new in them is no less wanted. But where the
+        // server could not be had for the very first thing asked of it,
+        // it is not then asked for every folder in turn.
+        match self.sync_folders().await {
+            Ok(synced) => outcome.done(synced),
+            Err(error) => {
+                let passing = error.is_transient();
+                if outcome.fail("The list of folders", error) || passing {
+                    outcome.stopped = true;
+                    return;
+                }
+            }
+        }
 
         // `folders()` lists the well-known folders first, the inbox at the head.
-        let folders = self.db.folders()?;
+        let folders = match self.db.folders() {
+            Ok(folders) => folders,
+            Err(error) => {
+                outcome.fail("The list of folders", error.into());
+                return;
+            }
+        };
+        let mut failed = std::collections::HashSet::new();
 
         // First the newest page of every folder nothing has been fetched of
         // yet, so that no folder sits empty while a large one ahead of it is
         // fetched whole. A page is asked for newest first.
         for folder in &folders {
-            let state = self.db.messages_sync(&folder.id)?;
-            if state.link.is_none() && !state.complete {
-                self.now(Some(Doing::Messages(folder.id.clone())));
-                let mut page = Synced::default();
-                self.messages_page(&folder.id, &mut page).await?;
-                synced.add(page);
+            self.now(Some(Doing::Messages(folder.id.clone())));
+            match self.first_page(&folder.id).await {
+                Ok(synced) => outcome.done(synced),
+                Err(error) => {
+                    failed.insert(folder.id.as_str());
+                    if outcome.fail(&folder.name, error) {
+                        return;
+                    }
+                }
             }
         }
 
-        // Then each folder whole, carrying on from the page it has.
+        // Then each folder whole, carrying on from the page it has. One
+        // that has just failed is left for the next sync.
         for folder in &folders {
+            if failed.contains(folder.id.as_str()) {
+                continue;
+            }
             self.now(Some(Doing::Messages(folder.id.clone())));
-            synced.add(self.sync_messages(&folder.id).await?);
+            match self.sync_messages(&folder.id).await {
+                Ok(synced) => outcome.done(synced),
+                Err(error) => {
+                    if outcome.fail(&folder.name, error) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fetch the newest page of a folder nothing has been fetched of yet.
+    async fn first_page(&self, folder_id: &str) -> Result<Synced, SyncError> {
+        let mut synced = Synced::default();
+        let state = self.db.messages_sync(folder_id)?;
+        if state.link.is_none() && !state.complete {
+            self.messages_page(folder_id, &mut synced).await?;
         }
 
         Ok(synced)
@@ -146,6 +203,7 @@ impl MailSync {
             synced.pages += 1;
             synced.changed += count(&changed);
             synced.removed += count(&removed);
+            synced.damaged += page.damaged;
 
             // A full pass reports the state as it was when the pass began.
             // Whatever changed while it ran is in the round that follows, so
@@ -214,6 +272,7 @@ impl MailSync {
         synced.pages += 1;
         synced.changed += count(&changed);
         synced.removed += count(&removed);
+        synced.damaged += page.damaged;
 
         // As for folders: a full pass is followed at once by the round
         // that carries what changed while it ran.
@@ -292,8 +351,13 @@ impl MailSync {
     ///
     /// `since` is a date, `YYYY-MM-DD`: messages received before it are left
     /// until they are opened.
+    ///
+    /// A message whose body cannot be had is passed over, so that it does
+    /// not keep the ones after it from being fetched. Trouble that is the
+    /// whole account's stops the fetching and is given back.
     pub async fn download_bodies(&self, since: &str, limit: u32) -> Result<u32, SyncError> {
         let mut fetched = 0;
+        let mut passed_over = Outcome::default();
 
         for id in self.db.missing_bodies(since, limit)? {
             let body = match self.graph.message_body(&id).await {
@@ -303,8 +367,14 @@ impl MailSync {
                 },
                 // Deleted or moved out of the mailbox since it was listed.
                 Err(GraphError::Refused { status: 404, .. }) => continue,
-                Err(other) => return Err(other.into()),
+                Err(other) => {
+                    if passed_over.fail(&id, other.into()) {
+                        return passed_over.into_result().map(|_| fetched);
+                    }
+                    continue;
+                }
             };
+            passed_over.done(Synced::default());
             let text = if body.content_type == "html" {
                 html_to_text(&body.content)
             } else {
