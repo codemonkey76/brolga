@@ -33,6 +33,8 @@
         within: string | null;
         categories: Category[];
         syncing: boolean;
+        /** Something is being done to the messages, and nothing else is started until it has been. */
+        working: boolean;
         onWrite: (kind: "new" | "reply" | "reply_all" | "forward" | "forward_as_attachment") => void;
         onDelete: () => void;
         /** Delete for good. Offered only where a message has already been deleted once. */
@@ -49,7 +51,7 @@
         onSync: () => void;
     }
 
-    let { message, several, folders, within, categories, syncing, onWrite, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onSetRead, onSetFlag, onCategorise, onSync }: Props =
+    let { message, several, folders, within, categories, syncing, working, onWrite, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onSetRead, onSetFlag, onCategorise, onSync }: Props =
         $props();
 
     /** The message being asked about, once "Delete permanently" has been pressed once. */
@@ -58,6 +60,8 @@
     /** What the actions are for. */
     const all = $derived(message ? [message] : several);
     const none = $derived(all.length === 0);
+    /** Nothing to act on, or not just now. */
+    const off = $derived(none || working);
     /** Answering is for one message. */
     const alone = $derived(message === null);
     /** What is being asked about, to be sure of it. */
@@ -92,25 +96,25 @@
 
     <span class="gap"></span>
     {#if within !== "deleteditems"}
-        <button type="button" disabled={none} aria-label="Delete" title="Delete (Del)" onclick={onDelete}><Trash size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={off} aria-label="Delete" title="Delete (Del)" onclick={onDelete}><Trash size={SIZE} aria-hidden="true" /></button>
     {:else if asking && sureOf === asking}
         <button type="button" class="danger words" onclick={() => ((sureOf = null), onPurge())}>{several.length > 1 ? `Delete ${several.length.toLocaleString()} for good?` : "Delete for good?"} It cannot be undone</button>
         <button type="button" aria-label="Keep" title="Keep it" onclick={() => (sureOf = null)}><X size={SIZE} aria-hidden="true" /></button>
     {:else}
-        <button type="button" disabled={none} aria-label="Delete permanently" title="Delete permanently" onclick={() => (sureOf = asking)}><Shredder size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={off} aria-label="Delete permanently" title="Delete permanently" onclick={() => (sureOf = asking)}><Shredder size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if within !== "archive" && folders.some((f) => f.well_known === "archive")}
-        <button type="button" disabled={none} aria-label="Archive" title="Archive (Backspace)" onclick={onArchive}><Archive size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={off} aria-label="Archive" title="Archive (Backspace)" onclick={onArchive}><Archive size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if within === "junkemail"}
-        <button type="button" disabled={none} aria-label="Not junk" title="Not junk: move to the inbox" onclick={onNotJunk}><ShieldCheck size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={off} aria-label="Not junk" title="Not junk: move to the inbox" onclick={onNotJunk}><ShieldCheck size={SIZE} aria-hidden="true" /></button>
     {:else if within !== "deleteditems" && within !== "sentitems" && within !== "drafts" && folders.some((f) => f.well_known === "junkemail")}
-        <button type="button" disabled={none} aria-label="Junk" title="Junk" onclick={onJunk}><OctagonAlert size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={off} aria-label="Junk" title="Junk" onclick={onJunk}><OctagonAlert size={SIZE} aria-hidden="true" /></button>
     {/if}
     <select
         aria-label="Move to folder"
         title="Move to a folder (Ctrl+Shift+V)"
-        disabled={none}
+        disabled={off}
         value=""
         onchange={(event) => {
             const to = folders.find((f) => f.id === event.currentTarget.value);
@@ -126,19 +130,19 @@
 
     <span class="gap"></span>
     {#if anyUnread}
-        <button type="button" aria-label="Mark as read" title="Mark as read (Ctrl+Q)" onclick={() => onSetRead(true)}><MailOpen size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={working} aria-label="Mark as read" title="Mark as read (Ctrl+Q)" onclick={() => onSetRead(true)}><MailOpen size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if anyRead || none}
-        <button type="button" disabled={none} aria-label="Mark as unread" title="Mark as unread (Ctrl+U)" onclick={() => onSetRead(false)}><Unread size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={off} aria-label="Mark as unread" title="Mark as unread (Ctrl+U)" onclick={() => onSetRead(false)}><Unread size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if anyFlagged}
-        <button type="button" aria-label="Mark complete" title="Mark complete" onclick={() => onSetFlag("complete")}><CircleCheck size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={working} aria-label="Mark complete" title="Mark complete" onclick={() => onSetFlag("complete")}><CircleCheck size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if anyFlagged || anyComplete}
-        <button type="button" aria-label="Clear flag" title={anyUnflagged ? "Clear flag" : "Clear flag (Insert)"} onclick={() => onSetFlag("notFlagged")}><FlagOff size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={working} aria-label="Clear flag" title={anyUnflagged ? "Clear flag" : "Clear flag (Insert)"} onclick={() => onSetFlag("notFlagged")}><FlagOff size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if anyUnflagged || none}
-        <button type="button" disabled={none} aria-label="Flag" title="Flag (Insert)" onclick={() => onSetFlag("flagged")}><Flag size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={off} aria-label="Flag" title="Flag (Insert)" onclick={() => onSetFlag("flagged")}><Flag size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if all.some((each) => each.flag_status !== "complete")}
         {@const flagged = all.every((each) => each.flag_status === "flagged")}
@@ -148,13 +152,13 @@
             </summary>
             <ul aria-label="Follow up by">
                 {#each flagDays() as each (each.label)}
-                    <li><button type="button" class="plain" onclick={() => due(each.day)}>{each.label} <span class="muted">{dueSaid(each.day)}</span></button></li>
+                    <li><button type="button" class="plain" disabled={working} onclick={() => due(each.day)}>{each.label} <span class="muted">{dueSaid(each.day)}</span></button></li>
                 {/each}
                 <li>
-                    <label>On <input type="date" aria-label="Another day" onchange={(event) => event.currentTarget.value && due(event.currentTarget.value)} /></label>
+                    <label>On <input type="date" aria-label="Another day" disabled={working} onchange={(event) => event.currentTarget.value && due(event.currentTarget.value)} /></label>
                 </li>
                 {#if all.some((each) => each.flag_due)}
-                    <li><button type="button" class="plain" onclick={() => due("")}>No day</button></li>
+                    <li><button type="button" class="plain" disabled={working} onclick={() => due("")}>No day</button></li>
                 {/if}
             </ul>
         </details>
@@ -169,7 +173,7 @@
                     <li>
                         <label>
                             <!-- Some of several have it: neither ticked nor clear, and a click gives it to the rest. -->
-                            <input type="checkbox" checked={has} indeterminate={have > 0 && !has} onchange={() => onCategorise(each.name, !has)} />
+                            <input type="checkbox" checked={has} indeterminate={have > 0 && !has} disabled={working} onchange={() => onCategorise(each.name, !has)} />
                             <span class="dot" style:background={categoryColour(each.color)}></span>
                             {each.name}
                         </label>

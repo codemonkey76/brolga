@@ -84,20 +84,49 @@
     /** The most lines chosen at once. */
     const MOST_PICKED = 5_000;
 
-    /** Do something to messages, as many at a time as the core takes. Every part that changed anything can be undone. */
+    /**
+     * Do something to messages, as many at a time as the core takes. Every
+     * part that changed anything can be undone. A part that fails stops it
+     * there: `reached` is how many were done before it, and what was done
+     * can still be undone.
+     */
     async function inBatches(ids: string[], each: (some: string[]) => Promise<Edited>) {
         let changed = 0;
+        let reached = 0;
         const undos: string[] = [];
         for (let at = 0; at < ids.length; at += MOST) {
-            const done = await each(ids.slice(at, at + MOST));
-            changed += done.changed;
-            if (done.changed > 0) undos.push(done.undo_id);
+            const some = ids.slice(at, at + MOST);
+            try {
+                const done = await each(some);
+                changed += done.changed;
+                if (done.changed > 0) undos.push(done.undo_id);
+                reached += some.length;
+            } catch (failure) {
+                return { changed, undos, reached, failed: true, failure };
+            }
         }
-        return { changed, undos };
+        return { changed, undos, reached, failed: false, failure: null };
     }
 
     /** What was done, and to how many when it was more than one. */
     const counted = (said: string, count: number) => (count > 1 ? `${said}: ${count.toLocaleString()} messages` : said);
+    /** Why something stopped, and how far it had got if it had got anywhere. */
+    const stopped = (failure: unknown, reached: number, of: number) =>
+        reached > 0 ? `${reached.toLocaleString()} of ${of.toLocaleString()} messages were done before this went wrong. ${say(failure)}` : say(failure);
+
+    /** Something is being done to messages. Until it has been, the keys and the toolbar start nothing else. */
+    let working = $state(false);
+
+    /** Do one thing to messages at a time. What is asked for while another is being done is left. */
+    async function alone(what: () => Promise<void>) {
+        if (working) return;
+        working = true;
+        try {
+            await what();
+        } finally {
+            working = false;
+        }
+    }
 
     /** What is attached to the message being read, apart from pictures within its body. */
     let attachments = $state<Attachment[]>([]);
@@ -233,18 +262,32 @@
             alike.set(key, { names, ids: [...(alike.get(key)?.ids ?? []), each.id] });
         }
         if (now.size === 0) return;
-        try {
+        await alone(async () => {
             const undos: string[] = [];
-            for (const { names, ids } of alike.values()) undos.push(...(await inBatches(ids, (some) => setCategories(account, some, names))).undos);
-            const mine = opened && now.get(opened.message.id);
-            if (opened && mine) opened = { ...opened, message: { ...opened.message, categories: mine } };
-            if (searching) rows = rows.map((row) => (row && now.has(row.id) ? { ...row, categories: now.get(row.id) ?? [] } : row));
-            else await refresh();
-            const cleared = [...now.values()].every((names) => names.length === 0);
-            if (undos.length > 0) offerUndo(counted(cleared ? "Categories cleared" : "Categories changed", now.size), undos);
-        } catch (failure) {
-            problem = say(failure);
-        }
+            /** Those it was done to, which is all of them unless a part failed. */
+            const did = new Map<string, string[]>();
+            let why: string | null = null;
+            for (const { names, ids } of alike.values()) {
+                const done = await inBatches(ids, (some) => setCategories(account, some, names));
+                undos.push(...done.undos);
+                for (const id of ids.slice(0, done.reached)) did.set(id, names);
+                if (done.failed) {
+                    why = stopped(done.failure, did.size, now.size);
+                    break;
+                }
+            }
+            try {
+                const mine = opened && did.get(opened.message.id);
+                if (opened && mine) opened = { ...opened, message: { ...opened.message, categories: mine } };
+                if (searching) rows = rows.map((row) => (row && did.has(row.id) ? { ...row, categories: did.get(row.id) ?? [] } : row));
+                else await refresh();
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            const cleared = [...did.values()].every((names) => names.length === 0);
+            if (undos.length > 0) offerUndo(counted(cleared ? "Categories cleared" : "Categories changed", did.size), undos);
+            if (why) problem = why;
+        });
     }
 
     /** The last action, while it can still be taken back. */
@@ -265,55 +308,82 @@
      * Change some messages. The core makes the change at once and sends it
      * in the background, so there is nothing to wait for but the redraw.
      * `said` is offered with an Undo for ten seconds; without it the change
-     * is made quietly.
+     * is made quietly, as reading a message marks it read, whatever else is
+     * being done.
      */
     async function change(ids: string[], what: { is_read: boolean } | { flag_status: FlagStatus; due?: string }, said?: string) {
         if (!accountId || ids.length === 0) return;
         const account = accountId;
-        try {
+        const make = async () => {
             const done = await inBatches(ids, (some) => ("is_read" in what ? setRead(account, some, what.is_read) : setFlag(account, some, what.flag_status, what.due)));
-            if ("is_read" in what) {
-                await redraw(what, ids);
-            } else {
-                // Only a flagged message has a day; one not mentioned keeps the day it had.
-                const day = what.flag_status !== "flagged" ? { flag_due: null } : what.due === undefined ? {} : { flag_due: what.due || null };
-                await redraw({ flag_status: what.flag_status, ...day }, ids);
+            let why = done.failed ? stopped(done.failure, done.reached, ids.length) : null;
+            // Drawn again even when a part failed, to show those it did reach.
+            const did = ids.slice(0, done.reached);
+            try {
+                if ("is_read" in what) {
+                    await redraw(what, did);
+                } else {
+                    // Only a flagged message has a day; one not mentioned keeps the day it had.
+                    const day = what.flag_status !== "flagged" ? { flag_due: null } : what.due === undefined ? {} : { flag_due: what.due || null };
+                    await redraw({ flag_status: what.flag_status, ...day }, did);
+                }
+            } catch (failure) {
+                why ??= say(failure);
             }
-            if (said && done.changed > 0) offerUndo(said, done.undos);
-        } catch (failure) {
-            problem = say(failure);
-        }
+            if (said && done.changed > 0) offerUndo(counted(said, did.length), done.undos);
+            if (why) problem = why;
+        };
+        if (said) await alone(make);
+        else await make();
+    }
+
+    /** Fetch the list again as it now is: the folder's pages, or what the search finds. */
+    async function again() {
+        if (searching) await search();
+        else await refresh();
     }
 
     async function takeBack() {
         if (!accountId || !undoable) return;
-        const { ids } = undoable;
-        clearTimeout(undoTimer);
-        undoable = null;
-        try {
-            for (const id of ids) await undo(accountId, id);
-            await refresh();
-            await relist();
-            // The message being read is drawn again from what the list now says of it.
-            const now = rows.find((row) => row && row.id === opened?.message.id);
-            if (opened && now) {
-                opened = {
-                    ...opened,
-                    message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status, flag_due: now.flag_due, categories: now.categories },
-                };
+        const account = accountId;
+        const { said, ids } = undoable;
+        await alone(async () => {
+            clearTimeout(undoTimer);
+            undoable = null;
+            let left = ids;
+            let why: string | null = null;
+            try {
+                for (const id of ids) {
+                    await undo(account, id);
+                    left = left.slice(1);
+                }
+            } catch (failure) {
+                why = say(failure);
             }
-        } catch (failure) {
-            problem = say(failure);
-        }
+            // Drawn again even when a part failed, to show what did come back.
+            try {
+                await again();
+                await relist();
+                // The message being read is drawn again from what the list now says of it.
+                const now = rows.find((row) => row && row.id === opened?.message.id);
+                if (opened && now) {
+                    opened = {
+                        ...opened,
+                        message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status, flag_due: now.flag_due, categories: now.categories },
+                    };
+                }
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            if (why) problem = why;
+            // What was not taken back can still be.
+            if (why && left.length > 0) offerUndo(said, left);
+        });
     }
 
-    const markRead = (isRead: boolean) => change(targets, { is_read: isRead }, counted(isRead ? "Marked as read" : "Marked as unread", targets.length));
+    const markRead = (isRead: boolean) => change(targets, { is_read: isRead }, isRead ? "Marked as read" : "Marked as unread");
     const flag = (status: FlagStatus, due?: string) =>
-        change(
-            targets,
-            { flag_status: status, due },
-            counted(status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged", targets.length),
-        );
+        change(targets, { flag_status: status, due }, status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged");
 
     function offerUndo(said: string, ids: string[]) {
         clearTimeout(undoTimer);
@@ -329,14 +399,18 @@
     async function moveTo(destination: string, said: string, ids = targets) {
         if (!accountId || ids.length === 0) return;
         const account = accountId;
-        try {
+        await alone(async () => {
             const at = place(ids);
             const done = await inBatches(ids, (some) => moveMessages(account, some, destination));
-            await gone(ids, at);
-            if (done.changed > 0) offerUndo(counted(said, ids.length), done.undos);
-        } catch (failure) {
-            problem = say(failure);
-        }
+            let why = done.failed ? stopped(done.failure, done.reached, ids.length) : null;
+            try {
+                await gone(ids.slice(0, done.reached), at);
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            if (done.changed > 0) offerUndo(counted(said, done.reached), done.undos);
+            if (why) problem = why;
+        });
     }
 
     /** Where in the list the first of these is. */
@@ -345,13 +419,18 @@
         return rows.findIndex((row) => row && going.has(row.id));
     }
 
-    /** Draw the list without what has left it, and open what is now where the first of them was. */
+    /**
+     * Draw the list without what has left it, and open what is now where the
+     * first of them was. Nothing is opened if what went was neither being
+     * read nor the lines chosen: a line's own bin, or a part that failed.
+     */
     async function gone(ids: string[], at: number) {
         if (!accountId) return;
         const going = new Set(ids);
-        // Something else was being read, and still is.
-        const stays = !many && !!current && !going.has(current.id);
-        picked = [];
+        const kept = picked.filter((id) => !going.has(id));
+        // Other lines are still chosen, or something else was being read and still is.
+        const stays = kept.length > 1 || (!many && !!current && !going.has(current.id));
+        picked = kept.length > 1 ? kept : [];
         if (searching) {
             rows = rows.filter((row) => !row || !going.has(row.id));
             total = rows.length;
@@ -362,7 +441,8 @@
         if (stays) return;
         const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
         if (next) {
-            await open(next);
+            // Not waited for: the next thing can be done to it while it opens.
+            void open(next);
         } else {
             opened = null;
             selectedId = null;
@@ -377,7 +457,7 @@
     function flagLine(message: Message) {
         const ids = lineOf(message);
         const clear = message.flag_status === "flagged";
-        void change(ids, { flag_status: clear ? "notFlagged" : "flagged" }, counted(clear ? "Flag cleared" : "Flagged", ids.length));
+        void change(ids, { flag_status: clear ? "notFlagged" : "flagged" }, clear ? "Flag cleared" : "Flagged");
     }
 
     const removeLine = (message: Message) => moveTo("deleteditems", "Moved to Deleted Items", lineOf(message));
@@ -386,14 +466,28 @@
     async function purge() {
         const ids = targets;
         if (!accountId || ids.length === 0) return;
-        try {
+        const account = accountId;
+        await alone(async () => {
             const at = place(ids);
-            for (let from = 0; from < ids.length; from += MOST) await deletePermanently(accountId, ids.slice(from, from + MOST));
-            await gone(ids, at);
-            tell(ids.length > 1 ? `${ids.length.toLocaleString()} messages deleted permanently.` : "Deleted permanently.");
-        } catch (failure) {
-            problem = say(failure);
-        }
+            let reached = 0;
+            let why: string | null = null;
+            for (let from = 0; from < ids.length && !why; from += MOST) {
+                const some = ids.slice(from, from + MOST);
+                try {
+                    await deletePermanently(account, some);
+                    reached += some.length;
+                } catch (failure) {
+                    why = stopped(failure, reached, ids.length);
+                }
+            }
+            try {
+                await gone(ids.slice(0, reached), at);
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            if (why) problem = why;
+            else tell(ids.length > 1 ? `${ids.length.toLocaleString()} messages deleted permanently.` : "Deleted permanently.");
+        });
     }
 
     /** The standard folder the message being read is in, if it is in one. For several chosen, the one they are all in. */
@@ -986,6 +1080,7 @@
     {within}
     {categories}
     {syncing}
+    {working}
     onWrite={write}
     onDelete={remove}
     onPurge={purge}

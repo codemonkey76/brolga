@@ -1696,3 +1696,76 @@ test("a message still opening says so, though one asked for before it has come",
     await told(page, "letGo", "mail.messages.get");
     await expect(pane.getByRole("heading")).toHaveText("Your October newsletter");
 });
+
+test("in what a search found, a deleted message comes back when that is undone", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+    await search.fill("invoice");
+    await search.press("Enter");
+    await expect(rows).toHaveCount(1);
+    await rows.first().click();
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Invoice 2041 attached");
+
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(page.getByText("Nothing matches.")).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click();
+
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Invoice 2041 attached");
+});
+
+test("a move of many that fails part way says how far it got, shows what is left, and can be undone", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)] });
+    await folder(page, "Archive").click();
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await page.keyboard.press("Control+a");
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await expect(picked).toContainText("1,200 messages selected");
+    await told(page, "failAfter", "mail.messages.move", 1, "Microsoft 365 could not be reached.");
+
+    await page.keyboard.press("Delete");
+
+    await expect(page.getByRole("alert")).toContainText("500 of 1,200 messages were done before this went wrong. Microsoft 365 could not be reached.");
+    await expect(page.getByText("· 700 messages")).toBeVisible();
+    // Those it did not reach are still chosen.
+    await expect(picked).toContainText("700 messages selected");
+    await expect(page.getByText("Moved to Deleted Items: 500 messages")).toBeVisible();
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByText("· 1,200 messages")).toBeVisible();
+});
+
+test("Delete pressed again while a message is being moved does nothing more", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await told(page, "hold", "mail.messages.move");
+
+    await page.keyboard.press("Delete");
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+    await page.keyboard.press("Delete");
+    await told(page, "letGo", "mail.messages.move");
+
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+    expect(await asked(page, "mail.messages.move")).toBe(1);
+});
+
+test("the bin on a line leaves the lines chosen as they were", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await rows.first().click();
+    await rows.nth(1).click({ modifiers: ["Shift"] });
+    await expect(picked).toContainText("2 messages selected");
+
+    await rows.nth(3).hover();
+    await rows.nth(3).getByTitle("Delete").click();
+
+    await expect(rows).toHaveCount(3);
+    await expect(picked).toContainText("2 messages selected");
+    await expect(messages(page).getByRole("option", { selected: true })).toHaveCount(2);
+});
