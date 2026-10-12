@@ -1618,3 +1618,81 @@ test("while an agent's question is waiting, keys do nothing to the mail behind i
     await expect(rows).toHaveCount(4);
     expect(await asked(page, "mail.messages.move")).toBe(0);
 });
+
+test("Delete is for the line the keys have reached, though its message is still opening", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await told(page, "hold", "mail.messages.get");
+
+    await page.keyboard.press("ArrowDown");
+    await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Delete");
+
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.messages.move")?.args.message_ids).toEqual(["m2"]);
+    await told(page, "letGo", "mail.messages.get");
+    await expect(rows).toHaveCount(3);
+    await expect(rows.first()).toContainText("Budget review moved to Thursday");
+});
+
+test("a reply is to the line the keys have reached, though its message is still opening", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await told(page, "hold", "mail.messages.get");
+
+    await page.keyboard.press("ArrowDown");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+
+    await expect(page.getByRole("form", { name: "Reply" }).getByRole("textbox", { name: "Subject" })).toHaveValue("RE: Your October newsletter");
+});
+
+test("the keys for a new message pressed twice start one message", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await expect(messages(page).getByRole("option")).toHaveCount(4);
+    await told(page, "hold", "mail.drafts.create");
+
+    await page.keyboard.press("Control+n");
+    await page.keyboard.press("Control+n");
+    await told(page, "letGo", "mail.drafts.create");
+
+    await expect(page.getByRole("form", { name: "New message" })).toBeVisible();
+    expect(await asked(page, "mail.drafts.create")).toBe(1);
+});
+
+test("where an attachment was saved is not said on another message opened meanwhile", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await rows.nth(2).click();
+    await told(page, "hold", "mail.attachments.save");
+    await pane.getByRole("button", { name: /Invoice 2041\.pdf/ }).first().click();
+    await expect.poll(() => told(page, "heldBack", "mail.attachments.save")).toBe(1);
+
+    await rows.first().click();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+    await told(page, "letGo", "mail.attachments.save");
+
+    await expect(page.getByText("Saved to /home/robin/Downloads/Invoice 2041.pdf")).toBeVisible();
+    await expect(pane).not.toContainText("Saved to");
+});
+
+test("a message still opening says so, though one asked for before it has come", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await expect(rows).toHaveCount(4);
+    await told(page, "hold", "mail.messages.get");
+    await rows.first().click();
+    await rows.nth(1).click();
+    await expect.poll(() => told(page, "heldBack", "mail.messages.get")).toBe(2);
+
+    await told(page, "letGo", "mail.messages.get", 1);
+    await expect.poll(() => told(page, "heldBack", "mail.messages.get")).toBe(1);
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 50)));
+
+    await expect(pane.getByText("Opening…")).toBeVisible();
+    await told(page, "letGo", "mail.messages.get");
+    await expect(pane.getByRole("heading")).toHaveText("Your October newsletter");
+});

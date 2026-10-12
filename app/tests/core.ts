@@ -1086,10 +1086,11 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             /** Hold back the answers to a command, every time it is run or only so many times, until `letGo`. */
             hold: (command: string, times = Infinity) => held.set(command, times),
             heldBack: (command: string) => stuck.filter((each) => each.command === command).length,
-            letGo: (command: string) => {
-                held.delete(command);
+            /** Let the answers to a command go: all of them, or only the first so many, the rest still being held. */
+            letGo: (command: string, only = Infinity) => {
+                if (only === Infinity) held.delete(command);
                 for (const each of stuck.splice(0)) {
-                    if (each.command === command) each.go();
+                    if (each.command === command && only-- > 0) each.go();
                     else stuck.push(each);
                 }
             },

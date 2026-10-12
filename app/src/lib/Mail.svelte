@@ -54,9 +54,11 @@
     let opened = $state<Opened | null>(null);
     let selectedId = $state<string | null>(null);
     /** The message being read, which in a conversation need not be the one selected in the list. */
-    let readingId: string | null = null;
+    let readingId = $state<string | null>(null);
     /** The lines chosen together, when there is more than one. `selectedId` is then the one the keys move from. */
     let picked = $state<string[]>([]);
+    /** The whole conversation of the selected line, oldest first, when it has more than one message. */
+    let thread = $state<Message[]>([]);
     /** Where a run of lines chosen with Shift begins. */
     let anchorId: string | null = null;
     const many = $derived(picked.length > 1);
@@ -65,8 +67,18 @@
         const ids = new Set(picked);
         return rows.filter((row): row is Message => !!row && ids.has(row.id));
     });
+    /**
+     * The one message an action is for: the one being read. While it is
+     * still opening the pane shows the one before it, so it is taken from its
+     * line in the list, and what is done is done to what the keys have reached.
+     */
+    const current = $derived.by(() => {
+        if (!readingId) return null;
+        if (opened?.message.id === readingId) return opened.message;
+        return rows.find((row) => row?.id === readingId) ?? thread.find((each) => each.id === readingId) ?? null;
+    });
     /** What an action is for: the lines chosen, or else the message being read. */
-    const targets = $derived(many ? chosen.map((each) => each.id) : opened ? [opened.message.id] : []);
+    const targets = $derived(many ? chosen.map((each) => each.id) : current ? [current.id] : []);
     /** The core takes this many messages at a time. */
     const MOST = 500;
     /** The most lines chosen at once. */
@@ -86,8 +98,6 @@
 
     /** What was done, and to how many when it was more than one. */
     const counted = (said: string, count: number) => (count > 1 ? `${said}: ${count.toLocaleString()} messages` : said);
-    /** The whole conversation of the selected line, oldest first, when it has more than one message. */
-    let thread = $state<Message[]>([]);
 
     /** What is attached to the message being read, apart from pictures within its body. */
     let attachments = $state<Attachment[]>([]);
@@ -98,14 +108,17 @@
     async function save(attachment: Attachment, ask = false) {
         if (!accountId || !opened) return;
         saved = null;
+        const messageId = opened.message.id;
         try {
-            const messageId = opened.message.id;
             const path = ask ? await chooseSavePath(attachment.name || "attachment") : undefined;
             if (ask && !path) return;
             const result = await saveAttachment(accountId, messageId, attachment.id, path ?? undefined);
-            saved = `Saved to ${result.path}`;
+            // Said on the message it came from, or beside the list if another has been opened since.
+            if (opened?.message.id === messageId) saved = `Saved to ${result.path}`;
+            else tell(`Saved to ${result.path}`);
         } catch (failure) {
-            saved = say(failure);
+            if (opened?.message.id === messageId) saved = say(failure);
+            else problem = say(failure);
         }
     }
 
@@ -134,7 +147,8 @@
             problem = "An archive can be read and searched, but nothing can be sent from it. Choose one of your accounts to write.";
             return null;
         }
-        if (kind !== "new" && !opened) return null;
+        const about = kind === "new" ? undefined : current?.id;
+        if (kind !== "new" && !about) return null;
         // Formatted unless the last message written was switched to plain text.
         let plain = false;
         try {
@@ -142,11 +156,16 @@
         } catch {
             // Formatted, then.
         }
-        return createDraft(accountId, kind, plain ? "text" : "html", kind === "new" ? undefined : opened?.message.id);
+        return createDraft(accountId, kind, plain ? "text" : "html", about);
     }
+
+    /** A message is being started, so the keys for one pressed again do not start another. */
+    let starting = false;
 
     /** Start a new message, or an answer to the one being read. */
     async function write(kind: Starting) {
+        if (starting) return;
+        starting = true;
         try {
             const started = await begin(kind);
             if (!started) return;
@@ -154,6 +173,8 @@
             await loadDrafts();
         } catch (failure) {
             problem = say(failure);
+        } finally {
+            starting = false;
         }
     }
 
@@ -197,7 +218,7 @@
 
     /** Give the messages a category, or take it from them. Each keeps whatever others it had. */
     async function categorise(name: string, on: boolean) {
-        const of = many ? chosen : opened ? [opened.message] : [];
+        const of = many ? chosen : current ? [current] : [];
         if (!accountId || of.length === 0) return;
         const account = accountId;
         // The core sets a message's categories whole, so those that end up alike are sent together.
@@ -329,7 +350,7 @@
         if (!accountId) return;
         const going = new Set(ids);
         // Something else was being read, and still is.
-        const stays = !many && !!opened && !going.has(opened.message.id);
+        const stays = !many && !!current && !going.has(current.id);
         picked = [];
         if (searching) {
             rows = rows.filter((row) => !row || !going.has(row.id));
@@ -345,6 +366,7 @@
         } else {
             opened = null;
             selectedId = null;
+            readingId = null;
             thread = [];
         }
     }
@@ -376,7 +398,7 @@
 
     /** The standard folder the message being read is in, if it is in one. For several chosen, the one they are all in. */
     const within = $derived.by(() => {
-        const from = many ? (chosen.every((each) => each.folder_id === chosen[0]?.folder_id) ? chosen[0]?.folder_id : undefined) : opened?.message.folder_id;
+        const from = many ? (chosen.every((each) => each.folder_id === chosen[0]?.folder_id) ? chosen[0]?.folder_id : undefined) : current?.folder_id;
         return folders.find((f) => f.id === from)?.well_known ?? null;
     });
     const remove = () => within !== "deleteditems" && moveTo("deleteditems", "Moved to Deleted Items");
@@ -452,6 +474,8 @@
         }
     }
     let opening = $state(false);
+    /** Counts each message asked for, so that only the last of them says the opening is over. */
+    let reads = 0;
     let readingProblem = $state<string | null>(null);
     let imagesShown = $state(false);
     let syncing = $state(false);
@@ -699,6 +723,8 @@
         picked = ids;
         selectedId = ids.length === 0 ? null : cursor;
         readingId = null;
+        reads += 1;
+        opening = false;
         opened = null;
         thread = [];
         attachments = [];
@@ -787,6 +813,7 @@
             saved = null;
         }
         opening = true;
+        const mine = ++reads;
         readingProblem = null;
         try {
             const result = await openMessage(accountId, message.id, withImages, view.plain);
@@ -809,7 +836,7 @@
                 readingProblem = say(failure);
             }
         } finally {
-            opening = false;
+            if (mine === reads) opening = false;
         }
     }
 
@@ -887,10 +914,10 @@
             } catch {
                 // Focused, then, to be opened with the keyboard.
             }
-        } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
+        } else if (current && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
             event.preventDefault();
             write(event.shiftKey ? "reply_all" : "reply");
-        } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        } else if (current && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
             event.preventDefault();
             write("forward");
         } else if (targets.length > 0 && !typing(event)) {
@@ -905,7 +932,7 @@
             } else if (event.key === "Insert") {
                 event.preventDefault();
                 // Several are flagged unless every one of them already is.
-                flag((many ? chosen.every((each) => each.flag_status === "flagged") : opened?.message.flag_status === "flagged") ? "notFlagged" : "flagged");
+                flag((many ? chosen.every((each) => each.flag_status === "flagged") : current?.flag_status === "flagged") ? "notFlagged" : "flagged");
             } else if (event.key === "Delete") {
                 event.preventDefault();
                 remove();
@@ -953,7 +980,7 @@
 
 <div class="mailview">
 <Toolbar
-    message={writing || many ? null : (opened?.message ?? null)}
+    message={writing || many ? null : current}
     several={writing ? [] : chosen}
     {folders}
     {within}
