@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { inbox, ran, robin, sam, withCore } from "./core";
+import { inbox, ran, refuse, robin, sam, withCore } from "./core";
 
 /** Pictures for the README, taken only when asked for: `SCREENSHOTS=1 bun run test`. */
 const picture = async (page: import("@playwright/test").Page, name: string) => {
@@ -71,6 +71,24 @@ test("signing in with a code shows the code and where to enter it", async ({ pag
     await expect(page.getByLabel("Sign-in code")).toHaveText("ABCD1234");
     await expect(page.getByText("https://login.example.test/device")).toBeVisible();
     await picture(page, "sign-in-with-code");
+});
+
+test("a sign-in being waited for can be given up on, in the browser or with a code", async ({ page }) => {
+    await withCore(page, { signInHangs: true });
+    const browser = page.getByRole("button", { name: "Sign in with your browser" });
+
+    await browser.click();
+    await expect(page.getByText("Finish signing in in your browser")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByText("Finish signing in in your browser")).toHaveCount(0);
+    await expect(browser).toBeEnabled();
+
+    await page.getByRole("button", { name: "Sign in with a code instead" }).click();
+    await expect(page.getByLabel("Sign-in code")).toHaveText("ABCD1234");
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByLabel("Sign-in code")).toHaveCount(0);
+    await expect(browser).toBeEnabled();
+    await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("an account that needs it can sign in again, as itself", async ({ page }) => {
@@ -605,4 +623,199 @@ test("looking for new versions is on until it is turned off, and then nothing is
     await box.uncheck();
     await expect(box).not.toBeChecked();
     expect((await ran(page)).filter((r) => r.command === "app.desktop.set").at(-1)?.args).toEqual({ check_for_updates: false });
+});
+
+const contact = (id: string, name: string, more: Record<string, unknown> = {}) => ({
+    id,
+    folder_id: "",
+    name,
+    given_name: name.split(" ")[0],
+    surname: name.split(" ")[1] ?? "",
+    nickname: "",
+    company: "",
+    job_title: "",
+    department: "",
+    office: "",
+    emails: [],
+    business_phones: [],
+    home_phones: [],
+    mobile: "",
+    notes: "",
+    birthday: null,
+    ...more,
+});
+
+test("with two accounts, whose contacts are shown is chosen, and each is asked for its own", async ({ page }) => {
+    const second = { ...sam, needs_sign_in: false };
+    await withCore(page, { accounts: [robin, second], contacts: [contact("c1", "Sam Taylor")] });
+    await page.getByRole("button", { name: "People" }).click();
+    const whose = page.getByRole("complementary", { name: "Folders of contacts" }).getByLabel("Account");
+    const list = page.getByRole("list", { name: "Contacts" });
+
+    await expect(whose).toHaveValue(robin.id);
+    await list.getByRole("button", { name: /Sam Taylor/ }).click();
+    await whose.selectOption({ label: second.username });
+
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "contacts.list").at(-1)?.args.account_id).toBe(second.id);
+    // Nobody of the other account's is left open.
+    await expect(page.getByRole("region", { name: "Contact" })).toContainText("Choose a contact");
+});
+
+test("with one account there is no choice of whose contacts", async ({ page }) => {
+    await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "People" }).click();
+
+    await expect(page.getByRole("button", { name: "New contact" })).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "Folders of contacts" }).getByLabel("Account")).toHaveCount(0);
+});
+
+test("Escape closes a contact form with nothing written in it, and asks before one with something is thrown away", async ({ page }) => {
+    await withCore(page, { accounts: [robin], contacts: [contact("c1", "Sam Taylor")] });
+    await page.getByRole("button", { name: "People" }).click();
+    const form = page.getByRole("form", { name: "New contact" });
+    const asked = page.getByRole("alertdialog", { name: "Discard the contact" });
+
+    await page.getByRole("button", { name: "New contact" }).click();
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
+
+    await page.getByRole("button", { name: "New contact" }).click();
+    await form.getByLabel("First name").fill("Kim");
+    await page.keyboard.press("Escape");
+    await expect(asked).toBeVisible();
+    await asked.getByRole("button", { name: "Keep" }).click();
+    await expect(form.getByLabel("First name")).toHaveValue("Kim");
+
+    // Escape in the search box is for the search.
+    await page.getByRole("searchbox", { name: "Search people" }).press("Escape");
+    await expect(asked).toHaveCount(0);
+    await expect(form.getByLabel("First name")).toHaveValue("Kim");
+
+    await form.getByLabel("Last name").press("Escape");
+    await asked.getByRole("button", { name: "Discard for good?" }).click();
+    await expect(form).toHaveCount(0);
+});
+
+test("contacts that could not be read say so only until they are read", async ({ page }) => {
+    await withCore(page, { accounts: [robin], contacts: [contact("c1", "Sam Taylor")] });
+    await page.getByRole("button", { name: "People" }).click();
+    const list = page.getByRole("region", { name: "People" });
+    await expect(list.getByRole("button", { name: /Sam Taylor/ })).toBeVisible();
+
+    await refuse(page, "contacts.list", "Your contacts could not be read just now.");
+    await page.getByRole("searchbox", { name: "Search people" }).fill("s");
+    await expect(list.getByRole("alert")).toHaveText("Your contacts could not be read just now.");
+
+    await refuse(page, "contacts.list", null);
+    await page.getByRole("searchbox", { name: "Search people" }).fill("sa");
+    await expect(list.getByRole("button", { name: /Sam Taylor/ })).toBeVisible();
+    await expect(list.getByRole("alert")).toHaveCount(0);
+});
+
+test("a contact with the same number or address twice shows both", async ({ page }) => {
+    const twice = contact("c1", "Sam Taylor", { emails: [{ address: "sam@example.test", name: "" }, { address: "sam@example.test", name: "" }], business_phones: ["07 5550 0001", "07 5550 0001"] });
+    await withCore(page, { accounts: [robin], contacts: [twice, contact("c2", "Jo Nguyen", { business_phones: ["07 5550 0001"] })] });
+    await page.getByRole("button", { name: "People" }).click();
+    const card = page.getByRole("region", { name: "Contact" });
+
+    await page.getByRole("list", { name: "Contacts" }).getByRole("button", { name: /Jo Nguyen/ }).click();
+    await expect(card.getByText("07 5550 0001")).toHaveCount(1);
+    await page.getByRole("list", { name: "Contacts" }).getByRole("button", { name: /Sam Taylor/ }).click();
+    await expect(card.getByText("07 5550 0001")).toHaveCount(2);
+    await expect(card.getByText("sam@example.test")).toHaveCount(2);
+});
+
+test("a choice that was refused goes back to what it was: sharing, a category's colour, a rule and this computer's", async ({ page }) => {
+    const rules = [{ id: "rule-1", name: "Newsletters", enabled: true, sequence: 1, read_only: false, conditions: { senderContains: ["newsletter"] }, exceptions: {}, actions: { markAsRead: true } }];
+    await withCore(page, { accounts: [robin], rules });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    const why = "Microsoft 365 could not be reached.";
+
+    await page.getByRole("button", { name: "Calendar sharing" }).click();
+    const sharing = page.getByRole("region", { name: "Calendar sharing for robin@example.test" });
+    const seen = sharing.getByRole("combobox", { name: "What Everyone in your organisation can see" });
+    await expect(seen).toHaveValue("freeBusyRead");
+    await refuse(page, "calendar.sharing.set");
+    await seen.selectOption("read");
+    await expect(sharing.getByRole("alert")).toHaveText(why);
+    await expect(seen).toHaveValue("freeBusyRead");
+    await page.getByRole("button", { name: "Calendar sharing" }).click();
+
+    await page.getByRole("button", { name: "Categories" }).click();
+    const categories = page.getByRole("region", { name: "Categories for robin@example.test" });
+    const colour = categories.getByRole("combobox", { name: "Colour of Clients" });
+    await expect(colour).toHaveValue("preset7");
+    await refuse(page, "mail.categories.set_color");
+    await colour.selectOption({ label: "Green" });
+    await expect(categories.getByRole("alert")).toHaveText(why);
+    await expect(colour).toHaveValue("preset7");
+    await page.getByRole("button", { name: "Categories" }).click();
+
+    await page.getByRole("button", { name: "Rules" }).click();
+    const listed = page.getByRole("region", { name: "Rules for robin@example.test" });
+    const on = listed.getByRole("checkbox", { name: "Newsletters is on" });
+    await expect(on).toBeChecked();
+    await refuse(page, "mail.rules.update");
+    await on.click();
+    await expect(listed.getByRole("alert")).toHaveText(why);
+    await expect(on).toBeChecked();
+
+    const here = page.getByRole("region", { name: "This computer" });
+    await refuse(page, "app.desktop.set");
+    await here.getByRole("checkbox", { name: /Keep running/ }).click();
+    await expect(here.getByRole("alert")).toHaveText(why);
+    await expect(here.getByRole("checkbox", { name: /Keep running/ })).not.toBeChecked();
+    await here.getByRole("checkbox", { name: /Look for new versions/ }).click();
+    await expect(here.getByRole("checkbox", { name: /Look for new versions/ })).toBeChecked();
+});
+
+test("a shared mailbox that could not be removed stays in the list, and it says why", async ({ page }) => {
+    const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
+    await withCore(page, { accounts: [robin], shared });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Shared mailboxes" }).click();
+    const section = page.getByRole("region", { name: "Shared mailboxes of robin@example.test" });
+
+    await refuse(page, "accounts.shared.remove", "The mailbox could not be removed just now.");
+    await section.getByRole("button", { name: "Remove support@example.test" }).click();
+    await expect(section.getByRole("alert")).toHaveText("The mailbox could not be removed just now.");
+    await expect(section.getByRole("listitem")).toContainText("support@example.test");
+
+    await refuse(page, "accounts.shared.remove", null);
+    await section.getByRole("button", { name: "Remove support@example.test" }).click();
+    await expect(section.getByRole("listitem")).toHaveCount(0);
+    await expect(section.getByRole("alert")).toHaveCount(0);
+});
+
+test("on a dark window the dot of a colour has a ring, so that a dark one is seen", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    await withCore(page, { accounts: [robin] });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Categories" }).click();
+    const dot = page.getByRole("region", { name: "Categories for robin@example.test" }).locator(".dot").first();
+
+    await expect(dot).not.toHaveCSS("box-shadow", "none");
+    await page.emulateMedia({ colorScheme: "light" });
+    await expect(dot).toHaveCSS("box-shadow", "none");
+});
+
+test("automatic replies scheduled by another zone's clock show when that is here, and are kept as they are", async ({ page }) => {
+    // Set elsewhere, in London's time: an hour ahead of UTC until the last Sunday of October.
+    const replies = {
+        status: "scheduled",
+        internal_message: "Away.",
+        start: { date_time: "2026-10-20T08:00:00.0000000", time_zone: "Europe/London" },
+        end: { date_time: "2026-10-26T17:30:00.0000000", time_zone: "Europe/London" },
+    };
+    await withCore(page, { accounts: [robin], replies });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Automatic replies" }).click();
+    const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
+
+    await expect(form.getByLabel("From", { exact: true })).toHaveValue("2026-10-20T17:00");
+    await expect(form.getByLabel("Until", { exact: true })).toHaveValue("2026-10-27T03:30");
+    // Something else is changed, and the times go back as the moments they were.
+    await form.getByLabel("To people in your organisation").fill("Away until Monday.");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.automatic_replies.set")?.args).toMatchObject({ start: "2026-10-20T07:00:00Z", end: "2026-10-26T17:30:00Z" });
 });

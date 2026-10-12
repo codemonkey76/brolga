@@ -49,8 +49,15 @@
         }
     }
 
+    /** Stop reading a shared mailbox. It stays in the list if that was refused. */
     async function unshare(mailbox: SharedMailbox) {
-        await removeShared(mailbox.id).catch(() => {});
+        sharedProblem = null;
+        try {
+            await removeShared(mailbox.id);
+        } catch (failure) {
+            sharedProblem = say(failure);
+            return;
+        }
         sharing = (sharing ?? []).filter((each) => each.id !== mailbox.id);
         onShared?.();
     }

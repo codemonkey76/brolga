@@ -205,6 +205,8 @@ export interface FakeCore {
     archives?: { id: string; name: string; source: string; state: string; messages: number; messages_done: number | null; messages_total: number | null; skipped: number; error: string | null }[];
     /** The inbox's rules, as `mail.rules.list` gives them, less the sentence. */
     rules?: Record<string, unknown>[];
+    /** How automatic replies are set to begin with, where that is not off. */
+    replies?: Record<string, unknown>;
     /** Why automatic replies cannot be read, if they cannot. */
     repliesRefused?: string;
     /** The files the file dialog says were chosen. Left out, it is dismissed. */
@@ -249,6 +251,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const accounts = [...(core.accounts ?? [])];
         const ran: { command: string; args: Record<string, unknown> }[] = [];
         const never = new Promise<never>(() => {});
+        /** Commands to refuse, each with the words it is refused in. */
+        const refusing = new Map<string, string>();
 
         const signedIn = () => {
             const outcome = core.signIn;
@@ -380,6 +384,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             external_audience: "nobody",
             start: null,
             end: null,
+            ...(core.replies ?? {}),
         };
         const when = (time: unknown) => (time ? { date_time: String(time).replace("Z", ""), time_zone: "UTC" } : null);
         const acted = (ids: unknown, apply: (m: (typeof mail)[number]) => (() => void) | null) => {
@@ -1085,6 +1090,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     body: "<p>Just in.</p>",
                 }),
             ran,
+            refusing,
             sent,
             /** Hold back what this mailbox's folders are, each time it is asked, until `letFoldersGo`. */
             holdFolders: (account: string) => (slow = account),
@@ -1137,6 +1143,9 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     const run = commands[payload.command];
                     if (!run) throw { code: "unknown_command", message: `there is no command called \`${payload.command}\`` };
                     ran.push({ command: payload.command, args: payload.args ?? {} });
+                    // A command this test has said is to be refused, in the words it gave.
+                    const why = refusing.get(payload.command);
+                    if (why) throw { code: "failed", message: why };
                     return run(payload.args ?? {});
                 },
             },
@@ -1148,6 +1157,17 @@ export async function withCore(page: Page, core: FakeCore = {}) {
 
 export const ran = (page: Page) =>
     page.evaluate(() => (window as unknown as { ran: { command: string; args: Record<string, unknown> }[] }).ran);
+
+/** Have the stand-in core refuse a command from now on, in these words. With no words, it is taken again. */
+export const refuse = (page: Page, command: string, why: string | null = "Microsoft 365 could not be reached.") =>
+    page.evaluate(
+        ([command, why]) => {
+            const refusing = (window as unknown as { refusing: Map<string, string> }).refusing;
+            if (why) refusing.set(command as string, why);
+            else refusing.delete(command as string);
+        },
+        [command, why],
+    );
 
 /** An event as the core's commands give it out. */
 export interface FakeEvent {

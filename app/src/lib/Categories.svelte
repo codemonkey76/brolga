@@ -41,6 +41,11 @@
         }
     }
 
+    /** Give a category another colour. If it was refused, the list goes back to saying the one it has. */
+    async function recolour(category: Category, list: HTMLSelectElement) {
+        if (!(await run("mail.categories.set_color", { name: category.name, color: list.value }))) list.value = category.color;
+    }
+
     async function add(submitted: SubmitEvent) {
         submitted.preventDefault();
         if (await run("mail.categories.create", { name: name.trim(), color: colour })) name = "";
@@ -65,7 +70,7 @@
                 <li>
                     <span class="dot" style:background={categoryColour(each.color)}></span>
                     <span class="name">{each.name}</span>
-                    <select aria-label={`Colour of ${each.name}`} value={each.color} onchange={(event) => run("mail.categories.set_color", { name: each.name, color: event.currentTarget.value })}>
+                    <select aria-label={`Colour of ${each.name}`} value={each.color} onchange={(event) => recolour(each, event.currentTarget)}>
                         {@render colours()}
                     </select>
                     {#if deleting === each.name}

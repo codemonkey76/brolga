@@ -21,13 +21,15 @@
         .then(apply)
         .catch(() => {});
 
-    async function change(what: Partial<Choices>) {
+    /** Record one choice. If it was refused, its box goes back to saying what is recorded. */
+    async function change(what: keyof Choices, box: HTMLInputElement) {
         problem = null;
         try {
-            choices = await execute<Choices>("app.desktop.set", what);
+            choices = await execute<Choices>("app.desktop.set", { [what]: box.checked });
             await apply();
         } catch (failure) {
             problem = say(failure);
+            box.checked = choices[what];
         }
     }
 </script>
@@ -35,7 +37,7 @@
 <section class="desktop" aria-labelledby="desktop-heading">
     <h2 id="desktop-heading">This computer</h2>
     <label>
-        <input type="checkbox" checked={choices.keep_running} onchange={(event) => change({ keep_running: event.currentTarget.checked })} />
+        <input type="checkbox" checked={choices.keep_running} onchange={(event) => change("keep_running", event.currentTarget)} />
         <span>
             Keep running when the window is closed
             <small class="muted">Mail goes on arriving and reminders are still given. Brolga sits in the system tray, where it is opened again or quit.</small>
@@ -45,14 +47,14 @@
         <p class="muted" role="status">This desktop has no system tray for Brolga to sit in, so closing the window still quits it.</p>
     {/if}
     <label>
-        <input type="checkbox" checked={choices.start_at_login} onchange={(event) => change({ start_at_login: event.currentTarget.checked })} />
+        <input type="checkbox" checked={choices.start_at_login} onchange={(event) => change("start_at_login", event.currentTarget)} />
         <span>
             Start when I sign in to this computer
             <small class="muted">With no window, where it is also kept running; otherwise with one.</small>
         </span>
     </label>
     <label>
-        <input type="checkbox" checked={choices.check_for_updates} onchange={(event) => change({ check_for_updates: event.currentTarget.checked })} />
+        <input type="checkbox" checked={choices.check_for_updates} onchange={(event) => change("check_for_updates", event.currentTarget)} />
         <span>
             Look for new versions of Brolga
             <small class="muted">When it starts and once a day, Brolga asks GitHub, where it is published, whether there is a newer one, and offers it along the bottom of the window. Nothing about you or your mail is sent.</small>

@@ -32,8 +32,35 @@
     const pad = (n: number) => String(n).padStart(2, "0");
     /** A time for a date-and-time box: local, to the minute. */
     const boxed = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    /** A time from the server as local time, where it is in UTC. One in a named zone cannot be turned here, and is left for the person to set. */
-    const local = (when: When | null) => (when && when.time_zone === "UTC" ? boxed(new Date(`${when.date_time}Z`)) : "");
+    /** A time by the clock in a named zone, as the moment it is. Null where this computer does not know the zone by that name. */
+    function inZone(clock: string, zone: string): Date | null {
+        try {
+            const shows = new Intl.DateTimeFormat("en-CA", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+            /** What the clock in the zone shows at a moment, read as if it were UTC. */
+            const shown = (at: number) => {
+                const part = Object.fromEntries(shows.formatToParts(new Date(at)).map((each) => [each.type, Number(each.value)]));
+                return Date.UTC(part.year, part.month - 1, part.day, part.hour, part.minute, part.second);
+            };
+            const wanted = +new Date(`${clock.slice(0, 19)}Z`);
+            // How far the zone is from UTC is taken at about the right time, and then again at the time that gives,
+            // in case the clocks change between the two.
+            let at = wanted;
+            for (let turn = 0; turn < 2; turn++) at = wanted - (shown(at) - at);
+            return Number.isNaN(at) ? null : new Date(at);
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * A time from the server as local time. One set elsewhere may be by the clock of a named zone. A zone under its
+     * usual name is turned here; one under a name only Windows uses cannot be, and is left for the person to set.
+     */
+    function local(when: When | null): string {
+        if (!when) return "";
+        const at = when.time_zone === "UTC" ? new Date(`${when.date_time}Z`) : inZone(when.date_time, when.time_zone);
+        return at && !Number.isNaN(+at) ? boxed(at) : "";
+    }
     /** A local time from a box, as the UTC the command takes. */
     const utc = (box: string) => new Date(box).toISOString().replace(/\.\d+Z$/, "Z");
 

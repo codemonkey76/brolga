@@ -158,12 +158,14 @@
         }
     }
 
-    async function turn(rule: Rule, enabled: boolean) {
+    /** Turn a rule on or off. If it was refused, the box goes back to saying which it is. */
+    async function turn(rule: Rule, box: HTMLInputElement) {
         problem = null;
         try {
-            await execute("mail.rules.update", { account_id: accountId, rule_id: rule.id, enabled });
+            await execute("mail.rules.update", { account_id: accountId, rule_id: rule.id, enabled: box.checked });
         } catch (failure) {
             problem = say(failure);
+            box.checked = rule.enabled;
         }
         await read();
     }
@@ -193,7 +195,7 @@
         <ul>
             {#each rules as rule (rule.id)}
                 <li>
-                    <input type="checkbox" aria-label={`${rule.name} is on`} checked={rule.enabled} disabled={rule.read_only} onchange={(event) => turn(rule, event.currentTarget.checked)} />
+                    <input type="checkbox" aria-label={`${rule.name} is on`} checked={rule.enabled} disabled={rule.read_only} onchange={(event) => turn(rule, event.currentTarget)} />
                     <span class="what">
                         <span class="name">{rule.name}{#if rule.has_error}<span class="warning"> · Microsoft 365 says this rule is broken</span>{/if}</span>
                         <span class="muted">{rule.summary}</span>

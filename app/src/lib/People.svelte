@@ -25,6 +25,8 @@
     let editing = $state<"new" | "change" | null>(null);
     let sure = $state(false);
     let problem = $state<string | null>(null);
+    /** True while what `problem` says is that the contacts could not be read. */
+    let unread = false;
     let loading = 0;
 
     /** What the last reading or writing of a file came to. */
@@ -99,15 +101,35 @@
                 others = [];
                 asked = true;
             }
+            // Read after all: what was said about not reading them no longer holds.
+            if (unread) problem = null;
+            unread = false;
         } catch (failure) {
-            if (mine === loading) problem = say(failure);
+            if (mine !== loading) return;
+            problem = say(failure);
+            unread = true;
         }
     }
 
     $effect(() => {
         const first = accounts[0];
-        if (first && !accountId) accountId = first.id;
+        // The first there is, and again if the one shown is taken away.
+        if (first && !accounts.some((each) => each.id === accountId)) accountId = first.id;
     });
+
+    /** Another account's contacts: nothing of the one that was shown is kept. */
+    function chooseAccount(id: string) {
+        accountId = id;
+        folderId = null;
+        folders = [];
+        contacts = [];
+        others = [];
+        selected = null;
+        editing = null;
+        sure = false;
+        problem = null;
+        filed = null;
+    }
 
     let waiting: ReturnType<typeof setTimeout> | undefined;
     $effect(() => {
@@ -122,6 +144,10 @@
     // ---- the form ---------------------------------------------------------
     let form = $state({ given: "", surname: "", company: "", title: "", department: "", emails: "", business: "", home: "", mobile: "", notes: "" });
     let was = { given: "", surname: "", company: "", title: "", department: "", emails: "", business: "", home: "", mobile: "", notes: "" };
+    /** The form as it was opened, to tell whether anything has been written in it since. */
+    let opened = "";
+    /** Escape was pressed on a form with something written in it, and it is being asked whether to throw that away. */
+    let leaving = $state(false);
     let saving = $state(false);
     let formProblem = $state<string | null>(null);
 
@@ -141,6 +167,8 @@
         };
         // A new contact sends everything written; a changed one only what was changed.
         was = contact ? { ...form } : { given: "", surname: "", company: "", title: "", department: "", emails: "", business: "", home: "", mobile: "", notes: "" };
+        opened = JSON.stringify(form);
+        leaving = false;
         formProblem = null;
         editing = contact ? "change" : "new";
     }
@@ -196,7 +224,13 @@
     }
 
     function keydown(event: KeyboardEvent) {
-        if (event.key === "Escape" && editing) editing = null;
+        if (event.key !== "Escape" || !editing) return;
+        // In the search box, Escape empties the box.
+        if (event.target instanceof HTMLInputElement && event.target.type === "search") return;
+        // The form goes at once only if nothing would go with it.
+        if (leaving) leaving = false;
+        else if (JSON.stringify(form) !== opened) leaving = true;
+        else editing = null;
     }
 </script>
 
@@ -204,6 +238,13 @@
 
 <div class="people">
     <aside aria-label="Folders of contacts">
+        {#if accounts.length > 1}
+            <select class="whose" aria-label="Account" value={accountId} onchange={(event) => chooseAccount(event.currentTarget.value)}>
+                {#each accounts as each (each.id)}
+                    <option value={each.id}>{each.username}</option>
+                {/each}
+            </select>
+        {/if}
         <button type="button" class="primary new" onclick={() => ((selected = null), open(null))}><Plus size={16} aria-hidden="true" />New contact</button>
         <ul>
             <li><button type="button" class:current={folderId === null} aria-current={folderId === null} onclick={() => (folderId = null)}>All contacts</button></li>
@@ -239,7 +280,7 @@
         {#if others.length > 0}
             <h2 id="organisation-heading">In your organisation</h2>
             <ul aria-labelledby="organisation-heading">
-                {#each others as each (each.address)}
+                {#each others as each, index (index)}
                     <li class="row other">
                         <span class="face" aria-hidden="true">{initials(each.name)}</span>
                         <span class="who">
@@ -280,10 +321,18 @@
                 <label>Home phones <textarea rows="1" bind:value={form.home}></textarea></label>
                 <label>Notes <textarea rows="4" bind:value={form.notes}></textarea></label>
                 {#if formProblem}<p class="problem" role="alert">{formProblem}</p>{/if}
-                <div class="buttons">
-                    <button type="submit" class="primary" disabled={saving}>{saving ? "Saving…" : "Save"}</button>
-                    <button type="button" disabled={saving} onclick={() => (editing = null)}>Cancel</button>
-                </div>
+                {#if leaving}
+                    <div class="buttons" role="alertdialog" aria-label="Discard the contact">
+                        <span>Discard what you have written?</span>
+                        <button type="button" class="danger" onclick={() => (editing = null)}>Discard for good?</button>
+                        <button type="button" onclick={() => (leaving = false)}>Keep</button>
+                    </div>
+                {:else}
+                    <div class="buttons">
+                        <button type="submit" class="primary" disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                        <button type="button" disabled={saving} onclick={() => (editing = null)}>Cancel</button>
+                    </div>
+                {/if}
             </form>
         {:else if selected}
             {@const contact = selected}
@@ -304,10 +353,10 @@
                 </span>
             </div>
             <dl>
-                {#each contact.emails as each (each.address)}<dt>Email</dt><dd>{each.address}</dd>{/each}
+                {#each contact.emails as each, index (index)}<dt>Email</dt><dd>{each.address}</dd>{/each}
                 {#if contact.mobile}<dt>Mobile</dt><dd>{contact.mobile}</dd>{/if}
-                {#each contact.business_phones as each (each)}<dt>Work</dt><dd>{each}</dd>{/each}
-                {#each contact.home_phones as each (each)}<dt>Home</dt><dd>{each}</dd>{/each}
+                {#each contact.business_phones as each, index (index)}<dt>Work</dt><dd>{each}</dd>{/each}
+                {#each contact.home_phones as each, index (index)}<dt>Home</dt><dd>{each}</dd>{/each}
                 {#if contact.office}<dt>Office</dt><dd>{contact.office}</dd>{/if}
                 {#if contact.birthday}
                     <dt>Birthday</dt>
@@ -546,7 +595,15 @@
 
     .buttons {
         display: flex;
+        align-items: center;
         gap: 0.5rem;
+    }
+
+    .whose {
+        width: 100%;
+        margin-bottom: 0.5rem;
+        font: inherit;
+        font-size: 0.85rem;
     }
 
     .problem {

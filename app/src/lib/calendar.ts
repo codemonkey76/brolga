@@ -213,17 +213,37 @@ export const calendarColour = (calendars: Calendar[], id: string) => {
 export const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
 export const addDays = (date: Date, days: number) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 export const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-/** The Monday on or before a day. */
-export const startOfWeek = (date: Date) => addDays(date, -((date.getDay() + 6) % 7));
+
+/**
+ * The day a week starts on where this computer is, as `getDay` counts them:
+ * 0 for Sunday. Monday where the browser cannot say.
+ */
+export const firstDay: number = (() => {
+    try {
+        const locale = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale) as Intl.Locale & {
+            getWeekInfo?: () => { firstDay: number };
+            weekInfo?: { firstDay: number };
+        };
+        // Monday is 1 and Sunday is 7.
+        const first = (locale.getWeekInfo?.() ?? locale.weekInfo)?.firstDay;
+        return typeof first === "number" ? first % 7 : 1;
+    } catch {
+        return 1;
+    }
+})();
+
+/** The first day of the week a day is in. */
+export const startOfWeek = (date: Date) => addDays(date, -((date.getDay() - firstDay + 7) % 7));
 
 /** The days a view shows, given a day in it. */
 export function daysOf(view: View, anchor: Date): Date[] {
     const day = startOfDay(anchor);
     if (view === "day") return [day];
-    if (view === "work_week") return Array.from({ length: 5 }, (_, i) => addDays(startOfWeek(day), i));
+    // Monday to Friday of that week, whichever day the week starts on.
+    if (view === "work_week") return Array.from({ length: 5 }, (_, i) => addDays(startOfWeek(day), ((8 - firstDay) % 7) + i));
     if (view === "week") return Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(day), i));
     if (view === "agenda") return Array.from({ length: 30 }, (_, i) => addDays(day, i));
-    // A month: whole weeks, from the Monday on or before its first day, six of them.
+    // A month: whole weeks, from the start of the week its first day is in, six of them.
     const first = startOfWeek(new Date(day.getFullYear(), day.getMonth(), 1));
     return Array.from({ length: 42 }, (_, i) => addDays(first, i));
 }
@@ -242,7 +262,7 @@ export function step(view: View, anchor: Date, by: 1 | -1): Date {
  * wherever it is seen from, so its dates are read as written and not moved
  * by the zone.
  */
-export function span(event: CalendarEvent): { start: Date; end: Date } {
+export function span(event: Pick<CalendarEvent, "start" | "end" | "is_all_day">): { start: Date; end: Date } {
     if (!event.is_all_day) return { start: new Date(event.start), end: new Date(event.end) };
     const day = (text: string) => {
         const [year, month, date] = text.slice(0, 10).split("-").map(Number);
@@ -262,7 +282,7 @@ export function onDay(event: CalendarEvent, day: Date): boolean {
 export const timeSaid = (date: Date) => date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
 /** A span as a person would say it. */
-export function whenSaid(event: CalendarEvent): string {
+export function whenSaid(event: Pick<CalendarEvent, "start" | "end" | "is_all_day">): string {
     const { start, end } = span(event);
     const day = (date: Date) => date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
     if (event.is_all_day) {
@@ -274,7 +294,7 @@ export function whenSaid(event: CalendarEvent): string {
 
 export interface Placed {
     event: CalendarEvent;
-    /** Minutes from the day's midnight to where it begins and ends on this day. */
+    /** Minutes by the clock from the day's midnight to where it begins and ends on this day. */
     from: number;
     to: number;
     /** Which of `of` columns it is in, where events overlap. */
@@ -289,7 +309,9 @@ export interface Placed {
  */
 export function layOut(events: CalendarEvent[], day: Date): Placed[] {
     const next = addDays(day, 1);
-    const minutes = (date: Date) => Math.round((+date - +day) / 60_000);
+    // By the clock, as the hours down the side are, and not by the time gone since midnight: the two differ on
+    // the day the clocks change.
+    const minutes = (date: Date) => (date <= day ? 0 : date >= next ? 24 * 60 : date.getHours() * 60 + date.getMinutes());
     const timed = events
         .filter((event) => !event.is_all_day && onDay(event, day))
         .map((event) => {

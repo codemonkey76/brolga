@@ -42,29 +42,50 @@
     });
     const missingClientId = $derived(needsClientId && !clientId.trim());
 
-    /** Run one thing at a time, show why it failed if it did, and reload the list after. */
-    async function attempt(kind: "browser" | "code" | "removing", work: () => Promise<unknown>) {
+    /** Bumped with each thing started and each one given up on, so that what a sign-in no longer waited for comes to is not shown. */
+    let attempts = 0;
+
+    /** Run one thing at a time, show why it failed if it did, and reload the list after. `waited` is false once it has been given up on. */
+    async function attempt(kind: "browser" | "code" | "removing", work: (waited: () => boolean) => Promise<unknown>) {
+        const mine = ++attempts;
+        const waited = () => mine === attempts;
         waiting = kind;
         problem = null;
         try {
-            await work();
+            await work(waited);
         } catch (failure) {
-            problem = say(failure);
+            if (waited()) problem = say(failure);
         } finally {
-            waiting = null;
-            code = null;
+            if (waited()) {
+                waiting = null;
+                code = null;
+            }
+            // Read again even so: a sign-in given up on here may still be finished in the browser.
             accounts = await listAccounts().catch(() => accounts);
             onChanged(accounts);
         }
+    }
+
+    /**
+     * Stop waiting for a sign-in. The core has no command to call one off, so it
+     * goes on waiting by itself until the browser or the code is finished with
+     * or it gives up; the window is free meanwhile.
+     */
+    function stopWaiting() {
+        attempts += 1;
+        waiting = null;
+        code = null;
     }
 
     const add = () => attempt("browser", () => signIn(under()));
     const again = (account: Account) => attempt("browser", () => signInAgain(account));
     const remove = (account: Account) => attempt("removing", () => removeAccount(account));
     const addWithCode = () =>
-        attempt("code", async () => {
-            code = await beginWithCode(under());
-            await finishWithCode(code);
+        attempt("code", async (waited) => {
+            const begun = await beginWithCode(under());
+            if (!waited()) return;
+            code = begun;
+            await finishWithCode(begun);
         });
 
     async function start() {
@@ -112,14 +133,17 @@
 
             {#if waiting === "browser"}
                 <p role="status">Finish signing in in your browser. This page will update when you are done.</p>
+                <div class="actions"><button type="button" onclick={stopWaiting}>Cancel</button></div>
             {:else if waiting === "code" && code}
                 <p role="status">
                     On any device, open <strong>{code.verification_uri}</strong> and enter this code:
                 </p>
                 <p class="code" aria-label="Sign-in code">{code.user_code}</p>
                 <p class="muted">Waiting for you to finish…</p>
+                <div class="actions"><button type="button" onclick={stopWaiting}>Cancel</button></div>
             {:else if waiting === "code"}
                 <p role="status">Getting a code…</p>
+                <div class="actions"><button type="button" onclick={stopWaiting}>Cancel</button></div>
             {:else}
                 <div class="actions">
                     <button type="button" class="primary" disabled={waiting !== null || missingClientId} onclick={add}>
