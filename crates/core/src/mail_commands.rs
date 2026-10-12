@@ -430,6 +430,13 @@ async fn attached(
     if let Some(kept) = mailbox.db.attachments(message_id).map_err(failed)? {
         return Ok(kept);
     }
+    // Only a message this computer knows is asked about: an id is whatever
+    // the caller says it is, and Graph is not asked about one made up.
+    if mailbox.db.message(message_id).map_err(failed)?.is_none() {
+        return Err(failed(
+            "There is no such message on this computer. It may have been moved or deleted; sync, and look for it again.",
+        ));
+    }
 
     let fetched = mailbox.graph.attachments(message_id).await.map_err(|e| {
         failed(format!(
