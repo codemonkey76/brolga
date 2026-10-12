@@ -17,8 +17,13 @@ pub fn safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         // Marks that change the direction of text can make `exe.txt` read
-        // as `txt.exe`, so they are dropped.
-        .filter(|c| !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+        // as `txt.exe`, and ones that take no room can sit after `.exe`
+        // unseen, so they are dropped.
+        .filter(|c| {
+            !matches!(c,
+                '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+        })
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c if c.is_control() => '_',
@@ -53,6 +58,87 @@ pub fn safe_name(name: &str) -> String {
     let stem: String = stem.chars().take(room).collect();
 
     format!("{stem}{extension}")
+}
+
+/// The kinds of file that run, or can run something, when they are opened:
+/// programs and installers, scripts, shortcuts and the files Windows
+/// follows like one, disk images, pages that carry script, and the Office
+/// files that carry macros or fetch data.
+const RUNS: &[&str] = &[
+    "apk",
+    "app",
+    "appimage",
+    "application",
+    "appref-ms",
+    "bat",
+    "bin",
+    "chm",
+    "cmd",
+    "com",
+    "command",
+    "cpl",
+    "deb",
+    "desktop",
+    "diagcab",
+    "dmg",
+    "docm",
+    "dotm",
+    "exe",
+    "hta",
+    "htm",
+    "html",
+    "img",
+    "inf",
+    "iqy",
+    "iso",
+    "jar",
+    "js",
+    "jse",
+    "library-ms",
+    "lnk",
+    "msc",
+    "msi",
+    "msix",
+    "pif",
+    "pkg",
+    "ppam",
+    "pptm",
+    "ps1",
+    "py",
+    "pyw",
+    "reg",
+    "rpm",
+    "run",
+    "scf",
+    "scr",
+    "sct",
+    "search-ms",
+    "settingcontent-ms",
+    "sh",
+    "slk",
+    "svg",
+    "url",
+    "vbe",
+    "vbs",
+    "vhd",
+    "vhdx",
+    "wsc",
+    "wsf",
+    "wsh",
+    "xlam",
+    "xll",
+    "xlsb",
+    "xlsm",
+];
+
+/// Whether a file of this name is one that runs, or can run something, when
+/// it is opened. The name is the one [`safe_name`] gives, which is the one
+/// written to disk: asking about the sender's own spelling would let
+/// `invoice.exe.` through, which is saved as `invoice.exe`.
+pub fn can_run(safe_name: &str) -> bool {
+    safe_name
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| RUNS.contains(&extension.trim().to_lowercase().as_str()))
 }
 
 /// A name's stem and its extension with the dot, where it has a short one.
@@ -182,6 +268,45 @@ mod tests {
         assert_eq!(safe_name("line\nbreak.txt"), "line_break.txt");
         // Right-to-left override: shown as `invoice-exe.pdf`, really `.exe`.
         assert_eq!(safe_name("invoice-\u{202E}fdp.exe"), "invoice-fdp.exe");
+    }
+
+    #[test]
+    fn a_file_that_runs_is_known_by_the_name_it_is_saved_under() {
+        // Each is saved as `invoice.exe`, however the sender spelt it.
+        for disguised in [
+            "invoice.exe",
+            "invoice.EXE",
+            "invoice.exe.",
+            "invoice.exe \u{202E}",
+            "invoice.exe\u{200B}",
+            "invoice.pdf .exe . ",
+        ] {
+            let name = safe_name(disguised);
+            assert!(name.ends_with(".exe") || name.ends_with(".EXE"), "{name}");
+            assert!(can_run(&name), "{disguised:?} was saved as {name}");
+        }
+        for runs in [
+            "a.url",
+            "a.scf",
+            "a.library-ms",
+            "a.settingcontent-ms",
+            "a.appref-ms",
+            "a.chm",
+            "a.xll",
+            "a.vhdx",
+            "a.pyw",
+            "a.html",
+            "a.svg",
+            "a.xlsb",
+            "a.iqy",
+            "a.docm",
+            "a.lnk",
+        ] {
+            assert!(can_run(&safe_name(runs)), "{runs}");
+        }
+        for plain in ["report.pdf", "exe", "notes.exe.txt", "photo.jpeg", "a.docx"] {
+            assert!(!can_run(&safe_name(plain)), "{plain}");
+        }
     }
 
     #[test]

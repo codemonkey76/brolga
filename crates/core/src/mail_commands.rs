@@ -560,8 +560,27 @@ async fn attachments(context: Context, args: Attachments) -> Result<Value, Comma
         .map_err(failed)?;
     let mailbox = context.open(&account).await.map_err(failed)?;
     let rows = attached(&mailbox, &args.message_id).await?;
+    // Beside the sender's name for each file goes the name it would be
+    // saved under, and whether a file of that name runs. Whatever warns
+    // about a file goes by these, so it warns about the file that is
+    // really written.
+    let listed: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let saved_name = crate::saving::safe_name(&row.name);
+            // An attached message, event or contact is saved as one, with
+            // `.eml`, `.ics` or `.vcf` on the end, and a link is not saved.
+            let can_run = row.kind == "file" && crate::saving::can_run(&saved_name);
+            let mut listed = serde_json::to_value(row).unwrap_or_default();
+            if let Some(listed) = listed.as_object_mut() {
+                listed.insert("saved_name".to_owned(), json!(saved_name));
+                listed.insert("can_run".to_owned(), json!(can_run));
+            }
+            listed
+        })
+        .collect();
 
-    Ok(json!({ "attachments": rows, "note": UNTRUSTED_ATTACHMENTS }))
+    Ok(json!({ "attachments": listed, "note": UNTRUSTED_ATTACHMENTS }))
 }
 
 async fn save_attachment(context: Context, args: SaveAttachment) -> Result<Value, CommandError> {
@@ -1303,7 +1322,9 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             title: "List a message's attachments".to_owned(),
             description: "What is attached to a message, without the contents: each attachment's id, name, type and size in bytes. \
                           `kind` is file, item (an attached message, event or contact) or reference (a link to a file kept elsewhere). \
-                          `is_inline` marks one shown within the body, such as a picture in a signature. The first time, this needs the network."
+                          `is_inline` marks one shown within the body, such as a picture in a signature. `name` is the sender's own word for the file; \
+                          `saved_name` is the plain file name it would be saved under, and `can_run` says whether a file of that name is a program or can run one. \
+                          The first time, this needs the network."
                 .to_owned(),
             kind: CommandKind::Query,
             consequential: false,
@@ -1330,9 +1351,11 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "content_type": { "type": "string" },
                                 "size": { "type": "integer" },
                                 "is_inline": { "type": "boolean" },
-                                "kind": { "enum": ["file", "item", "reference"] }
+                                "kind": { "enum": ["file", "item", "reference"] },
+                                "saved_name": { "type": "string", "description": "The file name it is saved under: the sender's, cut down to a plain name, with nothing in it that hides what kind of file it is. An item gains `.eml`, `.ics` or `.vcf` when it is saved." },
+                                "can_run": { "type": "boolean", "description": "True for a file whose saved name is a program's, or one that can run a program when opened." }
                             },
-                            "required": ["id", "name", "content_type", "size", "is_inline", "kind"]
+                            "required": ["id", "name", "content_type", "size", "is_inline", "kind", "saved_name", "can_run"]
                         }
                     },
                     "note": { "type": "string" }

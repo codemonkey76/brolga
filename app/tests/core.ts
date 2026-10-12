@@ -1000,7 +1000,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { dismissed: true };
             },
             "mail.attachments.list": (args) => ({
-                attachments: mail.find((each) => each.id === args.message_id)?.attachments ?? [],
+                // As the core does: the name a file is saved under, and whether a file of that name runs.
+                attachments: (mail.find((each) => each.id === args.message_id)?.attachments ?? []).map((each) => {
+                    const saved_name = each.name.replace(/[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, "").replace(/[. ]+$/, "").trim() || "attachment";
+                    const can_run = each.kind === "file" && ["exe", "url", "docm", "html", "lnk"].includes(saved_name.split(".").pop()?.trim().toLowerCase() ?? "");
+                    return { ...each, saved_name, can_run };
+                }),
                 note: "",
             }),
             "mail.attachments.save": (args) => {

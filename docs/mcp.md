@@ -74,6 +74,10 @@ styles Brolga itself keeps when it shows the message. It does not catch
 every way of hiding words: white words on white, or type too small to read,
 are still given.
 
+`list_attachments` gives each file's `saved_name`, the plain name it would be
+saved under, and `can_run`, whether a file of that name is a program or can
+run one. The sender's own `name` can be spelt to hide either.
+
 ## What an agent may do
 
 **An agent can only read unless you say otherwise.** What it may do is fixed

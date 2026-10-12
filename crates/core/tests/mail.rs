@@ -4909,3 +4909,57 @@ async fn an_agent_is_given_the_words_a_reader_sees_and_told_when_some_were_hidde
     assert_eq!(got["body"]["content"], "Lunch");
     assert_eq!(got["body"]["hidden_text_left_out"], false);
 }
+
+#[tokio::test]
+async fn an_attachment_is_listed_with_the_name_it_is_saved_under_and_whether_that_runs() {
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.inbox,
+        message("Invoice", "Sam Taylor", "2026-10-01T09:00:00Z")
+            .attach("invoice.exe.", "application/pdf", b"MZ")
+            .attach("invoice-\u{202E}fdp.exe", "application/pdf", b"MZ")
+            .attach("notes.url \u{202E}", "text/plain", b"[InternetShortcut]")
+            .attach("report.pdf", "application/pdf", b"%PDF"),
+    );
+    f.sync().await;
+
+    let listed = f
+        .run("mail.attachments.list", json!({ "message_id": id }))
+        .await;
+    let listed: Vec<(&str, bool)> = listed["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|each| {
+            (
+                each["saved_name"].as_str().unwrap(),
+                each["can_run"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        listed,
+        [
+            ("invoice.exe", true),
+            ("invoice-fdp.exe", true),
+            ("notes.url", true),
+            ("report.pdf", false),
+        ]
+    );
+    // And the name listed is the name written.
+    let first = f
+        .run("mail.attachments.list", json!({ "message_id": id }))
+        .await["attachments"][0]["id"]
+        .clone();
+    let saved = f
+        .run(
+            "mail.attachments.save",
+            json!({ "message_id": id, "attachment_id": first }),
+        )
+        .await;
+    assert!(
+        saved["path"].as_str().unwrap().ends_with("/invoice.exe"),
+        "{saved}"
+    );
+}
