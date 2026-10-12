@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.6" date="2026-10-12">
+      <description>
+        <p>A bar along the bottom says what is being fetched, every folder has its newest mail before any is fetched whole, and a newer Brolga is offered and installed from the window.</p>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-10-12">
       <description>
         <p>Several messages can be chosen and acted on together, each line of the list shows its sender's initials, and a message that has been answered or sent on is marked.</p>
