@@ -1862,3 +1862,30 @@ test("while a sync goes on, only what is near the lines on screen is fetched aga
     await messages(page).evaluate((list) => (list.scrollTop = list.scrollHeight));
     await expect(messages(page).getByText("Archived message 1200", { exact: true })).toBeVisible();
 });
+
+test("choosing another account leaves nothing of the one before: no message come late, no undo, no drafts", async ({ page }) => {
+    await withCore(page, { accounts: [robin, { ...sam, needs_sign_in: false }], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await page.getByRole("button", { name: "New message" }).click();
+    await page.getByRole("form", { name: "New message" }).getByRole("textbox", { name: "Subject" }).fill("Half written");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("list", { name: "Being written" })).toContainText("Half written");
+    await rows.nth(2).click();
+    await expect(pane.getByRole("heading")).toHaveText("Invoice 2041 attached");
+    await page.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
+    // The next message is slow to open, and the account is changed before it has.
+    await told(page, "hold", "mail.messages.get");
+    await rows.first().click();
+    await told(page, "hold", "mail.drafts.list");
+
+    await page.getByRole("combobox", { name: "Account" }).selectOption(sam.id);
+    await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Being written" })).toHaveCount(0);
+    await told(page, "letGo", "mail.messages.get");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 50)));
+
+    await expect(pane).toContainText("Select a message to read it.");
+    await expect(page.getByRole("button", { name: "Reply", exact: true })).toBeDisabled();
+});

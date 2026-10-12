@@ -129,6 +129,7 @@
     async function alone(what: () => Promise<void>) {
         if (working) return;
         working = true;
+        changing = accountId;
         try {
             await what();
         } finally {
@@ -167,7 +168,10 @@
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
     async function loadDrafts() {
-        if (accountId) drafts = await listDrafts(accountId).catch(() => drafts);
+        const of = accountId;
+        if (!of) return;
+        const found = await listDrafts(of).catch(() => null);
+        if (found && accountId === of) drafts = found;
     }
 
     function tell(what: string) {
@@ -203,9 +207,10 @@
     async function write(kind: Starting) {
         if (starting) return;
         starting = true;
+        const of = accountId;
         try {
             const started = await begin(kind);
-            if (!started) return;
+            if (!started || accountId !== of) return;
             writing = started;
             await loadDrafts();
         } catch (failure) {
@@ -300,6 +305,8 @@
 
     /** The last action, while it can still be taken back. */
     let undoable = $state<{ said: string; ids: string[] } | null>(null);
+    /** The account whose messages are being changed, for an undo to be offered only while it is still the one shown. */
+    let changing: string | null = null;
     let undoTimer: ReturnType<typeof setTimeout> | undefined;
     const UNDO_FOR = 10_000;
 
@@ -394,6 +401,8 @@
         change(targets, { flag_status: status, due }, status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged");
 
     function offerUndo(said: string, ids: string[]) {
+        // Another account has been chosen since: its list is not where to undo this.
+        if (changing !== accountId) return;
         clearTimeout(undoTimer);
         undoable = { said, ids };
         undoTimer = setTimeout(() => (undoable = null), UNDO_FOR);
@@ -510,9 +519,10 @@
 
     /** Tell of any change Microsoft 365 would not take. Each has already been put back. */
     async function tellOfRefusals() {
-        if (!accountId) return;
-        const refused = await refusedChanges(accountId);
-        if (refused.length === 0) return;
+        const of = accountId;
+        if (!of) return;
+        const refused = await refusedChanges(of);
+        if (refused.length === 0 || accountId !== of) return;
         const first = refused[0];
         const others = refused.length > 1 ? `, and ${refused.length - 1} more` : "";
         problem = `Microsoft 365 would not change the ${first.change} of “${first.subject || "(No subject)"}”${others}, so it has been put back. ${first.error}`;
@@ -954,8 +964,11 @@
         anchorId = message.id;
         if (message.is_draft && accountId) {
             selectedId = message.id;
+            const of = accountId;
             try {
-                writing = await openDraft(accountId, message.id);
+                const draft = await openDraft(of, message.id);
+                if (accountId !== of) return;
+                writing = draft;
                 await loadDrafts();
             } catch (failure) {
                 problem = say(failure);
@@ -977,7 +990,8 @@
     }
 
     async function read(message: Message, withImages = false) {
-        if (!accountId) return;
+        const of = accountId;
+        if (!of) return;
         readingId = message.id;
         imagesShown = withImages;
         if (opened?.message.id !== message.id) {
@@ -988,22 +1002,23 @@
         const mine = ++reads;
         readingProblem = null;
         try {
-            const result = await openMessage(accountId, message.id, withImages, view.plain);
-            if (readingId !== message.id) return;
+            const result = await openMessage(of, message.id, withImages, view.plain);
+            // Another message has been asked for since, or another account chosen.
+            if (readingId !== message.id || accountId !== of) return;
             opened = result;
             imagesShown = result.remote_content_allowed;
             // Reading it is what marks it read. Quietly: there is nothing to undo about having read something.
             if (!result.message.is_read) void change([message.id], { is_read: true });
             if (result.message.has_attachments && attachments.length === 0) {
                 try {
-                    const all = await listAttachments(accountId, message.id);
-                    if (readingId === message.id) attachments = all.filter((each) => !each.is_inline);
+                    const all = await listAttachments(of, message.id);
+                    if (readingId === message.id && accountId === of) attachments = all.filter((each) => !each.is_inline);
                 } catch (failure) {
-                    if (readingId === message.id) saved = say(failure);
+                    if (readingId === message.id && accountId === of) saved = say(failure);
                 }
             }
         } catch (failure) {
-            if (readingId === message.id) {
+            if (readingId === message.id && accountId === of) {
                 opened = null;
                 readingProblem = say(failure);
             }
@@ -1122,14 +1137,29 @@
         }
     }
 
+    /** Show another account. Nothing of the one before is kept, and what it answers late is left. */
     async function chooseAccount(id: string) {
         accountId = id;
         recallCollapsed();
         folderId = null;
         opened = null;
         selectedId = null;
+        readingId = null;
         anchorId = null;
         writing = null;
+        thread = [];
+        attachments = [];
+        saved = null;
+        categories = [];
+        drafts = [];
+        problem = null;
+        readingProblem = null;
+        reads += 1;
+        opening = false;
+        clearTimeout(undoTimer);
+        undoable = null;
+        clearTimeout(noticeTimer);
+        notice = null;
         reset();
         await loadFolders().catch((failure) => (problem = say(failure)));
         await loadDrafts();
