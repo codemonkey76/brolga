@@ -78,6 +78,8 @@ impl Mailbox {
         let Some(path) = &self.lock_file else {
             return Ok(Some(SyncTurn(None)));
         };
+        // Made for its owner alone, as the database beside it is.
+        AccountDb::keep_private(path)?;
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)

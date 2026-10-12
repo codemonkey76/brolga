@@ -82,6 +82,63 @@ pub struct Account {
     pub added_at: String,
 }
 
+/// Make ready the place a file of Brolga's is kept: its folder is made if
+/// need be, and so is the file, empty. On Unix both are for their owner
+/// alone, the folder `0700` and the file `0600`, and ones already there
+/// that anyone else could read are closed to them: mail is kept here, and
+/// another user of the computer has no business in it. A database's
+/// write-ahead log and shared memory beside it are closed likewise; SQLite
+/// makes new ones as the database itself is ("Write-Ahead Logging",
+/// SOURCES.md, and its `unix` VFS). Elsewhere a user's files are their own
+/// by default, and only the folder is made.
+pub(crate) fn keep_private(path: &Path) -> std::io::Result<()> {
+    let folder = path.parent().filter(|f| !f.as_os_str().is_empty());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+        /// Take away what group and others may do, where they may do anything.
+        fn close(path: &Path, mode: u32) -> std::io::Result<()> {
+            match std::fs::metadata(path) {
+                Ok(found) if found.permissions().mode() & 0o077 != 0 => {
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+                }
+                Ok(_) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }
+        }
+
+        if let Some(folder) = folder {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(folder)?;
+            // A folder that is someone else's to close is left as it is.
+            let _ = close(folder, 0o700);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        close(path, 0o600)?;
+        for beside in ["-wal", "-shm"] {
+            let mut other = path.as_os_str().to_owned();
+            other.push(beside);
+            close(Path::new(&other), 0o600)?;
+        }
+    }
+    #[cfg(not(unix))]
+    if let Some(folder) = folder {
+        std::fs::create_dir_all(folder)?;
+    }
+
+    Ok(())
+}
+
 /// The database of things that belong to no one account.
 pub struct GlobalDb {
     connection: Mutex<Connection>,
@@ -90,9 +147,7 @@ pub struct GlobalDb {
 impl GlobalDb {
     /// Open the database at this path, creating it and its folder if need be.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder)?;
-        }
+        keep_private(path)?;
 
         Self::prepare(Connection::open(path)?)
     }
@@ -235,6 +290,14 @@ impl GlobalDb {
         Ok(())
     }
 
+    /// Forget a setting. True if there was one.
+    pub fn remove_setting(&self, key: &str) -> Result<bool, StoreError> {
+        Ok(self
+            .connection()
+            .execute("DELETE FROM settings WHERE key = ?1", [key])?
+            > 0)
+    }
+
     pub fn remembered_client_id(&self) -> Result<Option<String>, StoreError> {
         use rusqlite::OptionalExtension;
 
@@ -363,6 +426,51 @@ mod tests {
         assert_eq!(reopened.accounts().unwrap().len(), 1);
         // Windows will not delete a file that is still open.
         drop(reopened);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_database_and_its_folder_are_for_their_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let beside = |path: &Path, suffix: &str| {
+            let mut other = path.as_os_str().to_owned();
+            other.push(suffix);
+            std::path::PathBuf::from(other)
+        };
+        let folder =
+            std::env::temp_dir().join(format!("brolga-store-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+
+        // Made new.
+        let path = folder.join("new").join("global.db");
+        let db = GlobalDb::open(&path).unwrap();
+        db.set_setting("a", "b").unwrap();
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&beside(&path, "-wal")), 0o600);
+        assert_eq!(mode(&beside(&path, "-shm")), 0o600);
+        drop(db);
+
+        // There already, as an earlier version left it: open to all to read.
+        let old = folder.join("old");
+        let path = old.join("global.db");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for file in [path.clone(), beside(&path, "-wal"), beside(&path, "-shm")] {
+            std::fs::write(&file, b"").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let db = GlobalDb::open(&path).unwrap();
+        db.set_setting("a", "b").unwrap();
+        assert_eq!(mode(&old), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&beside(&path, "-wal")), 0o600);
+        assert_eq!(mode(&beside(&path, "-shm")), 0o600);
+        drop(db);
+
         let _ = std::fs::remove_dir_all(folder);
     }
 }

@@ -111,3 +111,53 @@ async fn an_id_made_up_by_the_caller_reaches_nothing_on_the_server() {
         "something was asked of the server"
     );
 }
+
+/// A folder of this test's own to keep Brolga's data in.
+fn data_dir(name: &str) -> std::path::PathBuf {
+    let folder =
+        std::env::temp_dir().join(format!("brolga-security-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+
+    folder
+}
+
+/// Every file in the folder mail is kept in, by name.
+fn kept(data_dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(data_dir.join("accounts"))
+        .map(|entries| {
+            entries
+                .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+
+    names
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mail_on_this_computer_is_for_its_owner_alone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let folder = data_dir("private");
+    let f = Fixture::signed_in(Some(folder.clone())).await;
+    f.run("mail.sync", json!({})).await;
+
+    let mode =
+        |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&folder), 0o700);
+    assert_eq!(mode(&folder.join("accounts")), 0o700);
+    let names = kept(&folder);
+    assert!(names.iter().any(|name| name.ends_with(".db")), "{names:?}");
+    assert!(
+        names.iter().any(|name| name.ends_with(".sync-lock")),
+        "{names:?}"
+    );
+    for name in names {
+        assert_eq!(mode(&folder.join("accounts").join(&name)), 0o600, "{name}");
+    }
+
+    drop(f);
+    let _ = std::fs::remove_dir_all(folder);
+}

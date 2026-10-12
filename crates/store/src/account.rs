@@ -535,11 +535,16 @@ pub struct AccountDb {
 
 impl AccountDb {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder)?;
-        }
+        Self::keep_private(path)?;
 
         Self::prepare(Connection::open(path)?)
+    }
+
+    /// Make ready the place a file kept beside a mailbox's database is
+    /// kept, such as the one that says a sync is running: it and its folder
+    /// are made if need be, and on Unix are for their owner alone.
+    pub fn keep_private(path: &Path) -> std::io::Result<()> {
+        crate::global::keep_private(path)
     }
 
     pub fn in_memory() -> Result<Self, StoreError> {
