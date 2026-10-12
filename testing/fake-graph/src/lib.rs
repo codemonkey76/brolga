@@ -95,6 +95,13 @@ struct Inner {
     lose_next_event_answer: bool,
     /// The next rule is made, and the caller is told the server is busy.
     lose_next_rule_answer: bool,
+    /// The next change to an event is made, and the caller is told the server failed.
+    lose_next_event_change_answer: bool,
+    /// How many of the next requests to make an event are told the server
+    /// is busy, the event having been made.
+    losing_event_answers: u32,
+    /// How many of the next changes to events are not made, the caller being told the server failed.
+    failing_event_changes: u32,
     /// The next answer to an invitation is taken, and the caller is not told.
     lose_next_response_answer: bool,
     /// Every answer to an invitation: (event, answer, comment, organiser told).
@@ -107,6 +114,10 @@ struct Inner {
     uploads: HashMap<String, Upload>,
     /// Messages every change to which is refused.
     refused_updates: std::collections::HashSet<String>,
+    /// Folders whose messages cannot be asked after, and calendars whose
+    /// events cannot: each with the status every such request is answered with.
+    broken_folders: HashMap<String, u16>,
+    broken_calendars: HashMap<String, u16>,
     /// Where this server is, to write links to itself.
     base: String,
 }
@@ -195,6 +206,10 @@ impl FakeGraph {
             .route(
                 "/v1.0/me/contactFolders/{folder}/contacts",
                 get(contacts_in).post(create_contact_in),
+            )
+            .route(
+                "/v1.0/me/contactFolders/{folder}/childFolders",
+                get(contact_child_folders),
             )
             .route(
                 "/v1.0/me/contacts/{contact}",
@@ -362,6 +377,14 @@ impl FakeGraph {
         lock(&self.shared).mailbox.add_folder(name, parent)
     }
 
+    /// Add one of the folders every mailbox may have, known from then on
+    /// by its well-known name, such as `archive`.
+    pub fn add_well_known_folder(&self, known: &'static str, name: &str) -> String {
+        lock(&self.shared)
+            .mailbox
+            .add_well_known_folder(known, name)
+    }
+
     pub fn rename_folder(&self, id: &str, name: &str) {
         lock(&self.shared).mailbox.rename_folder(id, name);
     }
@@ -509,6 +532,14 @@ impl FakeGraph {
         lock(&self.shared).people.add_folder(name)
     }
 
+    /// Add a folder of contacts inside another.
+    pub fn add_contact_folder_in(&self, parent: &str, name: &str) -> String {
+        lock(&self.shared)
+            .people
+            .add_folder_in(parent, name)
+            .unwrap_or_default()
+    }
+
     /// Every contact in a folder (empty for the main one), as Graph would give them.
     pub fn contacts(&self, folder: &str) -> Vec<Value> {
         lock(&self.shared).people.in_folder(folder)["value"]
@@ -564,6 +595,25 @@ impl FakeGraph {
                 }
             }
         });
+    }
+
+    /// The next `times` requests to make an event are answered as if the
+    /// server were busy, though the event is made: with six, a request
+    /// and every repeat of it the client allows itself.
+    pub fn lose_event_answers(&self, times: u32) {
+        lock(&self.shared).losing_event_answers = times;
+    }
+
+    /// The next change to an event is made, and the answer is a 500: an
+    /// error that does not say whether the change was made.
+    pub fn lose_next_event_change_answer(&self) {
+        lock(&self.shared).lose_next_event_change_answer = true;
+    }
+
+    /// The next `times` changes to events are answered with a 500 and are
+    /// not made.
+    pub fn fail_next_event_changes(&self, times: u32) {
+        lock(&self.shared).failing_event_changes = times;
     }
 
     pub fn lose_next_event_answer(&self) {
@@ -782,6 +832,37 @@ impl FakeGraph {
 
     pub fn delete_message(&self, id: &str) {
         lock(&self.shared).mailbox.delete_message(id);
+    }
+
+    /// From now on answer every request for this folder's messages with
+    /// this status, such as 500 or 403: a folder the server cannot give,
+    /// while it gives every other.
+    pub fn break_folder(&self, folder: &str, status: u16) {
+        lock(&self.shared)
+            .broken_folders
+            .insert(folder.to_owned(), status);
+    }
+
+    pub fn mend_folder(&self, folder: &str) {
+        lock(&self.shared).broken_folders.remove(folder);
+    }
+
+    /// The same for a calendar's events.
+    pub fn break_calendar(&self, calendar: &str, status: u16) {
+        lock(&self.shared)
+            .broken_calendars
+            .insert(calendar.to_owned(), status);
+    }
+
+    pub fn mend_calendar(&self, calendar: &str) {
+        lock(&self.shared).broken_calendars.remove(calendar);
+    }
+
+    /// Give these properties of a message exactly as written here, whatever
+    /// the message has: for an entry in a shape the documentation does not
+    /// promise, such as `"from": { "emailAddress": null }`.
+    pub fn send_raw(&self, message: &str, properties: Value) {
+        lock(&self.shared).mailbox.send_raw(message, properties);
     }
 
     /// Make every delta link handed out so far stale, as Graph does when its
@@ -1162,6 +1243,18 @@ async fn contact_folders(State(shared): State<Shared>) -> Response {
     axum::Json(lock(&shared).people.folders()).into_response()
 }
 
+/// "List childFolders" (SOURCES.md).
+async fn contact_child_folders(
+    State(shared): State<Shared>,
+    Path(folder): Path<String>,
+) -> Response {
+    let inner = lock(&shared);
+    if !inner.people.has_folder(&folder) {
+        return event_refused("ErrorItemNotFound");
+    }
+    axum::Json(inner.people.child_folders(&folder)).into_response()
+}
+
 /// "List contacts" (SOURCES.md), for the main folder.
 async fn contacts(State(shared): State<Shared>) -> Response {
     axum::Json(lock(&shared).people.in_folder("")).into_response()
@@ -1254,6 +1347,20 @@ async fn answered_messages(
             StatusCode::BAD_REQUEST,
             "BadRequest",
             "This stand-in lists messages only by what was last done with them.",
+        );
+    }
+    // A place in the list that is not one this server gave is refused. The
+    // documentation does not say what a link that is no longer good is
+    // answered with: the 400 is this stand-in's own, for testing that a
+    // refusal of the saved place is survived.
+    if query
+        .get("$skiptoken")
+        .is_some_and(|place| place.parse::<usize>().is_err())
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "BadRequest",
+            "The skip token is not valid.",
         );
     }
     let number = |part: &str, or: usize| query.get(part).and_then(|n| n.parse().ok()).unwrap_or(or);
@@ -1354,6 +1461,10 @@ fn make_event(shared: &Shared, calendar: Option<String>, body: &Value) -> Respon
         // Made, and the caller is told to try again.
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    if inner.losing_event_answers > 0 {
+        inner.losing_event_answers -= 1;
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
 
     match inner.calendars().one(&made) {
         Some(event) => (StatusCode::CREATED, axum::Json(event)).into_response(),
@@ -1384,8 +1495,15 @@ async fn update_event(
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
     let mut inner = lock(&shared);
+    if inner.failing_event_changes > 0 {
+        inner.failing_event_changes -= 1;
+        return broken(500);
+    }
     if let Err(code) = inner.calendars().update(&event, &body) {
         return event_refused(code);
+    }
+    if std::mem::take(&mut inner.lose_next_event_change_answer) {
+        return broken(500);
     }
 
     match inner.calendars().one(&event) {
@@ -1561,6 +1679,10 @@ async fn events_delta(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let mut inner = lock(&shared);
+    let main = inner.calendars().default_calendar();
+    if let Some(status) = inner.broken_calendars.get(&main) {
+        return broken(*status);
+    }
     let link = format!("{}/me/calendarView/delta", inner.base);
     let size = page_size(&headers);
 
@@ -1574,6 +1696,9 @@ async fn calendar_view(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let mut inner = lock(&shared);
+    if let Some(status) = inner.broken_calendars.get(&calendar) {
+        return broken(*status);
+    }
     let link = format!("{}/me/calendars/{calendar}/calendarView", inner.base);
     let size = page_size(&headers);
 
@@ -1962,6 +2087,9 @@ async fn messages_delta(
         );
     }
     let inner = lock(&shared);
+    if let Some(status) = inner.broken_folders.get(&folder) {
+        return broken(*status);
+    }
     let link = format!("{}/me/mailFolders/{folder}/messages/delta", inner.base);
 
     delta_answer(
@@ -2706,6 +2834,19 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
     let body: Value = json!({ "error": { "code": code, "message": message } });
 
     (status, axum::Json(body)).into_response()
+}
+
+/// The answer for something a test has broken: an error of that status, in
+/// the shape every Graph error has.
+fn broken(status: u16) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let code = if status.is_server_error() {
+        "generalException"
+    } else {
+        "accessDenied"
+    };
+
+    error(status, code, "This cannot be given.")
 }
 
 #[cfg(test)]

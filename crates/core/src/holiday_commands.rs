@@ -25,6 +25,10 @@ use crate::mailboxes::{Mailbox, Mailboxes};
 const NOTED: &str = "holidays";
 /// How many years on from this one a calendar is filled to.
 const AHEAD: i16 = 2;
+/// How a calendar's year is read to see which days it has: so many events
+/// a page, and no more pages than this.
+const PAGE_SIZE: u32 = 100;
+const MOST_PAGES: u32 = 20;
 
 /// A holiday calendar that was made here, and how far it has been filled.
 #[derive(Serialize, Deserialize, Clone)]
@@ -70,6 +74,12 @@ fn this_year() -> i16 {
 /// say how many were put. A day is there already if the calendar has an
 /// all-day event of its name on its date, so that a year half done, or one
 /// asked for twice, is not doubled.
+///
+/// What is there already is asked of the server, not taken from this
+/// computer's copy. A day can have been made without the answer ever
+/// arriving, and the copy of a calendar like this one is read again only
+/// every so often, and only for the stretch of time that is kept: going
+/// by it would make such a day a second time.
 async fn fill(
     mailbox: &Mailbox,
     calendar_id: &str,
@@ -79,18 +89,46 @@ async fn fill(
 ) -> Result<usize, CommandError> {
     let days = holidays::of(country, region, year).unwrap_or_default();
     // A day either side, for an all-day event is kept by where its midnight fell in UTC.
-    let there: HashSet<(String, String)> = mailbox
-        .db
-        .events_between(
-            &format!("{:04}-12-30T00:00:00Z", year - 1),
-            &format!("{:04}-01-03T00:00:00Z", year + 1),
-            false,
-        )
-        .map_err(failed)?
-        .into_iter()
-        .filter(|event| event.calendar_id == calendar_id && event.is_all_day)
-        .map(|event| (event.start.chars().take(10).collect(), event.subject))
-        .collect();
+    let window = (
+        format!("{:04}-12-30T00:00:00", year - 1),
+        format!("{:04}-01-03T00:00:00", year + 1),
+    );
+    let mut there: HashSet<(String, String)> = HashSet::new();
+    let mut link: Option<String> = None;
+    // A calendar of holidays has a few dozen days in a year. A list that
+    // does not end is a server gone wrong, and is not followed for ever.
+    for _ in 0..MOST_PAGES {
+        let page = mailbox
+            .graph
+            .calendar_view(
+                calendar_id,
+                link.as_deref(),
+                (&window.0, &window.1),
+                PAGE_SIZE,
+            )
+            .await
+            .map_err(not_made)?;
+        for item in page.items {
+            if let brolga_graph::DeltaItem::Changed(event) = item
+                && let Some(event) = brolga_sync::event_row(event)
+                && event.is_all_day
+            {
+                there.insert((event.start.chars().take(10).collect(), event.subject));
+            }
+        }
+        match page.next {
+            brolga_graph::Next::Page(next) => link = Some(next),
+            brolga_graph::Next::Done(_) => {
+                link = None;
+                break;
+            }
+        }
+    }
+    if link.is_some() {
+        return Err(failed(
+            "Microsoft 365 did not finish saying which days the calendar already has.",
+        ));
+    }
 
     let mut put = 0;
     for day in days {

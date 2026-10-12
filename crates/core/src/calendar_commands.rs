@@ -1068,12 +1068,24 @@ async fn update(mailboxes: Arc<Mailboxes>, args: Update) -> Result<Value, Comman
             .collect();
         body.insert("attendees".to_owned(), json!(invited));
     }
-    let begins: jiff::civil::Date = fields
-        .start
-        .as_deref()
-        .and_then(|start| start.get(..10))
-        .and_then(|day| day.parse().ok())
-        .unwrap_or(day);
+    // The day the new series begins is the day its start falls on in the
+    // zone it is held in, which is how the start is sent. A start given
+    // as a moment elsewhere, `2026-10-19T23:00:00Z`, is not the day written.
+    let begins: jiff::civil::Date = match (&fields.start, &fields.end) {
+        (Some(start), Some(end)) => {
+            let (start, _, _) = times(
+                start,
+                end,
+                fields.time_zone.as_deref(),
+                fields.is_all_day.unwrap_or(false),
+            )?;
+            start
+                .get(..10)
+                .and_then(|day| day.parse().ok())
+                .ok_or_else(|| failed("The start could not be read as a day."))?
+        }
+        _ => day,
+    };
     if fields.repeat.is_none() {
         body.insert(
             "recurrence".to_owned(),
@@ -1090,16 +1102,57 @@ async fn update(mailboxes: Arc<Mailboxes>, args: Update) -> Result<Value, Comman
         .await
         .map_err(not_made)?;
     let stopped = master.ending_before(day).ok_or_else(unreadable)?;
-    if let Err(error) = mailbox.graph.update_event(&master_id, &stopped).await {
-        // The old series still runs on: take the new one away again rather than leave both.
-        let undone = mailbox.graph.delete_event(&made.id).await.is_ok();
-        return Err(if undone {
-            not_made(error)
-        } else {
-            failed(
-                "The series from here on was made anew, but the old one could not be stopped, so both are in the calendar. Delete one of them.",
-            )
-        });
+    let stop = || async {
+        mailbox
+            .graph
+            .update_event(&master_id, &stopped)
+            .await
+            .map(|_| ())
+    };
+    // A refusal is the server's considered no, and the old series runs on.
+    // Anything else says nothing of whether it was stopped: no answer, an
+    // error of the server's own, or an answer that could not be read.
+    let refused = |error: &brolga_graph::GraphError| {
+        matches!(
+            error,
+            brolga_graph::GraphError::Refused { .. }
+                | brolga_graph::GraphError::Unauthorized { .. }
+                | brolga_graph::GraphError::Token(_)
+        )
+    };
+    let mut outcome = stop().await;
+    if outcome.as_ref().is_err_and(|error| !refused(error)) {
+        // So the old series is read again, and it says. If it runs on, it
+        // is asked to stop once more, which does no harm done twice.
+        match Master::read(&mailbox, &master_id).await {
+            Ok(now) if stopped_before(&now, day) => outcome = Ok(()),
+            Ok(_) => outcome = stop().await,
+            Err(_) => {}
+        }
+    }
+    match outcome {
+        Ok(()) => {}
+        Err(error) if refused(&error) => {
+            // The old series still runs on: take the new one away again rather than leave both.
+            let undone = mailbox.graph.delete_event(&made.id).await.is_ok();
+            return Err(if undone {
+                not_made(error)
+            } else {
+                failed(
+                    "The series from here on was made anew, but the old one could not be stopped, so both are in the calendar. Delete one of them.",
+                )
+            });
+        }
+        // Still not known. The new series is not taken away on a guess: if
+        // the old one was stopped after all, the rest of the series would
+        // be in neither. Two of them can be seen and put right; none cannot.
+        Err(_) => {
+            refresh(&mailbox, &row.calendar_id).await;
+            return Err(failed(
+                "The series from here on was made anew, but Microsoft 365 could not be reached to stop the old one, so both may be in the calendar. \
+                 Sync, and if both are there delete one of them.",
+            ));
+        }
     }
     mailbox
         .db
@@ -1109,6 +1162,18 @@ async fn update(mailboxes: Arc<Mailboxes>, args: Update) -> Result<Value, Comman
     let synced = refresh(&mailbox, &row.calendar_id).await;
 
     Ok(with(said, synced))
+}
+
+/// Whether a series, as just read, ends before `day`: it has been stopped
+/// the day before or sooner.
+fn stopped_before(master: &Master, day: jiff::civil::Date) -> bool {
+    let range = &master.raw["recurrence"]["range"];
+
+    range["type"] == "endDate"
+        && range["endDate"]
+            .as_str()
+            .and_then(|last| last.parse::<jiff::civil::Date>().ok())
+            .is_some_and(|last| last < day)
 }
 
 /// A result, with whether the calendar here has caught up with it.

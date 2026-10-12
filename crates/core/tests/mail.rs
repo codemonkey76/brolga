@@ -4892,3 +4892,252 @@ async fn a_draft_thrown_away_while_the_server_is_out_of_reach_leaves_drafts_when
     }
     assert_eq!(in_drafts(), 0, "the copy was left in Drafts");
 }
+
+#[tokio::test]
+async fn a_folder_that_cannot_be_synced_is_said_and_the_rest_of_the_account_still_syncs() {
+    let f = Fixture::signed_in().await;
+    let sent = f.graph.folder_id("sentitems");
+    f.graph.add_message(
+        &sent,
+        message("Sent on", "Sam Taylor", "2026-10-01T09:00:00Z").body("<p>Pineapple.</p>"),
+    );
+    f.graph.add_event(
+        &f.graph.default_calendar(),
+        brolga_fake_graph::FakeEvent::new(
+            "Dentist",
+            "2026-10-20T01:00:00Z",
+            "2026-10-20T02:00:00Z",
+        ),
+    );
+    f.graph.break_folder(&f.inbox, 500);
+
+    let synced = f.sync().await;
+
+    // The trouble is the result, by the folder's name, so nothing claims all is well.
+    assert_eq!(synced["ok"], false, "{synced}");
+    assert!(
+        synced["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Inbox could not be synced."),
+        "{synced}"
+    );
+    // And everything else was still done: the other folders, the bodies, the calendar and contacts.
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": sent }))
+        .await;
+    assert_eq!(listed["total"], 1);
+    assert_eq!(synced["bodies_downloaded"], 1, "{synced}");
+    assert!(synced["events_changed"].as_u64().unwrap() >= 1, "{synced}");
+    assert_eq!(synced["calendar_error"], Value::Null);
+    assert_eq!(synced["contacts_error"], Value::Null);
+
+    // With no connection at all, nothing after the first failure is tried.
+    f.graph.mend_folder(&f.inbox);
+    f.graph
+        .fail_next(std::iter::repeat_n(Fault::Unavailable, 500));
+    let before = f.graph.requests().len();
+    let offline = f.sync().await;
+    f.graph.clear_faults();
+    assert_eq!(offline["ok"], false);
+    assert!(offline["events_changed"].is_null(), "{offline}");
+    let asked = f.graph.requests()[before..].to_vec();
+    assert!(
+        !asked.iter().any(|each| each.contains("/messages/delta")),
+        "{asked:?}"
+    );
+
+    assert_eq!(f.sync().await["ok"], true);
+}
+
+/// A series every day at nine in Brisbane, ten times from 22 March 2027,
+/// synced, with the id of its fourth occurrence: Thursday the 25th.
+async fn daily_series(f: &Fixture) -> String {
+    f.sync().await;
+    f.run(
+        "calendar.events.create",
+        json!({
+            "subject": "Stand-up", "start": "2027-03-22T09:00", "end": "2027-03-22T09:30", "time_zone": "Australia/Brisbane",
+            "repeat": { "unit": "day", "count": 10 }
+        }),
+    )
+    .await;
+    let all = f
+        .run(
+            "calendar.events.list",
+            json!({ "start": "2027-03-01T00:00:00Z", "end": "2027-06-01T00:00:00Z" }),
+        )
+        .await;
+    assert_eq!(all["events"].as_array().unwrap().len(), 10);
+
+    id_on(&all, "2027-03-24T23:00:00Z")
+}
+
+fn named<'a>(events: &'a [(String, String)], subject: &str) -> Vec<&'a str> {
+    events
+        .iter()
+        .filter(|each| each.0 == subject)
+        .map(|each| each.1.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_series_changed_from_here_on_is_whole_when_the_answer_to_stopping_the_old_one_is_lost() {
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+
+    // The old series is stopped, and the server says only that it failed.
+    f.graph.lose_next_event_change_answer();
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": fourth, "scope": "following", "subject": "Check-in" }),
+    )
+    .await;
+
+    // Three of the old and seven of the new: none lost, none twice.
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(named(&now, "Stand-up").len(), 3, "{now:?}");
+    assert_eq!(named(&now, "Check-in").len(), 7, "{now:?}");
+    assert_eq!(named(&now, "Check-in")[0], "2027-03-24T23:00:00Z");
+}
+
+#[tokio::test]
+async fn a_series_changed_from_here_on_is_never_left_with_neither_half() {
+    // The server fails once without stopping the old series: it is asked again.
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+    f.graph.fail_next_event_changes(1);
+    f.run(
+        "calendar.events.update",
+        json!({ "event_id": fourth, "scope": "following", "subject": "Check-in" }),
+    )
+    .await;
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(
+        (named(&now, "Stand-up").len(), named(&now, "Check-in").len()),
+        (3, 7),
+        "{now:?}"
+    );
+
+    // It keeps failing: both are left, and that is said. Nothing is taken away on a guess.
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+    f.graph.fail_next_event_changes(2);
+    let error = f
+        .registry
+        .execute(
+            "calendar.events.update",
+            json!({ "event_id": fourth, "scope": "following", "subject": "Check-in" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("both"), "{error}");
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    assert_eq!(
+        (named(&now, "Stand-up").len(), named(&now, "Check-in").len()),
+        (10, 7),
+        "{now:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_series_changed_from_here_on_begins_on_the_day_its_new_start_falls_where_it_is_held() {
+    let f = Fixture::signed_in().await;
+    let fourth = daily_series(&f).await;
+
+    // Moved a day on, the start given as a moment in UTC: eleven at night on
+    // the 25th there is nine in the morning of the 26th in Brisbane.
+    f.run(
+        "calendar.events.update",
+        json!({
+            "event_id": fourth, "scope": "following", "subject": "Check-in",
+            "start": "2027-03-25T23:00:00Z", "end": "2027-03-25T23:30:00Z", "time_zone": "Australia/Brisbane"
+        }),
+    )
+    .await;
+
+    // The new series begins on the 26th and has the six that were left from then.
+    f.sync().await;
+    let now = in_calendar(&f, "03-01", "06-01").await;
+    let carried = named(&now, "Check-in");
+    assert_eq!(carried.len(), 6, "{now:?}");
+    assert_eq!(carried[0], "2027-03-25T23:00:00Z");
+    assert_eq!(named(&now, "Stand-up").len(), 3, "{now:?}");
+}
+
+#[tokio::test]
+async fn a_holiday_made_without_this_computer_being_told_is_not_made_again_at_the_next_sync() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+
+    // The calendar is made and a few days go in before the server stops answering.
+    f.graph
+        .fail_after(8, std::iter::repeat_n(Fault::Unavailable, 50));
+    let made = f
+        .run("calendar.holidays.add", json!({ "country": "NZ" }))
+        .await;
+    f.graph.clear_faults();
+    assert_eq!(made["complete"], false, "{made}");
+    let calendar = made["calendar_id"].as_str().unwrap().to_owned();
+    let year = jiff::Zoned::now().year();
+    let on_the_server = || {
+        f.graph
+            .events(
+                &calendar,
+                &format!("{year}-01-01T00:00:00Z"),
+                &format!("{}-01-01T00:00:00Z", year + 3),
+            )
+            .len()
+    };
+    let before = on_the_server();
+
+    // The next sync reads the calendar and goes on filling it. The first
+    // day it makes is made, and neither the request nor any repeat of it
+    // is answered, so this computer does not know of it.
+    f.graph.lose_event_answers(6);
+    f.sync().await;
+    assert_eq!(on_the_server(), before + 1);
+
+    // The sync that follows at once, before the calendar is due to be read
+    // again, fills the rest, and does not make that day a second time.
+    f.sync().await;
+    let known: usize = (year..=year + 2)
+        .map(|year| {
+            brolga_calendar::holidays::of("NZ", None, year)
+                .unwrap()
+                .len()
+        })
+        .sum();
+    assert_eq!(on_the_server(), known);
+}
+
+#[tokio::test]
+async fn contacts_in_a_folder_inside_another_are_synced_too() {
+    let f = Fixture::signed_in().await;
+    let suppliers = f.graph.add_contact_folder("Suppliers");
+    let freight = f.graph.add_contact_folder_in(&suppliers, "Freight");
+    let rail = f.graph.add_contact_folder_in(&freight, "Rail");
+    f.graph.add_contact(
+        Some(&freight),
+        json!({ "companyName": "Harbour Freight Lines", "emailAddresses": [{ "address": "ops@harbour.test" }] }),
+    );
+    f.graph.add_contact(
+        Some(&rail),
+        json!({ "companyName": "Inland Rail Co", "emailAddresses": [{ "address": "desk@inland.test" }] }),
+    );
+
+    let synced = f.sync().await;
+    assert_eq!(synced["contacts_error"], Value::Null);
+
+    let all = f.run("contacts.list", json!({})).await;
+    let names: Vec<&str> = all["contacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|each| each["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Harbour Freight Lines", "Inland Rail Co"]);
+}

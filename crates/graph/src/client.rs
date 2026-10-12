@@ -32,6 +32,9 @@ const MAX_ANSWER: usize = 256 * 1024 * 1024;
 /// lines of JSON.
 const MAX_SMALL_ANSWER: usize = 4 * 1024 * 1024;
 
+/// How many folders of contacts are read at most.
+const MOST_CONTACT_FOLDERS: usize = 500;
+
 /// Supplies an access token for the account a client is for.
 pub trait TokenSource: Send + Sync {
     fn token(&self) -> BoxFuture<'_, Result<String, GraphError>>;
@@ -371,22 +374,46 @@ impl GraphClient {
         Ok(all)
     }
 
-    /// The folders of contacts beside the main one, as `(id, name)` ("List
-    /// contactFolders", SOURCES.md).
+    /// The folders of contacts beside the main one, as `(id, name)`, the
+    /// folders inside each among them. "List contactFolders" gives only
+    /// the folders in the main Contacts folder itself, so each is then
+    /// asked for the ones inside it ("List childFolders", SOURCES.md).
     pub async fn contact_folders(&self) -> Result<Vec<(String, String)>, GraphError> {
-        let all = self
-            .list_values(format!("{}/me/contactFolders", self.base))
-            .await?;
+        let named = |all: Vec<serde_json::Value>| -> Vec<(String, String)> {
+            all.iter()
+                .filter_map(|each| {
+                    Some((
+                        each["id"].as_str()?.to_owned(),
+                        each["displayName"].as_str().unwrap_or_default().to_owned(),
+                    ))
+                })
+                .collect()
+        };
+        let mut folders = named(
+            self.list_values(format!("{}/me/contactFolders", self.base))
+                .await?,
+        );
 
-        Ok(all
-            .iter()
-            .filter_map(|each| {
-                Some((
-                    each["id"].as_str()?.to_owned(),
-                    each["displayName"].as_str().unwrap_or_default().to_owned(),
-                ))
-            })
-            .collect())
+        // Each folder found is asked in its turn, those found on the way
+        // included. A folder is taken once, and no more than a great many
+        // in all, so that a server gone wrong is not followed for ever.
+        let mut asked = 0;
+        while let Some((id, _)) = folders.get(asked).cloned() {
+            asked += 1;
+            let inside = named(
+                self.list_values(format!("{}/me/contactFolders/{id}/childFolders", self.base))
+                    .await?,
+            );
+            for folder in inside {
+                if folders.len() < MOST_CONTACT_FOLDERS
+                    && !folders.iter().any(|known| known.0 == folder.0)
+                {
+                    folders.push(folder);
+                }
+            }
+        }
+
+        Ok(folders)
     }
 
     /// Every contact in a folder, or with none named in the main Contacts

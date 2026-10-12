@@ -12,8 +12,8 @@ use brolga_graph::{DeltaItem, Event, GraphClient, GraphError, Next};
 use brolga_store::{AccountDb, CalendarRow, EventRow, Round};
 use jiff::{Timestamp, ToSpan};
 
-use crate::SyncError;
 use crate::mail::Synced;
+use crate::{Outcome, SyncError};
 
 /// How far back and how far ahead events are kept.
 const DAYS_BACK: i64 = 365;
@@ -47,23 +47,59 @@ impl CalendarSync {
         self
     }
 
-    /// Bring the calendars and their events up to date, as of `now`.
+    /// Bring the calendars and their events up to date, as of `now`. Gives
+    /// the first thing that went wrong, if anything did, having still
+    /// synced every calendar that could be.
     pub async fn sync_all(&self, now: Timestamp) -> Result<Synced, SyncError> {
-        let mut synced = Synced::default();
+        self.sync_each(now).await.into_result()
+    }
 
-        let calendars = self.sync_calendars().await?;
-        synced.changed += u32::try_from(calendars.len()).unwrap_or(u32::MAX);
+    /// Bring the calendars and their events up to date, as of `now`. A
+    /// calendar that cannot be synced is noted and does not stop the ones
+    /// after it, unless the trouble is the whole account's.
+    pub async fn sync_each(&self, now: Timestamp) -> Outcome {
+        let mut outcome = Outcome::default();
 
-        let window = self.window(now, &calendars)?;
+        // Without the list of calendars there is nothing to go through.
+        let calendars = match self.sync_calendars().await {
+            Ok(calendars) => calendars,
+            Err(error) => {
+                outcome.fail("The list of calendars", error);
+                outcome.stopped = true;
+                return outcome;
+            }
+        };
+        outcome.synced.changed += u32::try_from(calendars.len()).unwrap_or(u32::MAX);
+        let window = match self.window(now, &calendars) {
+            Ok(window) => window,
+            Err(error) => {
+                outcome.fail("The list of calendars", error);
+                outcome.stopped = true;
+                return outcome;
+            }
+        };
+
         for calendar in &calendars {
-            if calendar.is_default {
-                synced.add(self.sync_default(&calendar.id, &window).await?);
-            } else if self.due(&calendar.id)? {
-                synced.add(self.read_whole(&calendar.id, &window).await?);
+            let synced = if calendar.is_default {
+                self.sync_default(&calendar.id, &window).await
+            } else {
+                match self.due(&calendar.id) {
+                    Ok(true) => self.read_whole(&calendar.id, &window).await,
+                    Ok(false) => continue,
+                    Err(error) => Err(error),
+                }
+            };
+            match synced {
+                Ok(synced) => outcome.done(synced),
+                Err(error) => {
+                    if outcome.fail(&calendar.name, error) {
+                        break;
+                    }
+                }
             }
         }
 
-        Ok(synced)
+        outcome
     }
 
     /// Read which calendars there are, and keep them. What was in one that
@@ -205,6 +241,7 @@ impl CalendarSync {
                 Err(other) => return Err(other.into()),
             };
 
+            synced.damaged += page.damaged;
             let finished = self.apply(calendar_id, page.items, &page.next, &mut synced)?;
             // A full read is followed at once by the round that carries
             // what changed while it ran.
@@ -244,6 +281,7 @@ impl CalendarSync {
                 Err(other) => return Err(other.into()),
             };
 
+            synced.damaged += page.damaged;
             if self.apply(calendar_id, page.items, &page.next, &mut synced)? {
                 return Ok(synced);
             }
@@ -263,8 +301,11 @@ impl CalendarSync {
         for item in items {
             match item {
                 // An event whose times cannot be read cannot be placed, and
-                // is left out, not shown at a wrong time.
-                DeltaItem::Changed(event) => changed.extend(event_row(event)),
+                // is left out, not shown at a wrong time. It is counted.
+                DeltaItem::Changed(event) => match event_row(event) {
+                    Some(row) => changed.push(row),
+                    None => synced.damaged += 1,
+                },
                 DeltaItem::Removed { id } => removed.push(id),
             }
         }

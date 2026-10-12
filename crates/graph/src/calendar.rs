@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use crate::mail::{DateTimeTimeZone, EmailAddress, ItemBody, Recipient};
+use crate::mail::{DateTimeTimeZone, EmailAddress, ItemBody, Recipient, or_default};
 
 /// A calendar ("calendar resource type", SOURCES.md).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -80,7 +80,9 @@ pub struct Attendee {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimeSlot {
+    #[serde(default, deserialize_with = "or_default")]
     pub start: DateTimeTimeZone,
+    #[serde(default, deserialize_with = "or_default")]
     pub end: DateTimeTimeZone,
 }
 

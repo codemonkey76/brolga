@@ -1,13 +1,14 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use brolga_graph::{
-    DeltaItem, GraphClient, GraphError, MailFolder, Message, Next, Recipient, WELL_KNOWN_FOLDERS,
+    DateTimeTimeZone, DeltaItem, GraphClient, GraphError, MailFolder, Message, Next, Recipient,
+    WELL_KNOWN_FOLDERS,
 };
 use brolga_mail::html_to_text;
 use brolga_store::{AccountDb, Body, FolderChange, MessageChange, Round};
 use serde_json::json;
 
-use crate::SyncError;
+use crate::{Outcome, SyncError};
 
 /// How many times in a row the server may ask for a fresh start before the
 /// sync gives up and reports it. One is ordinary; a stream of them is not.
@@ -28,6 +29,9 @@ pub struct Synced {
     pub removed: u32,
     /// How many times the server asked for a fresh start.
     pub restarts: u32,
+    /// How many items came with a part that could not be read, and were
+    /// kept without that part.
+    pub damaged: u32,
 }
 
 impl Synced {
@@ -36,6 +40,7 @@ impl Synced {
         self.changed += other.changed;
         self.removed += other.removed;
         self.restarts += other.restarts;
+        self.damaged += other.damaged;
     }
 }
 
@@ -53,6 +58,8 @@ pub struct MailSync {
     graph: Arc<GraphClient>,
     db: Arc<AccountDb>,
     page_size: u32,
+    /// Where the person reading the mail is, for the day a flag is due.
+    zone: jiff::tz::TimeZone,
     doing: Mutex<Option<Doing>>,
 }
 
@@ -62,8 +69,15 @@ impl MailSync {
             graph,
             db,
             page_size: 100,
+            zone: jiff::tz::TimeZone::system(),
             doing: Mutex::new(None),
         }
+    }
+
+    /// Take this to be the zone the mail is read in, and not the system's.
+    pub fn with_zone(mut self, zone: jiff::tz::TimeZone) -> Self {
+        self.zone = zone;
+        self
     }
 
     /// Ask for this many messages a page. Smaller pages save progress more often.
@@ -85,38 +99,91 @@ impl MailSync {
     }
 
     /// Sync the folder tree, then every folder's messages, the inbox first.
+    /// Gives the first thing that went wrong, if anything did, having
+    /// still synced every folder that could be.
     pub async fn sync_all(&self) -> Result<Synced, SyncError> {
-        let synced = self.all().await;
+        self.sync_each().await.into_result()
+    }
+
+    /// Sync the folder tree, then every folder's messages, the inbox first.
+    /// A folder that cannot be synced is noted and does not stop the ones
+    /// after it, unless the trouble is the whole account's.
+    pub async fn sync_each(&self) -> Outcome {
+        let mut outcome = Outcome::default();
+        self.all(&mut outcome).await;
         // However it ended, it is busy with nothing now.
         self.now(None);
 
-        synced
+        outcome
     }
 
-    async fn all(&self) -> Result<Synced, SyncError> {
+    async fn all(&self, outcome: &mut Outcome) {
         self.now(Some(Doing::Folders));
-        let mut synced = self.sync_folders().await?;
+        // Without the folder tree, the folders known from before are still
+        // synced: what is new in them is no less wanted. But where the
+        // server could not be had for the very first thing asked of it,
+        // it is not then asked for every folder in turn.
+        match self.sync_folders().await {
+            Ok(synced) => outcome.done(synced),
+            Err(error) => {
+                let passing = error.is_transient();
+                if outcome.fail("The list of folders", error) || passing {
+                    outcome.stopped = true;
+                    return;
+                }
+            }
+        }
 
         // `folders()` lists the well-known folders first, the inbox at the head.
-        let folders = self.db.folders()?;
+        let folders = match self.db.folders() {
+            Ok(folders) => folders,
+            Err(error) => {
+                outcome.fail("The list of folders", error.into());
+                return;
+            }
+        };
+        let mut failed = std::collections::HashSet::new();
 
         // First the newest page of every folder nothing has been fetched of
         // yet, so that no folder sits empty while a large one ahead of it is
         // fetched whole. A page is asked for newest first.
         for folder in &folders {
-            let state = self.db.messages_sync(&folder.id)?;
-            if state.link.is_none() && !state.complete {
-                self.now(Some(Doing::Messages(folder.id.clone())));
-                let mut page = Synced::default();
-                self.messages_page(&folder.id, &mut page).await?;
-                synced.add(page);
+            self.now(Some(Doing::Messages(folder.id.clone())));
+            match self.first_page(&folder.id).await {
+                Ok(synced) => outcome.done(synced),
+                Err(error) => {
+                    failed.insert(folder.id.as_str());
+                    if outcome.fail(&folder.name, error) {
+                        return;
+                    }
+                }
             }
         }
 
-        // Then each folder whole, carrying on from the page it has.
+        // Then each folder whole, carrying on from the page it has. One
+        // that has just failed is left for the next sync.
         for folder in &folders {
+            if failed.contains(folder.id.as_str()) {
+                continue;
+            }
             self.now(Some(Doing::Messages(folder.id.clone())));
-            synced.add(self.sync_messages(&folder.id).await?);
+            match self.sync_messages(&folder.id).await {
+                Ok(synced) => outcome.done(synced),
+                Err(error) => {
+                    if outcome.fail(&folder.name, error) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fetch the newest page of a folder nothing has been fetched of yet.
+    async fn first_page(&self, folder_id: &str) -> Result<Synced, SyncError> {
+        let mut synced = Synced::default();
+        let state = self.db.messages_sync(folder_id)?;
+        if state.link.is_none() && !state.complete {
+            self.messages_page(folder_id, &mut synced).await?;
         }
 
         Ok(synced)
@@ -126,6 +193,7 @@ impl MailSync {
     pub async fn sync_folders(&self) -> Result<Synced, SyncError> {
         let mut synced = Synced::default();
         let was_full_pass = self.db.folders_sync()?.reconciling;
+        let had = self.known_folders()?;
 
         loop {
             let state = self.db.folders_sync()?;
@@ -146,6 +214,7 @@ impl MailSync {
             synced.pages += 1;
             synced.changed += count(&changed);
             synced.removed += count(&removed);
+            synced.damaged += page.damaged;
 
             // A full pass reports the state as it was when the pass began.
             // Whatever changed while it ran is in the round that follows, so
@@ -158,23 +227,40 @@ impl MailSync {
         // Graph's v1.0 folder does not say which one is the inbox, so each
         // is asked for by its well-known name. Their ids do not change, so
         // this is done on a full pass, or while the inbox is not yet known.
-        if was_full_pass
-            || !self
-                .db
-                .folders()?
+        let folders = self.db.folders()?;
+        let known = |name: &str| {
+            folders
                 .iter()
-                .any(|f| f.well_known.as_deref() == Some("inbox"))
-        {
-            let mut known = Vec::new();
+                .any(|f| f.well_known.as_deref() == Some(name))
+        };
+        if was_full_pass || !known("inbox") {
+            let mut found = Vec::new();
             for name in WELL_KNOWN_FOLDERS {
                 if let Some(id) = self.graph.well_known_folder(name).await? {
-                    known.push((*name, id));
+                    found.push((*name, id));
                 }
             }
-            self.db.set_well_known(&known)?;
+            self.db.set_well_known(&found)?;
+        } else if folders.iter().any(|f| !had.contains(&f.id)) {
+            // A mailbox need not have every one of them from the start: an
+            // archive is made when something is first archived. So when a
+            // folder has appeared, the names still without one are asked
+            // for again, and only those.
+            let mut found = Vec::new();
+            for name in WELL_KNOWN_FOLDERS.iter().filter(|name| !known(name)) {
+                if let Some(id) = self.graph.well_known_folder(name).await? {
+                    found.push((*name, id));
+                }
+            }
+            self.db.add_well_known(&found)?;
         }
 
         Ok(synced)
+    }
+
+    /// The ids of the folders that are here.
+    fn known_folders(&self) -> Result<std::collections::HashSet<String>, SyncError> {
+        Ok(self.db.folders()?.into_iter().map(|f| f.id).collect())
     }
 
     /// Bring one folder's messages up to date. A first sync carries on from
@@ -207,13 +293,14 @@ impl MailSync {
             Err(other) => return Err(other.into()),
         };
 
-        let (changed, removed) = split(page.items, message_change);
+        let (changed, removed) = split(page.items, |message| message_change(message, &self.zone));
         let round = round(&page.next);
         self.db
             .apply_messages(folder_id, &changed, &removed, page.next.url(), round)?;
         synced.pages += 1;
         synced.changed += count(&changed);
         synced.removed += count(&removed);
+        synced.damaged += page.damaged;
 
         // As for folders: a full pass is followed at once by the round
         // that carries what changed while it ran.
@@ -254,8 +341,21 @@ impl MailSync {
                 Ok(page) => page,
                 Err(error) => {
                     // A link the server no longer takes is dropped, and the
-                    // pass begins again next time.
-                    self.db.set_setting(ACTIONS_LINK, "")?;
+                    // pass begins again next time. Any other trouble is
+                    // not the link's: with no connection, or the server
+                    // busy, the place is kept, or a large mailbox on a
+                    // poor connection would never reach the end of its
+                    // first pass.
+                    if matches!(
+                        error,
+                        GraphError::SyncStateGone
+                            | GraphError::Refused {
+                                status: 400 | 404 | 410,
+                                ..
+                            }
+                    ) {
+                        self.db.set_setting(ACTIONS_LINK, "")?;
+                    }
                     return Err(error.into());
                 }
             };
@@ -292,8 +392,13 @@ impl MailSync {
     ///
     /// `since` is a date, `YYYY-MM-DD`: messages received before it are left
     /// until they are opened.
+    ///
+    /// A message whose body cannot be had is passed over, so that it does
+    /// not keep the ones after it from being fetched. Trouble that is the
+    /// whole account's stops the fetching and is given back.
     pub async fn download_bodies(&self, since: &str, limit: u32) -> Result<u32, SyncError> {
         let mut fetched = 0;
+        let mut passed_over = Outcome::default();
 
         for id in self.db.missing_bodies(since, limit)? {
             let body = match self.graph.message_body(&id).await {
@@ -303,8 +408,14 @@ impl MailSync {
                 },
                 // Deleted or moved out of the mailbox since it was listed.
                 Err(GraphError::Refused { status: 404, .. }) => continue,
-                Err(other) => return Err(other.into()),
+                Err(other) => {
+                    if passed_over.fail(&id, other.into()) {
+                        return passed_over.into_result().map(|_| fetched);
+                    }
+                    continue;
+                }
             };
+            passed_over.done(Synced::default());
             let text = if body.content_type == "html" {
                 html_to_text(&body.content)
             } else {
@@ -362,7 +473,39 @@ fn folder_change(folder: MailFolder) -> FolderChange {
     }
 }
 
-fn message_change(message: Message) -> MessageChange {
+/// The day a flag is due, `YYYY-MM-DD`, for someone reading in `zone`.
+///
+/// Graph gives the moment with the zone it is written in
+/// ("dateTimeTimeZone resource type", SOURCES.md), and "followupFlag
+/// resource type" and "Get message" name no way to ask for it in another.
+/// A day set where the reader is, is the first moment of that day there,
+/// which written in UTC is often a time on the day before. So the moment
+/// is read in the zone Graph names and the day taken where the reader is.
+///
+/// One moment is not treated so: midnight in UTC exactly. Brolga up to
+/// 0.1.10 wrote the day that way, and west of Greenwich that moment is the
+/// evening before. It is taken as the day it names. East of Greenwich that
+/// is the same day either way, and to the west the first moment of a day
+/// is never midnight in UTC, so a day set properly is not misread by it.
+fn flag_due_day(due: &DateTimeTimeZone, zone: &jiff::tz::TimeZone) -> Option<String> {
+    let written_in = due
+        .time_zone
+        .as_deref()
+        .filter(|zone| !zone.is_empty())
+        .unwrap_or("UTC");
+    let Some(moment) = brolga_calendar::utc(&due.date_time, written_in) else {
+        // A zone that is not known: the day as written is the best there is.
+        return due.date_time.get(..10).map(str::to_owned);
+    };
+    if moment.ends_with("T00:00:00Z") {
+        return moment.get(..10).map(str::to_owned);
+    }
+    let moment: jiff::Timestamp = moment.parse().ok()?;
+
+    Some(moment.to_zoned(zone.clone()).date().to_string())
+}
+
+fn message_change(message: Message, zone: &jiff::tz::TimeZone) -> MessageChange {
     let recipients = |list: Option<Vec<Recipient>>| {
         list.map(|list| {
             let list: Vec<_> = list
@@ -418,9 +561,8 @@ fn message_change(message: Message) -> MessageChange {
         flag_due: message.flag.as_ref().map(|flag| {
             flag.due_date_time
                 .as_ref()
-                .and_then(|due| due.date_time.get(..10))
+                .and_then(|due| flag_due_day(due, zone))
                 .unwrap_or_default()
-                .to_owned()
         }),
         flag_status: message.flag.and_then(|f| f.flag_status),
         categories: message

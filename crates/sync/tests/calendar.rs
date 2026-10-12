@@ -422,3 +422,40 @@ async fn a_sign_in_that_may_not_read_calendars_reads_none() {
     assert!(f.sync.sync_all(now()).await.is_err());
     assert_eq!(f.db.event_count().unwrap(), 0);
 }
+
+#[tokio::test]
+async fn a_calendar_the_server_will_not_give_does_not_stop_the_calendars_after_it() {
+    let f = fixture().await;
+    let work = f.graph.add_calendar("Work", "#2f6fce");
+    let home = f.graph.add_calendar("Home", "#2f6fce");
+    f.graph.add_event(
+        &f.main,
+        FakeEvent::new("Dentist", "2026-10-20T01:00:00Z", "2026-10-20T02:00:00Z"),
+    );
+    f.graph.add_event(
+        &work,
+        FakeEvent::new("Shift", "2026-10-21T01:00:00Z", "2026-10-21T02:00:00Z"),
+    );
+    f.graph.add_event(
+        &home,
+        FakeEvent::new("Dinner", "2026-10-22T08:00:00Z", "2026-10-22T09:00:00Z"),
+    );
+    // The default calendar is read first, and then Work.
+    f.graph.break_calendar(&f.main, 500);
+    f.graph.break_calendar(&work, 403);
+
+    let outcome = f.sync.sync_each(now()).await;
+
+    assert_eq!(outcome.failed.len(), 2, "{:?}", outcome.failed);
+    assert_eq!(outcome.failed[1].0, "Work");
+    assert!(!outcome.stopped);
+    f.assert_in_step(&home);
+    assert!(f.sync.sync_all(now()).await.is_err());
+
+    f.graph.mend_calendar(&f.main);
+    f.graph.mend_calendar(&work);
+    f.sync.sync_all(now()).await.unwrap();
+    for calendar in [&f.main, &work, &home] {
+        f.assert_in_step(calendar);
+    }
+}

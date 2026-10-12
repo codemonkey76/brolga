@@ -5,7 +5,8 @@ use crate::StoreError;
 /// Bring a database up to the newest schema. Each entry in `steps` takes it
 /// from the version of its index to the next; the version is SQLite's own
 /// `user_version`. A step and its version change commit together, so a crash
-/// part-way through leaves the database at a version it really is.
+/// part-way through leaves the database at a version it really is, and two
+/// copies of Brolga opening it at once run each step once between them.
 pub(crate) fn migrate(connection: &mut Connection, steps: &[&str]) -> Result<(), StoreError> {
     let known = u32::try_from(steps.len()).unwrap_or(u32::MAX);
     let found: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -16,10 +17,25 @@ pub(crate) fn migrate(connection: &mut Connection, steps: &[&str]) -> Result<(),
     }
 
     for (version, step) in (1..=known).zip(steps).skip(found as usize) {
-        let transaction = connection.transaction()?;
+        // Another copy of Brolga may be opening the same database at the
+        // same moment. The step is begun as a write, which only one of
+        // them can be in at a time, and the version read again inside
+        // it: whoever comes second finds the step done and leaves it.
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now: u32 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if now >= version {
+            continue;
+        }
         transaction.execute_batch(step)?;
         transaction.pragma_update(None, "user_version", version)?;
         transaction.commit()?;
+    }
+
+    // And if the other copy was a newer Brolga, which has taken it further.
+    let found: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if found > known {
+        return Err(StoreError::Newer { found, known });
     }
 
     Ok(())
@@ -97,5 +113,43 @@ mod tests {
             result,
             Err(StoreError::Newer { found: 2, known: 1 })
         ));
+    }
+
+    #[test]
+    fn two_copies_opening_the_same_database_at_once_each_step_is_run_by_one_of_them() {
+        let folder = std::env::temp_dir().join(format!("brolga-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+
+        for round in 0..20 {
+            let path = folder.join(format!("{round}.db"));
+            let _ = std::fs::remove_file(&path);
+            migrate(&mut Connection::open(&path).unwrap(), &[V1]).unwrap();
+
+            // Each sees version 1 and has a step to run that cannot be run twice.
+            let together = std::sync::Arc::new(std::sync::Barrier::new(6));
+            let all: Vec<_> = (0..6)
+                .map(|_| {
+                    let (path, together) = (path.clone(), together.clone());
+                    std::thread::spawn(move || {
+                        let mut connection = Connection::open(&path).unwrap();
+                        together.wait();
+                        migrate(&mut connection, &[V1, V2])
+                    })
+                })
+                .collect();
+            for each in all {
+                each.join().unwrap().unwrap();
+            }
+
+            let connection = Connection::open(&path).unwrap();
+            assert_eq!(version(&connection), 2);
+            assert_eq!(
+                connection
+                    .query_row("SELECT count(*) FROM a", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

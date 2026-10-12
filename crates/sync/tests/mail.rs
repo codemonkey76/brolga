@@ -748,3 +748,243 @@ async fn messages_answered_or_forwarded_elsewhere_are_marked_a_part_at_a_time_an
     assert_eq!(f.graph.requests().len(), before + 1);
     assert_eq!(how(&ids[259]), "forwarded");
 }
+
+#[tokio::test]
+async fn a_folder_the_server_will_not_give_does_not_stop_the_folders_after_it() {
+    for status in [500, 403] {
+        let f = Fixture::new().await;
+        let (sent, archive) = (f.graph.folder_id("sentitems"), f.graph.folder_id("archive"));
+        f.graph
+            .add_message(&f.inbox, message("In", "2026-10-01T09:00:00Z"));
+        f.graph
+            .add_message(&sent, message("Sent", "2026-10-02T09:00:00Z"));
+        f.graph
+            .add_message(&archive, message("Kept", "2026-10-03T09:00:00Z"));
+        // The inbox is synced first, and is the one that cannot be read.
+        f.graph.break_folder(&f.inbox, status);
+
+        let outcome = f.sync(10).sync_each().await;
+
+        // Every other folder is as the server has it, and the trouble is said.
+        assert_eq!(f.db.message_count(&sent).unwrap(), 1, "{status}");
+        assert_eq!(f.db.message_count(&archive).unwrap(), 1, "{status}");
+        assert_eq!(outcome.failed.len(), 1, "{:?}", outcome.failed);
+        assert_eq!(outcome.failed[0].0, "Inbox");
+        assert!(!outcome.stopped);
+        assert!(f.sync(10).sync_all().await.is_err());
+
+        // Once it can be read again, nothing was lost by the wait.
+        f.graph.mend_folder(&f.inbox);
+        f.sync(10).sync_all().await.unwrap();
+        f.assert_in_step();
+    }
+}
+
+#[tokio::test]
+async fn an_account_that_cannot_be_reached_is_not_asked_folder_by_folder() {
+    let f = Fixture::new().await;
+    f.graph
+        .add_message(&f.inbox, message("In", "2026-10-01T09:00:00Z"));
+    f.sync(10).sync_all().await.unwrap();
+    let before = f.graph.requests().len();
+
+    // Throttled for good: every request is turned away.
+    f.graph.fail_next(std::iter::repeat_n(
+        Fault::Throttled {
+            retry_after_secs: 0,
+        },
+        500,
+    ));
+    let outcome = f.sync(10).sync_each().await;
+    f.graph.clear_faults();
+
+    // One request, tried as often as a request is, and no more folders after it.
+    assert!(outcome.stopped);
+    assert_eq!(outcome.failed.len(), 1);
+    assert_eq!(f.graph.requests().len() - before, 6);
+}
+
+#[tokio::test]
+async fn a_message_with_a_part_that_cannot_be_read_is_kept_without_that_part() {
+    let f = Fixture::new().await;
+    let odd = f
+        .graph
+        .add_message(&f.inbox, message("Odd one", "2026-10-02T09:00:00Z"));
+    let plain = f
+        .graph
+        .add_message(&f.inbox, message("Plain", "2026-10-01T09:00:00Z"));
+    // A sender with no address at all, and a recipient list that is no list.
+    f.graph.send_raw(
+        &odd,
+        serde_json::json!({ "from": { "emailAddress": null }, "toRecipients": "nobody", "isRead": "perhaps" }),
+    );
+
+    let outcome = f.sync(10).sync_each().await;
+
+    // Both are here: the odd one with what could be read of it.
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    assert_eq!(outcome.synced.damaged, 1);
+    let kept = f.db.message(&odd).unwrap().unwrap();
+    assert_eq!(kept.subject, "Odd one");
+    assert_eq!(kept.from_address, "");
+    assert_eq!(f.db.message(&plain).unwrap().unwrap().subject, "Plain");
+}
+
+#[tokio::test]
+async fn a_body_with_nothing_in_it_is_an_empty_body_and_the_ones_after_it_are_fetched() {
+    let f = Fixture::new().await;
+    let empty = f
+        .graph
+        .add_message(&f.inbox, message("Empty", "2026-10-02T09:00:00Z"));
+    let full = f.graph.add_message(
+        &f.inbox,
+        message("Full", "2026-10-01T09:00:00Z").body("<p>Words</p>"),
+    );
+    f.graph.send_raw(
+        &empty,
+        serde_json::json!({ "body": { "contentType": "html", "content": null } }),
+    );
+    let sync = f.sync(10);
+    sync.sync_all().await.unwrap();
+
+    let fetched = sync.download_bodies("2026-01-01", 10).await.unwrap();
+
+    assert_eq!(fetched, 2);
+    assert_eq!(f.db.body(&empty).unwrap().unwrap().content, "");
+    assert!(f.db.body(&full).unwrap().unwrap().content.contains("Words"));
+}
+
+#[tokio::test]
+async fn a_pass_over_what_was_answered_keeps_its_place_through_an_outage() {
+    let f = Fixture::new().await;
+    let ids = f.graph.add_messages(&f.inbox, 260);
+    for id in ids.iter().take(250) {
+        f.graph.set_last_verb_at(id, 102, "2026-01-01T09:00:00Z");
+    }
+    let sync = f.sync(100);
+    sync.sync_all().await.unwrap();
+    assert_eq!(sync.sync_last_actions(1).await.unwrap(), 200);
+
+    // The server cannot be had for a while. That is not the saved place's fault.
+    f.graph.fail_next(std::iter::repeat_n(
+        Fault::Throttled {
+            retry_after_secs: 0,
+        },
+        6,
+    ));
+    assert!(sync.sync_last_actions(5).await.unwrap_err().is_transient());
+
+    // The pass carries on from where it was: one request, for the last fifty.
+    let before = f.graph.requests().len();
+    assert_eq!(f.sync(100).sync_last_actions(5).await.unwrap(), 50);
+    assert_eq!(f.graph.requests().len(), before + 1);
+}
+
+#[tokio::test]
+async fn a_place_the_server_no_longer_takes_is_dropped_and_the_pass_begins_again() {
+    let f = Fixture::new().await;
+    let ids = f.graph.add_messages(&f.inbox, 30);
+    for id in ids.iter().take(20) {
+        f.graph.set_last_verb_at(id, 104, "2026-01-01T09:00:00Z");
+    }
+    let sync = f.sync(100);
+    sync.sync_all().await.unwrap();
+    f.db.set_setting(
+        "last_actions.link",
+        &format!(
+            "{}/me/messages?$top=200&$skiptoken=stale",
+            f.graph.base_url()
+        ),
+    )
+    .unwrap();
+
+    // Refused: said once, and the next pass starts from the beginning.
+    assert!(matches!(
+        sync.sync_last_actions(5).await,
+        Err(SyncError::Graph(GraphError::Refused { status: 400, .. }))
+    ));
+    assert_eq!(sync.sync_last_actions(5).await.unwrap(), 20);
+}
+
+/// The day a message's flag is due, as a sync made in this zone keeps it.
+async fn due_as_read(f: &Fixture, zone: &str, id: &str) -> String {
+    let zone = jiff::tz::TimeZone::get(zone).unwrap();
+    // Every message is read afresh, as a first sync reads it.
+    f.db.restart_messages_sync(&f.inbox).unwrap();
+    f.sync(10).with_zone(zone).sync_all().await.unwrap();
+
+    f.db.message(id).unwrap().unwrap().flag_due
+}
+
+#[tokio::test]
+async fn a_flag_is_due_on_the_day_it_is_due_where_the_reader_is() {
+    let f = Fixture::new().await;
+    let due = |date_time: &str, zone: &str| {
+        let id = f
+            .graph
+            .add_message(&f.inbox, message("Follow up", "2026-10-01T09:00:00Z"));
+        f.graph.send_raw(
+            &id,
+            serde_json::json!({ "flag": {
+                "flagStatus": "flagged",
+                "dueDateTime": { "dateTime": date_time, "timeZone": zone }
+            } }),
+        );
+        id
+    };
+    // Due on the 21st, set where it is ten hours ahead of UTC: the first
+    // moment of that day there is the afternoon of the 20th in UTC.
+    let ahead = due("2026-10-20T14:00:00.0000000", "UTC");
+    // The same day, given in the zone it was set in, by its Windows name.
+    let named = due("2026-10-21T00:00:00.0000000", "E. Australia Standard Time");
+    // And as an older Brolga wrote it: the day, at midnight UTC.
+    let older = due("2026-10-21T00:00:00.0000000", "UTC");
+    assert_eq!(
+        due_as_read(&f, "Australia/Brisbane", &ahead).await,
+        "2026-10-21"
+    );
+    assert_eq!(
+        due_as_read(&f, "Australia/Brisbane", &named).await,
+        "2026-10-21"
+    );
+    assert_eq!(
+        due_as_read(&f, "Australia/Brisbane", &older).await,
+        "2026-10-21"
+    );
+    // Behind UTC, the first moment of the 21st is four hours into it in UTC.
+    let behind = due("2026-10-21T04:00:00.0000000", "UTC");
+    assert_eq!(
+        due_as_read(&f, "America/New_York", &behind).await,
+        "2026-10-21"
+    );
+    assert_eq!(
+        due_as_read(&f, "America/New_York", &older).await,
+        "2026-10-21"
+    );
+}
+
+#[tokio::test]
+async fn a_standard_folder_made_after_the_first_sync_is_known_by_its_name_at_the_next() {
+    let f = Fixture::new().await;
+    // A mailbox with no archive yet.
+    f.graph.remove_folder(&f.graph.folder_id("archive"));
+    f.sync(10).sync_all().await.unwrap();
+    assert_eq!(f.db.folder_id("archive").unwrap(), None);
+
+    // One is made, as the first thing archived anywhere makes it.
+    let archive = f.graph.add_well_known_folder("archive", "Archive");
+    f.sync(10).sync_all().await.unwrap();
+    assert_eq!(f.db.folder_id("archive").unwrap(), Some(archive));
+    assert_eq!(f.db.folder_id("inbox").unwrap(), Some(f.inbox.clone()));
+
+    // With nothing new, nothing is asked after by name again.
+    let before = f.graph.requests().len();
+    f.sync(10).sync_all().await.unwrap();
+    let asked = f.graph.requests()[before..].to_vec();
+    assert!(
+        !asked
+            .iter()
+            .any(|each| each.ends_with("/mailFolders/archive")),
+        "{asked:?}"
+    );
+}

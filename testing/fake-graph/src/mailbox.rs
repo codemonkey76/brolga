@@ -220,6 +220,8 @@ pub struct Mailbox {
     folder_log: Vec<Change>,
     messages: HashMap<String, Stored>,
     message_logs: HashMap<String, Vec<Change>>,
+    /// Properties to give for a message exactly as written, by its id.
+    raw: HashMap<String, Value>,
 }
 
 /// What a delta request is answered with, before it is turned into HTTP.
@@ -244,6 +246,7 @@ impl Default for Mailbox {
             folder_log: Vec::new(),
             messages: HashMap::new(),
             message_logs: HashMap::new(),
+            raw: HashMap::new(),
         };
 
         for (known, name) in [
@@ -308,6 +311,16 @@ impl Mailbox {
         id
     }
 
+    /// Add a folder that is one of those every mailbox may have, to be
+    /// found from then on by its well-known name: an archive made the
+    /// first time something is archived, say.
+    pub fn add_well_known_folder(&mut self, known: &'static str, name: &str) -> String {
+        let id = self.add_folder(name, None);
+        self.well_known.insert(known, id.clone());
+
+        id
+    }
+
     pub fn rename_folder(&mut self, id: &str, name: &str) {
         if let Some(folder) = self.folders.get_mut(id) {
             folder.name = name.to_owned();
@@ -363,6 +376,16 @@ impl Mailbox {
         self.log_message(folder, &id, false);
 
         id
+    }
+
+    /// Give these properties of a message as written here from now on,
+    /// which is a change to it like any other.
+    pub fn send_raw(&mut self, id: &str, properties: Value) {
+        if let Some(stored) = self.messages.get(id) {
+            let folder = stored.folder.clone();
+            self.raw.insert(id.to_owned(), properties);
+            self.log_message(&folder, id, false);
+        }
     }
 
     pub fn set_flag(&mut self, id: &str, flag: &str) {
@@ -541,6 +564,17 @@ impl Mailbox {
         });
         if with_body {
             value["body"] = json!({ "contentType": "html", "content": m.body_html });
+        }
+        for (name, given) in self
+            .raw
+            .get(id)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            if with_body || name != "body" {
+                value[name.as_str()] = given.clone();
+            }
         }
         // "Get singleValueLegacyExtendedProperty": given only when asked for
         // by `$expand`, and only on a message that has it.
