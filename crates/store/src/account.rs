@@ -755,10 +755,20 @@ impl AccountDb {
             // A full pass is over: a message it did not mention is gone.
             // One moved here on this computer, whose move the server has
             // not had yet, was never going to be mentioned, and stays.
+            //
+            // So does one whose move here has been sent. It still carries
+            // the number of a pass of the folder it came from, which says
+            // nothing of this folder's passes, and a pass that began
+            // before the move reached the server does not name it: the
+            // round after does. To delete it here would lose its body and
+            // attachments for a message that comes straight back. A move
+            // that was sent is remembered for a day, which is what this
+            // goes by.
             delete_messages(
                 &transaction,
                 "folder_id = ?1 AND generation < ?2 AND id NOT IN (
-                     SELECT message_id FROM ops WHERE state = 'queued' AND kind = 'folder_id')",
+                     SELECT message_id FROM ops WHERE kind = 'folder_id'
+                         AND (state = 'queued' OR (state = 'done' AND value = ?1)))",
                 params![folder_id, state.generation],
             )?;
         }
@@ -1727,6 +1737,54 @@ mod tests {
             is_read: Some(read),
             ..MessageChange::default()
         }
+    }
+
+    #[test]
+    fn a_message_moved_here_is_not_taken_away_by_a_full_pass_that_began_before_it_came() {
+        let db = AccountDb::in_memory().unwrap();
+        let at = "2026-10-01T09:00:00Z";
+        db.apply_messages(
+            "inbox",
+            &[mail("moved", None, "Sam", "Keep me", at, true)],
+            &[],
+            "inbox-link",
+            Round::Finished,
+        )
+        .unwrap();
+        db.apply_messages(
+            "archive",
+            &[mail("gone", None, "Sam", "Deleted elsewhere", at, true)],
+            &[],
+            "archive-link",
+            Round::Finished,
+        )
+        .unwrap();
+        let body = Body {
+            content_type: "html".to_owned(),
+            content: "<p>Fetched once.</p>".to_owned(),
+        };
+        db.save_body("moved", &body, "Fetched once.").unwrap();
+
+        // The server asks for the archive to be read afresh. While that is
+        // under way a message is moved into it here, and the move is sent.
+        db.restart_messages_sync("archive").unwrap();
+        db.queue_edit(
+            "action",
+            &["moved".to_owned()],
+            &crate::MessageEdit::Move("archive".to_owned()),
+        )
+        .unwrap();
+        db.op_sent(db.queued_ops().unwrap()[0].id).unwrap();
+        // The pass ends having named neither: it was of the archive as it
+        // was when the pass began.
+        db.apply_messages("archive", &[], &[], "archive-link-2", Round::Finished)
+            .unwrap();
+
+        // What the pass should have named and did not is gone. What came
+        // from another folder since is not, and still has its body.
+        assert!(db.message("gone").unwrap().is_none());
+        assert_eq!(db.message("moved").unwrap().unwrap().folder_id, "archive");
+        assert_eq!(db.body("moved").unwrap(), Some(body));
     }
 
     #[test]
