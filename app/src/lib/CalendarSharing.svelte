@@ -62,6 +62,11 @@
         }
     }
 
+    /** Change what someone can see. If it was refused, the list goes back to saying what they can. */
+    async function change(share: Share, list: HTMLSelectElement) {
+        if (!(await run("calendar.sharing.set", { share_id: share.id, role: list.value }))) list.value = share.role;
+    }
+
     async function add(submitted: SubmitEvent) {
         submitted.preventDefault();
         if (await run("calendar.sharing.set", { address: address.trim(), role })) address = "";
@@ -79,7 +84,7 @@
                 {@const who = each.address ?? "Everyone in your organisation"}
                 <li>
                     <span class="who">{each.address && each.name && each.name !== each.address ? `${each.name} · ` : ""}{who}</span>
-                    <select aria-label={`What ${who} can see`} value={each.role} disabled={busy} onchange={(event) => run("calendar.sharing.set", { share_id: each.id, role: event.currentTarget.value })}>
+                    <select aria-label={`What ${who} can see`} value={each.role} disabled={busy} onchange={(event) => change(each, event.currentTarget)}>
                         {#each [...new Set([...each.allowed_roles, each.role])] as allowed (allowed)}
                             <option value={allowed}>{ROLES[allowed] ?? allowed}</option>
                         {/each}

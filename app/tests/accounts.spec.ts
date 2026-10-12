@@ -724,3 +724,47 @@ test("a contact with the same number or address twice shows both", async ({ page
     await expect(card.getByText("07 5550 0001")).toHaveCount(2);
     await expect(card.getByText("sam@example.test")).toHaveCount(2);
 });
+
+test("a choice that was refused goes back to what it was: sharing, a category's colour, a rule and this computer's", async ({ page }) => {
+    const rules = [{ id: "rule-1", name: "Newsletters", enabled: true, sequence: 1, read_only: false, conditions: { senderContains: ["newsletter"] }, exceptions: {}, actions: { markAsRead: true } }];
+    await withCore(page, { accounts: [robin], rules });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    const why = "Microsoft 365 could not be reached.";
+
+    await page.getByRole("button", { name: "Calendar sharing" }).click();
+    const sharing = page.getByRole("region", { name: "Calendar sharing for robin@example.test" });
+    const seen = sharing.getByRole("combobox", { name: "What Everyone in your organisation can see" });
+    await expect(seen).toHaveValue("freeBusyRead");
+    await refuse(page, "calendar.sharing.set");
+    await seen.selectOption("read");
+    await expect(sharing.getByRole("alert")).toHaveText(why);
+    await expect(seen).toHaveValue("freeBusyRead");
+    await page.getByRole("button", { name: "Calendar sharing" }).click();
+
+    await page.getByRole("button", { name: "Categories" }).click();
+    const categories = page.getByRole("region", { name: "Categories for robin@example.test" });
+    const colour = categories.getByRole("combobox", { name: "Colour of Clients" });
+    await expect(colour).toHaveValue("preset7");
+    await refuse(page, "mail.categories.set_color");
+    await colour.selectOption({ label: "Green" });
+    await expect(categories.getByRole("alert")).toHaveText(why);
+    await expect(colour).toHaveValue("preset7");
+    await page.getByRole("button", { name: "Categories" }).click();
+
+    await page.getByRole("button", { name: "Rules" }).click();
+    const listed = page.getByRole("region", { name: "Rules for robin@example.test" });
+    const on = listed.getByRole("checkbox", { name: "Newsletters is on" });
+    await expect(on).toBeChecked();
+    await refuse(page, "mail.rules.update");
+    await on.click();
+    await expect(listed.getByRole("alert")).toHaveText(why);
+    await expect(on).toBeChecked();
+
+    const here = page.getByRole("region", { name: "This computer" });
+    await refuse(page, "app.desktop.set");
+    await here.getByRole("checkbox", { name: /Keep running/ }).click();
+    await expect(here.getByRole("alert")).toHaveText(why);
+    await expect(here.getByRole("checkbox", { name: /Keep running/ })).not.toBeChecked();
+    await here.getByRole("checkbox", { name: /Look for new versions/ }).click();
+    await expect(here.getByRole("checkbox", { name: /Look for new versions/ })).toBeChecked();
+});
