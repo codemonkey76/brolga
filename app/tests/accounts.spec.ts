@@ -768,3 +768,21 @@ test("a choice that was refused goes back to what it was: sharing, a category's 
     await here.getByRole("checkbox", { name: /Look for new versions/ }).click();
     await expect(here.getByRole("checkbox", { name: /Look for new versions/ })).toBeChecked();
 });
+
+test("a shared mailbox that could not be removed stays in the list, and it says why", async ({ page }) => {
+    const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
+    await withCore(page, { accounts: [robin], shared });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Shared mailboxes" }).click();
+    const section = page.getByRole("region", { name: "Shared mailboxes of robin@example.test" });
+
+    await refuse(page, "accounts.shared.remove", "The mailbox could not be removed just now.");
+    await section.getByRole("button", { name: "Remove support@example.test" }).click();
+    await expect(section.getByRole("alert")).toHaveText("The mailbox could not be removed just now.");
+    await expect(section.getByRole("listitem")).toContainText("support@example.test");
+
+    await refuse(page, "accounts.shared.remove", null);
+    await section.getByRole("button", { name: "Remove support@example.test" }).click();
+    await expect(section.getByRole("listitem")).toHaveCount(0);
+    await expect(section.getByRole("alert")).toHaveCount(0);
+});
