@@ -670,6 +670,14 @@ async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandErr
             .map(|d| d.body),
         (body, _) => body,
     };
+    // Looked at before anything is changed, so that a change that is
+    // turned down is turned down whole.
+    if let Some(from) = args.from.as_deref().map(str::trim)
+        && !from.is_empty()
+        && (!from.contains('@') || from.contains(char::is_whitespace))
+    {
+        return Err(failed(format!("`{from}` is not an email address.")));
+    }
     let change = DraftEdit {
         to_recipients: kept(args.to)?,
         cc_recipients: kept(args.cc)?,
@@ -694,9 +702,6 @@ async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandErr
     }
     if let Some(from) = &args.from {
         let from = from.trim();
-        if !from.is_empty() && (!from.contains('@') || from.contains(char::is_whitespace)) {
-            return Err(failed(format!("`{from}` is not an email address.")));
-        }
         // Put back to the mailbox's own name, that name is said outright:
         // the server's copy may still carry the other.
         let from = if from.is_empty() {

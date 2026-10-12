@@ -4832,3 +4832,27 @@ async fn holidays_cut_short_by_an_outage_are_finished_at_a_later_sync_without_do
         assert_eq!(days_in(&f, &calendar, year).await, known(year), "{year}");
     }
 }
+
+#[tokio::test]
+async fn a_change_to_a_draft_that_is_turned_down_changes_none_of_it() {
+    let f = Fixture::signed_in().await;
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Plan", "body": "First thoughts." }),
+        )
+        .await["draft"]["id"]
+        .clone();
+
+    let refused = f
+        .registry
+        .execute(
+            "mail.drafts.edit",
+            json!({ "draft_id": draft, "subject": "Another plan", "from": "not an address" }),
+        )
+        .await;
+
+    assert!(refused.is_err());
+    let kept = f.run("mail.drafts.get", json!({ "draft_id": draft })).await;
+    assert_eq!(kept["draft"]["subject"], "Plan");
+}
