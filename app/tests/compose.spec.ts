@@ -279,3 +279,57 @@ test("two people suggested with one address are both listed, and the list still 
     await page.keyboard.press("Enter");
     await expect(to).toHaveValue("Sam (work) <sam.taylor@example.test>, ");
 });
+
+test("an event cannot be saved to end before it starts", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:20:00Z"));
+    await withCore(page, { accounts: [robin], events: [] });
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await page.getByRole("button", { name: "New event" }).click();
+    const form = page.getByRole("form", { name: "New event" });
+
+    await form.getByRole("textbox", { name: "Subject" }).fill("Backwards");
+    await form.getByLabel("Start day").fill("2026-10-15");
+    await form.getByLabel("Start time").fill("14:00");
+    await form.getByLabel("End time").fill("13:00");
+    await form.getByRole("button", { name: "Save" }).click();
+
+    await expect(form.getByRole("alert")).toHaveText("It ends before it starts. Set the end to after the start.");
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.create")).toHaveLength(0);
+
+    await form.getByLabel("End time").fill("15:00");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form).toHaveCount(0);
+    expect((await ran(page)).filter((r) => r.command === "calendar.events.create")).toHaveLength(1);
+});
+
+test("a day that is both the fourth and the last of its kind in the month can repeat as either", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-14T00:20:00Z"));
+    await withCore(page, { accounts: [robin], events: [] });
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    const sentRepeat = async () => ((await ran(page)).filter((r) => r.command === "calendar.events.create").at(-1)?.args as Record<string, unknown>).repeat;
+    const form = page.getByRole("form", { name: "New event" });
+    const on = form.getByLabel("On which day");
+
+    // Tuesday 27 October 2026: the fourth Tuesday of its month, and the last.
+    for (const [choice, said, week] of [
+        ["weekday", "The fourth Tuesday", "fourth"],
+        ["last", "The last Tuesday", "last"],
+    ]) {
+        await page.getByRole("button", { name: "New event" }).click();
+        await form.getByRole("textbox", { name: "Subject" }).fill("Board");
+        await form.getByLabel("Start day").fill("2026-10-27");
+        await form.getByLabel("Repeats").selectOption("month");
+        await expect(on.getByRole("option")).toHaveText(["Day 27 of the month", "The fourth Tuesday", "The last Tuesday"]);
+        await on.selectOption(choice);
+        await expect(on.locator("option:checked")).toHaveText(said);
+        await form.getByRole("button", { name: "Save" }).click();
+        await expect(form).toHaveCount(0);
+        expect(await sentRepeat()).toEqual({ unit: "month", every: 1, week_of_month: week, days_of_week: ["tuesday"] });
+    }
+
+    // Friday 30 October 2026 is the fifth Friday, so it is only ever the last.
+    await page.getByRole("button", { name: "New event" }).click();
+    await form.getByLabel("Start day").fill("2026-10-30");
+    await form.getByLabel("Repeats").selectOption("month");
+    await expect(on.getByRole("option")).toHaveText(["Day 30 of the month", "The last Friday"]);
+});
