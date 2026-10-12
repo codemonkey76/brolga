@@ -281,8 +281,15 @@
         border-left-color: var(--accent);
     }
 
+    /* Read mail stands back a little, so that what is unread is plain at a glance and not only by its weight. */
+    .from,
+    .subject {
+        color: color-mix(in srgb, var(--text) 78%, var(--surface));
+    }
+
     .row.unread .from,
     .row.unread .subject {
+        color: var(--text);
         font-weight: 700;
     }
 

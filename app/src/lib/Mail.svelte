@@ -1012,7 +1012,7 @@
                 {:else}
                     <span class="twist"></span>
                 {/if}
-                <button type="button" class="folder" class:current={each.id === folderId && !searching} aria-current={each.id === folderId && !searching} onclick={() => showFolder(each.id)}>
+                <button type="button" class="folder" class:unread={each.unread > 0} class:current={each.id === folderId && !searching} aria-current={each.id === folderId && !searching} onclick={() => showFolder(each.id)}>
                     <Shape size={15} aria-hidden="true" />
                     <span class="name">{each.name}</span>
                     {#if each.unread > 0}<span class="count" aria-label="{each.unread} unread">{each.unread}</span>{/if}
@@ -1059,7 +1059,7 @@
                             {:else}
                                 <span class="twist"></span>
                             {/if}
-                            <button type="button" class="folder" onclick={() => showIn(each.mailbox, folder.id)}>
+                            <button type="button" class="folder" class:unread={folder.unread > 0} onclick={() => showIn(each.mailbox, folder.id)}>
                                 <Shape size={15} aria-hidden="true" />
                                 <span class="name">{folder.name}</span>
                                 {#if folder.unread > 0}<span class="count" aria-label="{folder.unread} unread">{folder.unread}</span>{/if}
@@ -1336,9 +1336,22 @@
         text-align: left;
     }
 
+    /* A folder with nothing unread stands back a little; one with unread mail is bold, as its count is. */
+    .folder .name {
+        color: color-mix(in srgb, var(--text) 78%, var(--surface));
+    }
+
+    .folder.unread .name {
+        color: var(--text);
+        font-weight: 700;
+    }
+
     .folder.current {
         background: color-mix(in srgb, var(--accent) 18%, var(--surface));
-        font-weight: 600;
+    }
+
+    .folder.current .name {
+        color: var(--text);
     }
 
     /* The pin keeps out of the way until the row is pointed at or reached by keyboard. */
