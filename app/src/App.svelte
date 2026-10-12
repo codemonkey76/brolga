@@ -12,6 +12,7 @@
     import StatusBar from "./lib/StatusBar.svelte";
     import Palette, { type Action } from "./lib/Palette.svelte";
     import People from "./lib/People.svelte";
+    import { inDialog } from "./lib/typing";
     import { tick } from "svelte";
 
     type View = "mail" | "calendar" | "people" | "accounts" | "agents";
@@ -21,6 +22,10 @@
     let started = $state(false);
     /** A day the calendar is to open on, when it is come to from a message about a meeting. */
     let calendarDay = $state<Date | null>(null);
+    // The day is for that one visit: once the calendar is left, the next opens on today.
+    $effect(() => {
+        if (view === "calendar") return () => (calendarDay = null);
+    });
 
     /** Mailboxes other people have shared, which are read beside the accounts' own. */
     let shared = $state<SharedMailbox[]>([]);
@@ -124,7 +129,9 @@
     function keydown(event: KeyboardEvent) {
         if (!(event.ctrlKey || event.metaKey)) return;
         const key = event.key.toLowerCase();
-        if (key === "k") palette = !palette;
+        // The palette is put away by the keys that brought it. Nothing else is done behind it, or behind a question.
+        if (key === "k" && (palette || !inDialog(event))) palette = !palette;
+        else if (inDialog(event)) return;
         else if (key === "1") go("mail");
         else if (key === "2") go("calendar");
         else if (key === "3" || (event.shiftKey && key === "b")) go("people");
@@ -168,11 +175,12 @@
     </nav>
 
     <main>
-        {#if !started}
-            <p class="muted starting" role="status">Starting…</p>
-        {:else if view === "mail" && accounts.length > 0}
+        {#if started && accounts.length > 0}
+            <!-- Kept while another screen is shown, and only hidden, so that it is found as it was left:
+                 the folder, a search, the lines chosen, what can be undone, a message being written. -->
             <Mail
                 accounts={mailboxes(accounts, shared, false, archives)}
+                shown={view === "mail"}
                 linked={asked}
                 onLinked={() => (asked = null)}
                 onCalendar={(day) => {
@@ -180,6 +188,11 @@
                     view = "calendar";
                 }}
             />
+        {/if}
+        {#if !started}
+            <p class="muted starting" role="status">Starting…</p>
+        {:else if view === "mail" && accounts.length > 0}
+            <!-- Mail, above. -->
         {:else if view === "calendar" && accounts.length > 0}
             <Calendar accounts={mailboxes(accounts, shared, true)} startOn={calendarDay} writing={newEvent} />
         {:else if view === "people" && accounts.length > 0}

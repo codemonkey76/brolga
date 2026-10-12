@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { bulk, inbox, lunch, notified, ran, robin, sam, sent, withCore } from "./core";
+import { bulk, inbox, lunch, notified, ran, robin, sam, sent, told, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -9,6 +9,17 @@ const messages = (page: Page) => page.getByRole("listbox", { name: "Messages" })
 const tree = (page: Page) => page.getByRole("list", { name: "Folders" });
 const folder = (page: Page, name: string) => tree(page).getByRole("button", { name: new RegExp(`^${name}`) });
 const body = (page: Page) => page.frameLocator('iframe[title="Message body"]');
+/** How many times the stand-in core has been asked for something. */
+const asked = async (page: Page, command: string) => (await ran(page)).filter((r) => r.command === command).length;
+
+/** An invitation, which has a box for a note to the organiser. */
+const invitation = {
+    ...inbox[0],
+    id: "inv",
+    subject: "Budget review",
+    received_at: "2026-10-09T05:00:00Z",
+    meeting: { kind: "invitation", start: "2026-10-14T04:00:00Z", end: "2026-10-14T05:00:00Z", is_all_day: false, location: "Harbour Room", event_id: "e2", response: "notResponded", conflicts: [], complete: true },
+};
 
 test("the window opens on the inbox, newest first, and syncs", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
@@ -649,10 +660,24 @@ test("a change Microsoft 365 refuses is told of, once", async ({ page }) => {
         refused: [{ message_id: "m3", subject: "Invoice 2041 attached", change: "flag", error: "This message cannot be changed." }],
     });
 
-    const told = page.getByRole("alert");
-    await expect(told).toContainText("would not change the flag of “Invoice 2041 attached”");
-    await expect(told).toContainText("it has been put back");
-    expect((await ran(page)).some((r) => r.command === "app.outbox.dismiss_refused")).toBe(true);
+    const notice = page.getByRole("alert");
+    await expect(notice).toContainText("would not change the flag of “Invoice 2041 attached”");
+    await expect(notice).toContainText("it has been put back");
+    // It is not forgotten until it has been seen: another sync leaves it there.
+    const syncs = await asked(page, "mail.sync");
+    await page.keyboard.press("F9");
+    await expect.poll(() => asked(page, "mail.sync")).toBe(syncs + 1);
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    await expect(notice).toContainText("would not change the flag");
+    expect(await asked(page, "app.outbox.dismiss_refused")).toBe(0);
+
+    await notice.getByRole("button", { name: "Dismiss" }).click();
+    await expect(notice).toHaveCount(0);
+    expect(await asked(page, "app.outbox.dismiss_refused")).toBe(1);
+    await page.keyboard.press("F9");
+    await expect.poll(() => asked(page, "mail.sync")).toBe(syncs + 2);
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    await expect(notice).toHaveCount(0);
 });
 
 test("deleting moves the message away, opens the next, and can be undone", async ({ page }) => {
@@ -1065,6 +1090,9 @@ test("a message is given categories, shown in their colours, and that can be und
     await expect(first.getByLabel("Category Red category")).toHaveCount(0);
     await expect(first.getByLabel("Category Clients")).toBeVisible();
 
+    // The click on Undo put the menu away.
+    await expect(menu).toBeHidden();
+    await page.getByRole("toolbar", { name: "Message actions" }).locator('summary[aria-label="Categories"]').click();
     await menu.getByRole("checkbox", { name: "Clients" }).uncheck();
     await expect(first.getByLabel("Category Clients")).toHaveCount(0);
     await expect(pane.getByLabel("This message's categories")).toHaveCount(0);
@@ -1407,7 +1435,8 @@ test("several messages are marked, flagged and given a category together, each k
     await expect(rows.nth(1).getByLabel("Flagged")).toBeVisible();
     await expect(rows.nth(2).getByLabel("Flagged")).toBeVisible();
 
-    // The menu is still open. One of the two has it, so the box is neither ticked nor clear.
+    // One of the two has it, so the box is neither ticked nor clear.
+    await actions.locator('summary[aria-label="Categories"]').click();
     await expect(menu.getByRole("checkbox", { name: "Red category" })).toHaveJSProperty("indeterminate", true);
     await menu.getByRole("checkbox", { name: "Clients" }).check();
     await expect(rows.nth(1).getByLabel("Category Clients")).toBeVisible();
@@ -1552,4 +1581,516 @@ test("the version in the bar looks for a newer one when pressed, and says when t
     await bar.getByRole("button", { name: "Brolga 0.1.5" }).click();
     await expect(bar).toContainText("This is the newest version.");
     expect(await looked(page)).toEqual([false, true]);
+});
+
+test("keys typed into a note are words for the note, not keys for the message", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [invitation, ...inbox] });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    const card = page.getByRole("region", { name: "Meeting" });
+    await card.getByText("Options").click();
+    const note = card.getByRole("textbox", { name: "Note to the organiser" });
+
+    await note.fill("See you thenn");
+    await note.press("Backspace");
+    await note.press("Delete");
+    await note.press("Insert");
+    await note.press("Control+u");
+
+    await expect(note).toHaveValue("See you then");
+    await expect(rows).toHaveCount(5);
+    await expect(rows.first().getByLabel("Flagged")).toHaveCount(0);
+    expect(await asked(page, "mail.messages.move")).toBe(0);
+    expect((await ran(page)).filter((r) => r.command === "mail.messages.set_read" && r.args.is_read === false)).toEqual([]);
+});
+
+test("the keys for a new meeting do not also mark the message read", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    await first.click();
+    await page.keyboard.press("Control+u");
+    await expect(first).toHaveClass(/unread/);
+
+    await page.keyboard.press("Control+Shift+Q");
+
+    await expect(page.getByRole("form", { name: "New event" })).toBeVisible();
+    expect((await ran(page)).filter((r) => r.command === "mail.messages.set_read").at(-1)?.args.is_read).toBe(false);
+});
+
+test("while an agent's question is waiting, keys do nothing to the mail behind it", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, asking: [{ id: 1, client: "Claude", command: "mail.messages.delete_permanently", args: {} }] });
+    const rows = messages(page).getByRole("option");
+    await expect(rows).toHaveCount(4);
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    // The list is given the keys without a click, which the question is in the way of.
+    await messages(page).focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(rows.first()).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+
+    await page.keyboard.press("Delete");
+    await page.keyboard.press("Control+2");
+
+    await page.getByRole("button", { name: "Don't allow" }).click();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    await expect(rows).toHaveCount(4);
+    expect(await asked(page, "mail.messages.move")).toBe(0);
+});
+
+test("Delete is for the line the keys have reached, though its message is still opening", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await told(page, "hold", "mail.messages.get");
+
+    await page.keyboard.press("ArrowDown");
+    await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Delete");
+
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.messages.move")?.args.message_ids).toEqual(["m2"]);
+    await told(page, "letGo", "mail.messages.get");
+    await expect(rows).toHaveCount(3);
+    await expect(rows.first()).toContainText("Budget review moved to Thursday");
+});
+
+test("a reply is to the line the keys have reached, though its message is still opening", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await told(page, "hold", "mail.messages.get");
+
+    await page.keyboard.press("ArrowDown");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+
+    await expect(page.getByRole("form", { name: "Reply" }).getByRole("textbox", { name: "Subject" })).toHaveValue("RE: Your October newsletter");
+});
+
+test("the keys for a new message pressed twice start one message", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await expect(messages(page).getByRole("option")).toHaveCount(4);
+    await told(page, "hold", "mail.drafts.create");
+
+    await page.keyboard.press("Control+n");
+    await page.keyboard.press("Control+n");
+    await told(page, "letGo", "mail.drafts.create");
+
+    await expect(page.getByRole("form", { name: "New message" })).toBeVisible();
+    expect(await asked(page, "mail.drafts.create")).toBe(1);
+});
+
+test("where an attachment was saved is not said on another message opened meanwhile", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await rows.nth(2).click();
+    await told(page, "hold", "mail.attachments.save");
+    await pane.getByRole("button", { name: /Invoice 2041\.pdf/ }).first().click();
+    await expect.poll(() => told(page, "heldBack", "mail.attachments.save")).toBe(1);
+
+    await rows.first().click();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+    await told(page, "letGo", "mail.attachments.save");
+
+    await expect(page.getByText("Saved to /home/robin/Downloads/Invoice 2041.pdf")).toBeVisible();
+    await expect(pane).not.toContainText("Saved to");
+});
+
+test("a message still opening says so, though one asked for before it has come", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await expect(rows).toHaveCount(4);
+    await told(page, "hold", "mail.messages.get");
+    await rows.first().click();
+    await rows.nth(1).click();
+    await expect.poll(() => told(page, "heldBack", "mail.messages.get")).toBe(2);
+
+    await told(page, "letGo", "mail.messages.get", 1);
+    await expect.poll(() => told(page, "heldBack", "mail.messages.get")).toBe(1);
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 50)));
+
+    await expect(pane.getByText("Opening…")).toBeVisible();
+    await told(page, "letGo", "mail.messages.get");
+    await expect(pane.getByRole("heading")).toHaveText("Your October newsletter");
+});
+
+test("in what a search found, a deleted message comes back when that is undone", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+    await search.fill("invoice");
+    await search.press("Enter");
+    await expect(rows).toHaveCount(1);
+    await rows.first().click();
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Invoice 2041 attached");
+
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(page.getByText("Nothing matches.")).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click();
+
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("Invoice 2041 attached");
+});
+
+test("a move of many that fails part way says how far it got, shows what is left, and can be undone", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)] });
+    await folder(page, "Archive").click();
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await page.keyboard.press("Control+a");
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await expect(picked).toContainText("1,200 messages selected");
+    await told(page, "failAfter", "mail.messages.move", 1, "Microsoft 365 could not be reached.");
+
+    await page.keyboard.press("Delete");
+
+    await expect(page.getByRole("alert")).toContainText("500 of 1,200 messages were done before this went wrong. Microsoft 365 could not be reached.");
+    await expect(page.getByText("· 700 messages")).toBeVisible();
+    // Those it did not reach are still chosen.
+    await expect(picked).toContainText("700 messages selected");
+    await expect(page.getByText("Moved to Deleted Items: 500 messages")).toBeVisible();
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByText("· 1,200 messages")).toBeVisible();
+});
+
+test("Delete pressed again while a message is being moved does nothing more", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await told(page, "hold", "mail.messages.move");
+
+    await page.keyboard.press("Delete");
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+    await page.keyboard.press("Delete");
+    await told(page, "letGo", "mail.messages.move");
+
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+    expect(await asked(page, "mail.messages.move")).toBe(1);
+});
+
+test("the bin on a line leaves the lines chosen as they were", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await rows.first().click();
+    await rows.nth(1).click({ modifiers: ["Shift"] });
+    await expect(picked).toContainText("2 messages selected");
+
+    await rows.nth(3).hover();
+    await rows.nth(3).getByTitle("Delete").click();
+
+    await expect(rows).toHaveCount(3);
+    await expect(picked).toContainText("2 messages selected");
+    await expect(messages(page).getByRole("option", { selected: true })).toHaveCount(2);
+});
+
+test("a search still under way when the box is cleared does not show under the empty box", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+    await expect(rows).toHaveCount(4);
+    await told(page, "hold", "mail.search");
+
+    await search.fill("invoice");
+    await expect.poll(() => told(page, "heldBack", "mail.search")).toBe(1);
+    await search.fill("");
+    await told(page, "letGo", "mail.search");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 50)));
+
+    await expect(page.getByText("· 4 messages")).toBeVisible();
+    await expect(rows).toHaveCount(4);
+});
+
+test("after a search that fails, the folder still shows the mail that comes", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+    await expect(rows).toHaveCount(4);
+    await told(page, "failAfter", "mail.search", 0, "The search could not be run.");
+
+    await search.fill("invoice");
+    await search.press("Enter");
+    await expect(page.getByRole("alert")).toContainText("The search could not be run.");
+    await search.fill("");
+    await page.evaluate(() => (window as unknown as { arrive: () => void }).arrive());
+    await page.keyboard.press("F9");
+
+    await expect(rows).toHaveCount(5);
+    await expect(rows.first()).toContainText("Just in");
+});
+
+test("a search says when it shows only the first of many, and what was searched for, not what is being typed", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(250)] });
+    const search = page.getByRole("searchbox", { name: "Search mail" });
+
+    await search.fill("archived");
+    await search.press("Enter");
+    await expect(page.getByText("The first 200 results for “archived”")).toBeVisible();
+
+    await told(page, "hold", "mail.search");
+    await search.fill("archived message 25");
+    await expect.poll(() => told(page, "heldBack", "mail.search")).toBe(1);
+    await expect(page.getByText("The first 200 results for “archived”")).toBeVisible();
+    await told(page, "letGo", "mail.search");
+    await expect(page.getByText("9 results for “archived message 25”")).toBeVisible();
+});
+
+test("every line stays chosen when the list is fetched again while they are being chosen", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)] });
+    await folder(page, "Archive").click();
+    await expect(page.getByText("· 1,200 messages")).toBeVisible();
+    await messages(page).getByRole("option").first().click();
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    // A sync ends by fetching the list again: that is held back.
+    await told(page, "hold", "mail.messages.list", 1);
+    await page.keyboard.press("F9");
+    await expect.poll(() => told(page, "heldBack", "mail.messages.list")).toBe(1);
+
+    await page.keyboard.press("Control+a");
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await expect(picked).toContainText("1,200 messages selected");
+    await told(page, "letGo", "mail.messages.list");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 300)));
+
+    await expect(picked).toContainText("1,200 messages selected");
+});
+
+test("while a sync goes on, only what is near the lines on screen is fetched again", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)], syncNeverEnds: true });
+    await folder(page, "Archive").click();
+    await expect(page.getByText("· 1,200 messages")).toBeVisible();
+    await messages(page).evaluate((list) => (list.scrollTop = list.scrollHeight));
+    await expect(messages(page).getByText("Archived message 1200", { exact: true })).toBeVisible();
+    await messages(page).evaluate((list) => (list.scrollTop = 0));
+    await expect(messages(page).getByText("Archived message 1", { exact: true })).toBeVisible();
+
+    const pages = async (from: number) => (await ran(page)).slice(from).filter((r) => r.command === "mail.messages.list" && r.args.folder_id === "archive").map((r) => r.args.offset);
+    // The first fetch of the top after coming back to it, and then the one after that.
+    let mark = (await ran(page)).length;
+    await expect.poll(async () => (await pages(mark)).includes(0), { timeout: 10_000 }).toBe(true);
+    mark = (await ran(page)).length;
+    await expect.poll(async () => (await pages(mark)).includes(0), { timeout: 10_000 }).toBe(true);
+    expect(await pages(mark)).not.toContain(1100);
+
+    // What was let go is fetched when it is scrolled to again.
+    await messages(page).evaluate((list) => (list.scrollTop = list.scrollHeight));
+    await expect(messages(page).getByText("Archived message 1200", { exact: true })).toBeVisible();
+});
+
+test("choosing another account leaves nothing of the one before: no message come late, no undo, no drafts", async ({ page }) => {
+    await withCore(page, { accounts: [robin, { ...sam, needs_sign_in: false }], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await page.getByRole("button", { name: "New message" }).click();
+    await page.getByRole("form", { name: "New message" }).getByRole("textbox", { name: "Subject" }).fill("Half written");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("list", { name: "Being written" })).toContainText("Half written");
+    await rows.nth(2).click();
+    await expect(pane.getByRole("heading")).toHaveText("Invoice 2041 attached");
+    await page.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
+    // The next message is slow to open, and the account is changed before it has.
+    await told(page, "hold", "mail.messages.get");
+    await rows.first().click();
+    await told(page, "hold", "mail.drafts.list");
+
+    await page.getByRole("combobox", { name: "Account" }).selectOption(sam.id);
+    await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Being written" })).toHaveCount(0);
+    await told(page, "letGo", "mail.messages.get");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 50)));
+
+    await expect(pane).toContainText("Select a message to read it.");
+    await expect(page.getByRole("button", { name: "Reply", exact: true })).toBeDisabled();
+});
+
+test("mail is found as it was left after a look at another screen: the folder, the place in it, the message, and no new sync", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(300)] });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await folder(page, "Archive").click();
+    await messages(page).evaluate((list) => (list.scrollTop = 68 * 150));
+    await rows.filter({ hasText: "Archived message 152" }).click();
+    await expect(pane.getByRole("heading")).toHaveText("Archived message 152");
+    await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
+    const syncs = await asked(page, "mail.sync");
+
+    await page.getByRole("button", { name: "People" }).click();
+    await expect(page.getByRole("searchbox").first()).toBeVisible();
+    await expect(messages(page)).toBeHidden();
+    // The keys for mail do nothing to it while it is out of sight.
+    await page.keyboard.press("Delete");
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+
+    await expect(page.getByText("Archive · 300 messages")).toBeVisible();
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Archived message 152");
+    await expect(pane.getByRole("heading")).toHaveText("Archived message 152");
+    expect(await asked(page, "mail.sync")).toBe(syncs);
+    expect(await asked(page, "mail.messages.move")).toBe(0);
+});
+
+test("a message being written is still there after a look at another screen", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    await form.getByRole("textbox", { name: "Subject" }).fill("Half written");
+
+    await page.getByRole("button", { name: "People" }).click();
+    await expect(form).toBeHidden();
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+
+    await expect(form.getByRole("textbox", { name: "Subject" })).toHaveValue("Half written");
+});
+
+test("the calendar opens on a meeting's day when asked to from its message, and on today the next time", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));
+    await withCore(page, { accounts: [robin], mail: [invitation, ...inbox] });
+    await messages(page).getByRole("option").first().click();
+
+    await page.getByRole("region", { name: "Meeting" }).getByRole("button", { name: "Show in calendar" }).click();
+    const heading = page.getByRole("region", { name: "Calendar" }).getByRole("heading", { level: 1 });
+    await expect(heading).toHaveText(/12 Oct – 16 Oct 2026|Oct 12 – Oct 16 2026/);
+
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await expect(heading).toHaveText(/5 Oct – 9 Oct 2026|Oct 5 – Oct 9 2026/);
+});
+
+test("what went wrong stays in sight through a sync until it is dismissed, and a failed sync's notice goes with the next good one", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const sync = page.getByRole("button", { name: "Sync", exact: true });
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await expect(sync).toBeEnabled();
+    await told(page, "failAfter", "mail.messages.move", 0, "The message could not be moved.");
+    await told(page, "failAfter", "mail.sync", 0, "Microsoft 365 could not be reached.");
+
+    await page.keyboard.press("Delete");
+    const moved = page.getByRole("alert").filter({ hasText: "The message could not be moved." });
+    await expect(moved).toBeVisible();
+    await page.keyboard.press("F9");
+    const unsynced = page.getByRole("alert").filter({ hasText: "Microsoft 365 could not be reached." });
+    await expect(unsynced).toBeVisible();
+    await expect(moved).toBeVisible();
+
+    await told(page, "mend", "mail.sync");
+    await expect(sync).toBeEnabled();
+    const syncs = await asked(page, "mail.sync");
+    await page.keyboard.press("F9");
+    await expect.poll(() => asked(page, "mail.sync")).toBe(syncs + 1);
+    await expect(unsynced).toHaveCount(0);
+    await expect(moved).toBeVisible();
+
+    await moved.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("the arrow keys go on working when the line that was clicked has scrolled out of the list", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(300)] });
+    await folder(page, "Archive").click();
+    await messages(page).getByRole("option").first().click();
+    const chosen = messages(page).getByRole("option", { selected: true });
+    await expect(chosen).toContainText("Archived message 1");
+
+    for (let pressed = 1; pressed <= 6; pressed++) {
+        await page.keyboard.press("PageDown");
+        await expect(chosen).toContainText(`Archived message ${pressed * 8 + 1}`);
+    }
+    await page.keyboard.press("ArrowDown");
+
+    await expect(chosen).toContainText("Archived message 50");
+    // The keys are the list's, which tells a screen reader which of its lines they are on.
+    await expect(messages(page)).toBeFocused();
+    expect(await messages(page).getAttribute("aria-activedescendant")).toBe(await chosen.getAttribute("id"));
+});
+
+test("End goes to the last line of a long folder the first time it is pressed", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(1200)] });
+    await folder(page, "Archive").click();
+    await messages(page).getByRole("option").first().click();
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Archived message 1");
+
+    await page.keyboard.press("End");
+
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Archived message 1200");
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Archived message 1200");
+});
+
+test("deleting one message of an open conversation leaves the conversation open and its line chosen", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...lunch] });
+    await page.getByRole("checkbox", { name: "Conversations" }).check();
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await rows.filter({ hasText: "Lunch on Friday?" }).click();
+    const thread = pane.getByRole("list", { name: "Conversation" });
+    await expect(thread.getByRole("button")).toHaveCount(3);
+    await thread.getByRole("button").first().click();
+    await expect(body(page).getByText("The place by the harbour has reopened.")).toBeVisible();
+
+    await page.keyboard.press("Delete");
+
+    await expect(page.getByText("Moved to Deleted Items")).toBeVisible();
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Lunch on Friday?");
+    await expect(body(page).getByText("Booked for four of us.")).toBeVisible();
+});
+
+test("Ctrl with a click in another folder chooses that line alone, not also the one left behind", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(3)] });
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+    await folder(page, "Archive").click();
+    await expect(rows).toHaveCount(3);
+
+    await rows.first().click({ modifiers: ["ControlOrMeta"] });
+
+    await expect(page.getByRole("region", { name: "Messages selected" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Archived message 1");
+});
+
+test("a line clicked while a message is being written is opened, and marked read, once the writing is put aside", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const first = messages(page).getByRole("option").first();
+    await expect(first).toHaveClass(/unread/);
+    await page.getByRole("button", { name: "New message" }).click();
+    const form = page.getByRole("form", { name: "New message" });
+    await expect(form).toBeVisible();
+
+    await first.click();
+    await expect(first).toHaveAttribute("aria-selected", "true");
+    await page.evaluate(() => new Promise((done) => setTimeout(done, 100)));
+    await expect(form).toBeVisible();
+    expect(await asked(page, "mail.messages.set_read")).toBe(0);
+    await expect(first).toHaveClass(/unread/);
+
+    await form.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Budget review moved to Thursday");
+    await expect(first).not.toHaveClass(/unread/);
+});
+
+test("the menus for a day to follow up by and for categories are put away by Escape or a click elsewhere", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const actions = page.getByRole("toolbar", { name: "Message actions" });
+    await messages(page).getByRole("option").first().click();
+    await expect(body(page).getByText("2 pm on Thursday")).toBeVisible();
+
+    for (const [summary, list] of [["Categories", "Categories"], ["Flag for…", "Follow up by"]]) {
+        const menu = page.getByRole("list", { name: list });
+        await actions.locator(`summary[aria-label="${summary}"]`).click();
+        await expect(menu).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(menu).toBeHidden();
+
+        await actions.locator(`summary[aria-label="${summary}"]`).click();
+        await expect(menu).toBeVisible();
+        await page.getByRole("region", { name: "Message" }).getByRole("heading").click();
+        await expect(menu).toBeHidden();
+    }
+    // The message is as it was: Escape put a menu away and did nothing else.
+    await expect(messages(page).getByRole("option", { selected: true })).toContainText("Budget review moved to Thursday");
 });

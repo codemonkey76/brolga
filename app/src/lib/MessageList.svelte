@@ -18,15 +18,17 @@
         onFlag: (message: Message) => void;
         /** Delete a line from the line itself. Left out where there is nowhere further to delete to. */
         onDelete?: (message: Message) => void;
-        /** Asked for when a position on screen has not been loaded. */
-        onNeed: (index: number) => void;
+        /** Asked for when a position on screen has not been loaded. It is over when the position has been, if it can be. */
+        onNeed: (index: number) => void | Promise<void>;
+        /** Told which positions are on screen, and a few either side, whenever that changes. */
+        onSeen?: (first: number, last: number) => void;
         /** The mailbox's categories, for the colour of each. */
         categories: Category[];
         /** The list is in date order, so it can be marked off into today, yesterday and so on. */
         byDate: boolean;
     }
 
-    let { total, rows, selectedId, picked, onSelect, onAll, onFlag, onDelete, onNeed, byDate, categories }: Props = $props();
+    let { total, rows, selectedId, picked, onSelect, onAll, onFlag, onDelete, onNeed, onSeen, byDate, categories }: Props = $props();
 
     const chosen = $derived(new Set(picked.length > 1 ? picked : selectedId ? [selectedId] : []));
 
@@ -51,6 +53,18 @@
     };
     const top = $derived(group(Math.min(Math.max(0, total - 1), Math.floor(scrollTop / ROW))));
     const starts = (index: number) => index > 0 && group(index) !== "" && group(index - 1) !== "" && group(index) !== group(index - 1);
+
+    $effect(() => onSeen?.(first, last));
+
+    // While another screen is shown the list is hidden and has no height,
+    // and what is hidden does not keep its place. It is put back where it
+    // was when the list is shown again.
+    function scrolled() {
+        if (viewport && viewport.clientHeight > 0) scrollTop = viewport.scrollTop;
+    }
+    $effect(() => {
+        if (height > 0 && viewport && viewport.scrollTop !== scrollTop) viewport.scrollTop = scrollTop;
+    });
 
     $effect(() => {
         for (const index of visible) {
@@ -89,11 +103,29 @@
         what();
     }
 
-    function move(by: number, how: "one" | "range") {
-        const at = rows.findIndex((row) => row?.id === selectedId);
+    /** Where the selected line is, if it is loaded. */
+    const at = $derived(rows.findIndex((row) => row?.id === selectedId));
+    const line = (index: number) => `message-line-${index}`;
+
+    /**
+     * A click on a line chooses it. The keys stay with the list itself, not
+     * the line: only the lines on screen are in the page, and one that held
+     * the keys would take them with it when it scrolled away.
+     */
+    function clicked(event: MouseEvent) {
+        const on = event.target instanceof Element ? event.target.closest<HTMLElement>(".row") : null;
+        const message = on ? rows[Number(on.dataset.index)] : undefined;
+        if (!message) return;
+        viewport?.focus({ preventScroll: true });
+        onSelect(message, event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "one");
+    }
+
+    async function move(by: number, how: "one" | "range") {
         const to = Math.min(total - 1, Math.max(0, at < 0 ? 0 : at + by));
+        // A line not loaded yet is waited for, so that End reaches the end of a long folder the first time.
+        if (!rows[to]) await onNeed(to);
         const row = rows[to];
-        if (!row) return onNeed(to);
+        if (!row) return;
         onSelect(row, how);
         // Keep the selection on screen.
         if (viewport) {
@@ -125,16 +157,20 @@
     role="listbox"
     aria-label="Messages"
     aria-multiselectable="true"
+    aria-activedescendant={at >= first && at < last ? line(at) : undefined}
     tabindex="0"
     bind:this={viewport}
     bind:clientHeight={height}
-    onscroll={() => (scrollTop = viewport?.scrollTop ?? 0)}
+    onscroll={scrolled}
+    onclick={clicked}
     onkeydown={keydown}
 >
     <div class="spacer" style:height="{total * ROW}px">
         {#each visible as index (index)}
             {@const message = rows[index]}
             <div
+                id={line(index)}
+                data-index={index}
                 class="row"
                 class:selected={message && chosen.has(message.id)}
                 class:cursor={picked.length > 1 && message?.id === selectedId}
@@ -144,9 +180,6 @@
                 aria-selected={!!message && chosen.has(message.id)}
                 aria-setsize={total}
                 aria-posinset={index + 1}
-                tabindex="-1"
-                onclick={(event) => message && onSelect(message, event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "one")}
-                onkeydown={() => {}}
             >
                 {#if starts(index)}
                     <span class="starts">{group(index)}</span>

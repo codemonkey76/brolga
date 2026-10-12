@@ -1,16 +1,20 @@
 <script lang="ts">
-    import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash } from "@lucide/svelte";
+    import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash, X } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { type Asked, chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, SEARCH_MOST, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
     import Toolbar from "./Toolbar.svelte";
     import { type Answer, type Proposed, respond } from "./calendar";
+    import { inDialog, typing } from "./typing";
+    import { untrack } from "svelte";
 
     interface Props {
         accounts: Account[];
+        /** False while another screen is shown. Mail is then kept as it is, out of sight, and does nothing. */
+        shown?: boolean;
         /** Show a day in the calendar. */
         onCalendar: (day: Date) => void;
         /** A message a mailto: link asked to be started. */
@@ -19,7 +23,7 @@
         onLinked?: () => void;
     }
 
-    let { accounts, onCalendar, linked = null, onLinked }: Props = $props();
+    let { accounts, shown = true, onCalendar, linked = null, onLinked }: Props = $props();
 
     const PAGE = 100;
     let accountId = $state<string | null>(null);
@@ -30,6 +34,8 @@
     /** Bumped whenever the list is replaced, so a slow answer for the old one is dropped. */
     let listing = 0;
     const asked = new Set<number>();
+    /** The positions on screen, as the list last told of them. What is fetched again is what is near them. */
+    let seen = { first: 0, last: 0 };
 
     let query = $state("");
     /** Whether a search looks in every folder or only the one shown. */
@@ -50,12 +56,20 @@
         if (query.trim()) search();
     }
     let searching = $state(false);
+    /** The words last searched for. What is shown was found for these, whatever has been typed since. */
+    let sought = $state("");
+    /** The search found as many as it is asked for, so there may be more. */
+    let capped = $state(false);
+    /** Counts each search asked for, so that only the answer to the last is shown. */
+    let seeking = 0;
     let opened = $state<Opened | null>(null);
     let selectedId = $state<string | null>(null);
     /** The message being read, which in a conversation need not be the one selected in the list. */
-    let readingId: string | null = null;
+    let readingId = $state<string | null>(null);
     /** The lines chosen together, when there is more than one. `selectedId` is then the one the keys move from. */
     let picked = $state<string[]>([]);
+    /** The whole conversation of the selected line, oldest first, when it has more than one message. */
+    let thread = $state<Message[]>([]);
     /** Where a run of lines chosen with Shift begins. */
     let anchorId: string | null = null;
     const many = $derived(picked.length > 1);
@@ -64,29 +78,67 @@
         const ids = new Set(picked);
         return rows.filter((row): row is Message => !!row && ids.has(row.id));
     });
+    /**
+     * The one message an action is for: the one being read. While it is
+     * still opening the pane shows the one before it, so it is taken from its
+     * line in the list, and what is done is done to what the keys have reached.
+     */
+    const current = $derived.by(() => {
+        if (!readingId) return null;
+        if (opened?.message.id === readingId) return opened.message;
+        return rows.find((row) => row?.id === readingId) ?? thread.find((each) => each.id === readingId) ?? null;
+    });
     /** What an action is for: the lines chosen, or else the message being read. */
-    const targets = $derived(many ? chosen.map((each) => each.id) : opened ? [opened.message.id] : []);
+    const targets = $derived(many ? chosen.map((each) => each.id) : current ? [current.id] : []);
     /** The core takes this many messages at a time. */
     const MOST = 500;
     /** The most lines chosen at once. */
     const MOST_PICKED = 5_000;
 
-    /** Do something to messages, as many at a time as the core takes. Every part that changed anything can be undone. */
+    /**
+     * Do something to messages, as many at a time as the core takes. Every
+     * part that changed anything can be undone. A part that fails stops it
+     * there: `reached` is how many were done before it, and what was done
+     * can still be undone.
+     */
     async function inBatches(ids: string[], each: (some: string[]) => Promise<Edited>) {
         let changed = 0;
+        let reached = 0;
         const undos: string[] = [];
         for (let at = 0; at < ids.length; at += MOST) {
-            const done = await each(ids.slice(at, at + MOST));
-            changed += done.changed;
-            if (done.changed > 0) undos.push(done.undo_id);
+            const some = ids.slice(at, at + MOST);
+            try {
+                const done = await each(some);
+                changed += done.changed;
+                if (done.changed > 0) undos.push(done.undo_id);
+                reached += some.length;
+            } catch (failure) {
+                return { changed, undos, reached, failed: true, failure };
+            }
         }
-        return { changed, undos };
+        return { changed, undos, reached, failed: false, failure: null };
     }
 
     /** What was done, and to how many when it was more than one. */
     const counted = (said: string, count: number) => (count > 1 ? `${said}: ${count.toLocaleString()} messages` : said);
-    /** The whole conversation of the selected line, oldest first, when it has more than one message. */
-    let thread = $state<Message[]>([]);
+    /** Why something stopped, and how far it had got if it had got anywhere. */
+    const stopped = (failure: unknown, reached: number, of: number) =>
+        reached > 0 ? `${reached.toLocaleString()} of ${of.toLocaleString()} messages were done before this went wrong. ${say(failure)}` : say(failure);
+
+    /** Something is being done to messages. Until it has been, the keys and the toolbar start nothing else. */
+    let working = $state(false);
+
+    /** Do one thing to messages at a time. What is asked for while another is being done is left. */
+    async function alone(what: () => Promise<void>) {
+        if (working) return;
+        working = true;
+        changing = accountId;
+        try {
+            await what();
+        } finally {
+            working = false;
+        }
+    }
 
     /** What is attached to the message being read, apart from pictures within its body. */
     let attachments = $state<Attachment[]>([]);
@@ -97,14 +149,17 @@
     async function save(attachment: Attachment, ask = false) {
         if (!accountId || !opened) return;
         saved = null;
+        const messageId = opened.message.id;
         try {
-            const messageId = opened.message.id;
             const path = ask ? await chooseSavePath(attachment.name || "attachment") : undefined;
             if (ask && !path) return;
             const result = await saveAttachment(accountId, messageId, attachment.id, path ?? undefined);
-            saved = `Saved to ${result.path}`;
+            // Said on the message it came from, or beside the list if another has been opened since.
+            if (opened?.message.id === messageId) saved = `Saved to ${result.path}`;
+            else tell(`Saved to ${result.path}`);
         } catch (failure) {
-            saved = say(failure);
+            if (opened?.message.id === messageId) saved = say(failure);
+            else problem = say(failure);
         }
     }
 
@@ -116,7 +171,10 @@
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
     async function loadDrafts() {
-        if (accountId) drafts = await listDrafts(accountId).catch(() => drafts);
+        const of = accountId;
+        if (!of) return;
+        const found = await listDrafts(of).catch(() => null);
+        if (found && accountId === of) drafts = found;
     }
 
     function tell(what: string) {
@@ -133,7 +191,8 @@
             problem = "An archive can be read and searched, but nothing can be sent from it. Choose one of your accounts to write.";
             return null;
         }
-        if (kind !== "new" && !opened) return null;
+        const about = kind === "new" ? undefined : current?.id;
+        if (kind !== "new" && !about) return null;
         // Formatted unless the last message written was switched to plain text.
         let plain = false;
         try {
@@ -141,18 +200,26 @@
         } catch {
             // Formatted, then.
         }
-        return createDraft(accountId, kind, plain ? "text" : "html", kind === "new" ? undefined : opened?.message.id);
+        return createDraft(accountId, kind, plain ? "text" : "html", about);
     }
+
+    /** A message is being started, so the keys for one pressed again do not start another. */
+    let starting = false;
 
     /** Start a new message, or an answer to the one being read. */
     async function write(kind: Starting) {
+        if (starting) return;
+        starting = true;
+        const of = accountId;
         try {
             const started = await begin(kind);
-            if (!started) return;
+            if (!started || accountId !== of) return;
             writing = started;
             await loadDrafts();
         } catch (failure) {
             problem = say(failure);
+        } finally {
+            starting = false;
         }
     }
 
@@ -178,6 +245,9 @@
 
     async function doneWriting(how: "sent" | "discarded" | "closed") {
         writing = null;
+        // A line chosen while this was being written is opened now that there is somewhere to show it.
+        const waiting = rows.find((row) => row?.id === selectedId);
+        if (waiting && !waiting.is_draft && !many && readingId !== waiting.id) void open(waiting);
         if (how === "sent") tell("Sending. It will be in Sent Items once it has gone.");
         await loadDrafts();
         // Sending happens in the background: look again shortly for it having gone, or come back.
@@ -196,7 +266,7 @@
 
     /** Give the messages a category, or take it from them. Each keeps whatever others it had. */
     async function categorise(name: string, on: boolean) {
-        const of = many ? chosen : opened ? [opened.message] : [];
+        const of = many ? chosen : current ? [current] : [];
         if (!accountId || of.length === 0) return;
         const account = accountId;
         // The core sets a message's categories whole, so those that end up alike are sent together.
@@ -211,22 +281,38 @@
             alike.set(key, { names, ids: [...(alike.get(key)?.ids ?? []), each.id] });
         }
         if (now.size === 0) return;
-        try {
+        await alone(async () => {
             const undos: string[] = [];
-            for (const { names, ids } of alike.values()) undos.push(...(await inBatches(ids, (some) => setCategories(account, some, names))).undos);
-            const mine = opened && now.get(opened.message.id);
-            if (opened && mine) opened = { ...opened, message: { ...opened.message, categories: mine } };
-            if (searching) rows = rows.map((row) => (row && now.has(row.id) ? { ...row, categories: now.get(row.id) ?? [] } : row));
-            else await refresh();
-            const cleared = [...now.values()].every((names) => names.length === 0);
-            if (undos.length > 0) offerUndo(counted(cleared ? "Categories cleared" : "Categories changed", now.size), undos);
-        } catch (failure) {
-            problem = say(failure);
-        }
+            /** Those it was done to, which is all of them unless a part failed. */
+            const did = new Map<string, string[]>();
+            let why: string | null = null;
+            for (const { names, ids } of alike.values()) {
+                const done = await inBatches(ids, (some) => setCategories(account, some, names));
+                undos.push(...done.undos);
+                for (const id of ids.slice(0, done.reached)) did.set(id, names);
+                if (done.failed) {
+                    why = stopped(done.failure, did.size, now.size);
+                    break;
+                }
+            }
+            try {
+                const mine = opened && did.get(opened.message.id);
+                if (opened && mine) opened = { ...opened, message: { ...opened.message, categories: mine } };
+                if (searching) rows = rows.map((row) => (row && did.has(row.id) ? { ...row, categories: did.get(row.id) ?? [] } : row));
+                else await refresh();
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            const cleared = [...did.values()].every((names) => names.length === 0);
+            if (undos.length > 0) offerUndo(counted(cleared ? "Categories cleared" : "Categories changed", did.size), undos);
+            if (why) problem = why;
+        });
     }
 
     /** The last action, while it can still be taken back. */
     let undoable = $state<{ said: string; ids: string[] } | null>(null);
+    /** The account whose messages are being changed, for an undo to be offered only while it is still the one shown. */
+    let changing: string | null = null;
     let undoTimer: ReturnType<typeof setTimeout> | undefined;
     const UNDO_FOR = 10_000;
 
@@ -243,57 +329,86 @@
      * Change some messages. The core makes the change at once and sends it
      * in the background, so there is nothing to wait for but the redraw.
      * `said` is offered with an Undo for ten seconds; without it the change
-     * is made quietly.
+     * is made quietly, as reading a message marks it read, whatever else is
+     * being done.
      */
     async function change(ids: string[], what: { is_read: boolean } | { flag_status: FlagStatus; due?: string }, said?: string) {
         if (!accountId || ids.length === 0) return;
         const account = accountId;
-        try {
+        const make = async () => {
             const done = await inBatches(ids, (some) => ("is_read" in what ? setRead(account, some, what.is_read) : setFlag(account, some, what.flag_status, what.due)));
-            if ("is_read" in what) {
-                await redraw(what, ids);
-            } else {
-                // Only a flagged message has a day; one not mentioned keeps the day it had.
-                const day = what.flag_status !== "flagged" ? { flag_due: null } : what.due === undefined ? {} : { flag_due: what.due || null };
-                await redraw({ flag_status: what.flag_status, ...day }, ids);
+            let why = done.failed ? stopped(done.failure, done.reached, ids.length) : null;
+            // Drawn again even when a part failed, to show those it did reach.
+            const did = ids.slice(0, done.reached);
+            try {
+                if ("is_read" in what) {
+                    await redraw(what, did);
+                } else {
+                    // Only a flagged message has a day; one not mentioned keeps the day it had.
+                    const day = what.flag_status !== "flagged" ? { flag_due: null } : what.due === undefined ? {} : { flag_due: what.due || null };
+                    await redraw({ flag_status: what.flag_status, ...day }, did);
+                }
+            } catch (failure) {
+                why ??= say(failure);
             }
-            if (said && done.changed > 0) offerUndo(said, done.undos);
-        } catch (failure) {
-            problem = say(failure);
-        }
+            if (said && done.changed > 0) offerUndo(counted(said, did.length), done.undos);
+            if (why) problem = why;
+        };
+        if (said) await alone(make);
+        else await make();
+    }
+
+    /** Fetch the list again as it now is: the folder's pages, or what the search finds. */
+    async function again() {
+        if (searching) await search(sought);
+        else await refresh();
     }
 
     async function takeBack() {
         if (!accountId || !undoable) return;
-        const { ids } = undoable;
-        clearTimeout(undoTimer);
-        undoable = null;
-        try {
-            for (const id of ids) await undo(accountId, id);
-            await refresh();
-            await relist();
-            // The message being read is drawn again from what the list now says of it.
-            const now = rows.find((row) => row && row.id === opened?.message.id);
-            if (opened && now) {
-                opened = {
-                    ...opened,
-                    message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status, flag_due: now.flag_due, categories: now.categories },
-                };
+        const account = accountId;
+        const { said, ids } = undoable;
+        await alone(async () => {
+            clearTimeout(undoTimer);
+            undoable = null;
+            let left = ids;
+            let why: string | null = null;
+            try {
+                for (const id of ids) {
+                    await undo(account, id);
+                    left = left.slice(1);
+                }
+            } catch (failure) {
+                why = say(failure);
             }
-        } catch (failure) {
-            problem = say(failure);
-        }
+            // Drawn again even when a part failed, to show what did come back.
+            try {
+                await again();
+                await relist();
+                // The message being read is drawn again from what the list now says of it.
+                const now = rows.find((row) => row && row.id === opened?.message.id);
+                if (opened && now) {
+                    opened = {
+                        ...opened,
+                        message: { ...opened.message, is_read: now.is_read, flag_status: now.flag_status, flag_due: now.flag_due, categories: now.categories },
+                    };
+                }
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            if (why) problem = why;
+            // What was not taken back can still be.
+            if (why && left.length > 0) offerUndo(said, left);
+        });
     }
 
-    const markRead = (isRead: boolean) => change(targets, { is_read: isRead }, counted(isRead ? "Marked as read" : "Marked as unread", targets.length));
+    const markRead = (isRead: boolean) => change(targets, { is_read: isRead }, isRead ? "Marked as read" : "Marked as unread");
     const flag = (status: FlagStatus, due?: string) =>
-        change(
-            targets,
-            { flag_status: status, due },
-            counted(status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged", targets.length),
-        );
+        change(targets, { flag_status: status, due }, status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged");
 
     function offerUndo(said: string, ids: string[]) {
+        // Another account has been chosen since: its list is not where to undo this.
+        if (changing !== accountId) return;
         clearTimeout(undoTimer);
         undoable = { said, ids };
         undoTimer = setTimeout(() => (undoable = null), UNDO_FOR);
@@ -307,29 +422,42 @@
     async function moveTo(destination: string, said: string, ids = targets) {
         if (!accountId || ids.length === 0) return;
         const account = accountId;
-        try {
+        await alone(async () => {
             const at = place(ids);
             const done = await inBatches(ids, (some) => moveMessages(account, some, destination));
-            await gone(ids, at);
-            if (done.changed > 0) offerUndo(counted(said, ids.length), done.undos);
-        } catch (failure) {
-            problem = say(failure);
-        }
+            let why = done.failed ? stopped(done.failure, done.reached, ids.length) : null;
+            try {
+                await gone(ids.slice(0, done.reached), at);
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            if (done.changed > 0) offerUndo(counted(said, done.reached), done.undos);
+            if (why) problem = why;
+        });
     }
 
-    /** Where in the list the first of these is. */
+    /**
+     * Where in the list the first of these is. One message of a conversation
+     * being read has no line of its own: it is where the selected line is.
+     */
     function place(ids: string[]) {
         const going = new Set(ids);
-        return rows.findIndex((row) => row && going.has(row.id));
+        const at = rows.findIndex((row) => row && going.has(row.id));
+        return at >= 0 ? at : rows.findIndex((row) => row?.id === selectedId);
     }
 
-    /** Draw the list without what has left it, and open what is now where the first of them was. */
+    /**
+     * Draw the list without what has left it, and open what is now where the
+     * first of them was. Nothing is opened if what went was neither being
+     * read nor the lines chosen: a line's own bin, or a part that failed.
+     */
     async function gone(ids: string[], at: number) {
         if (!accountId) return;
         const going = new Set(ids);
-        // Something else was being read, and still is.
-        const stays = !many && !!opened && !going.has(opened.message.id);
-        picked = [];
+        const kept = picked.filter((id) => !going.has(id));
+        // Other lines are still chosen, or something else was being read and still is.
+        const stays = kept.length > 1 || (!many && !!current && !going.has(current.id));
+        picked = kept.length > 1 ? kept : [];
         if (searching) {
             rows = rows.filter((row) => !row || !going.has(row.id));
             total = rows.length;
@@ -340,10 +468,12 @@
         if (stays) return;
         const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
         if (next) {
-            await open(next);
+            // Not waited for: the next thing can be done to it while it opens.
+            void open(next);
         } else {
             opened = null;
             selectedId = null;
+            readingId = null;
             thread = [];
         }
     }
@@ -354,7 +484,7 @@
     function flagLine(message: Message) {
         const ids = lineOf(message);
         const clear = message.flag_status === "flagged";
-        void change(ids, { flag_status: clear ? "notFlagged" : "flagged" }, counted(clear ? "Flag cleared" : "Flagged", ids.length));
+        void change(ids, { flag_status: clear ? "notFlagged" : "flagged" }, clear ? "Flag cleared" : "Flagged");
     }
 
     const removeLine = (message: Message) => moveTo("deleteditems", "Moved to Deleted Items", lineOf(message));
@@ -363,19 +493,33 @@
     async function purge() {
         const ids = targets;
         if (!accountId || ids.length === 0) return;
-        try {
+        const account = accountId;
+        await alone(async () => {
             const at = place(ids);
-            for (let from = 0; from < ids.length; from += MOST) await deletePermanently(accountId, ids.slice(from, from + MOST));
-            await gone(ids, at);
-            tell(ids.length > 1 ? `${ids.length.toLocaleString()} messages deleted permanently.` : "Deleted permanently.");
-        } catch (failure) {
-            problem = say(failure);
-        }
+            let reached = 0;
+            let why: string | null = null;
+            for (let from = 0; from < ids.length && !why; from += MOST) {
+                const some = ids.slice(from, from + MOST);
+                try {
+                    await deletePermanently(account, some);
+                    reached += some.length;
+                } catch (failure) {
+                    why = stopped(failure, reached, ids.length);
+                }
+            }
+            try {
+                await gone(ids.slice(0, reached), at);
+            } catch (failure) {
+                why ??= say(failure);
+            }
+            if (why) problem = why;
+            else tell(ids.length > 1 ? `${ids.length.toLocaleString()} messages deleted permanently.` : "Deleted permanently.");
+        });
     }
 
     /** The standard folder the message being read is in, if it is in one. For several chosen, the one they are all in. */
     const within = $derived.by(() => {
-        const from = many ? (chosen.every((each) => each.folder_id === chosen[0]?.folder_id) ? chosen[0]?.folder_id : undefined) : opened?.message.folder_id;
+        const from = many ? (chosen.every((each) => each.folder_id === chosen[0]?.folder_id) ? chosen[0]?.folder_id : undefined) : current?.folder_id;
         return folders.find((f) => f.id === from)?.well_known ?? null;
     });
     const remove = () => within !== "deleteditems" && moveTo("deleteditems", "Moved to Deleted Items");
@@ -383,15 +527,24 @@
     const notJunk = () => within === "junkemail" && moveTo("inbox", "Moved to the inbox");
     const archive = () => within !== "archive" && folders.some((f) => f.well_known === "archive") && moveTo("archive", "Archived");
 
+    /** The changes Microsoft 365 would not take, in words, until the notice of them is closed. */
+    let refusal = $state<string | null>(null);
+
     /** Tell of any change Microsoft 365 would not take. Each has already been put back. */
     async function tellOfRefusals() {
-        if (!accountId) return;
-        const refused = await refusedChanges(accountId);
-        if (refused.length === 0) return;
+        const of = accountId;
+        if (!of) return;
+        const refused = await refusedChanges(of);
+        if (accountId !== of) return;
         const first = refused[0];
         const others = refused.length > 1 ? `, and ${refused.length - 1} more` : "";
-        problem = `Microsoft 365 would not change the ${first.change} of “${first.subject || "(No subject)"}”${others}, so it has been put back. ${first.error}`;
-        await dismissRefused(accountId);
+        refusal = first ? `Microsoft 365 would not change the ${first.change} of “${first.subject || "(No subject)"}”${others}, so it has been put back. ${first.error}` : null;
+    }
+
+    /** The notice has been read and closed: only now does the core forget what was refused. */
+    function refusalSeen() {
+        refusal = null;
+        if (accountId) dismissRefused(accountId).catch((failure) => (problem = say(failure)));
     }
 
     /** How the list is laid out. This window's business only. */
@@ -451,9 +604,14 @@
         }
     }
     let opening = $state(false);
+    /** Counts each message asked for, so that only the last of them says the opening is over. */
+    let reads = 0;
     let readingProblem = $state<string | null>(null);
     let imagesShown = $state(false);
     let syncing = $state(false);
+    /** Why the last sync failed. It goes when a sync next works, or when it is dismissed. */
+    let syncProblem = $state<string | null>(null);
+    /** Why something else that was asked for could not be done. It stays until it is dismissed. */
     let problem = $state<string | null>(null);
     let searchBox = $state<HTMLInputElement>();
 
@@ -600,6 +758,8 @@
 
     function reset() {
         listing += 1;
+        seeking += 1;
+        seen = { first: 0, last: 0 };
         asked.clear();
         picked = [];
         rows = [];
@@ -624,7 +784,8 @@
         const mine = listing;
         try {
             const page = await listMessages(accountId, folderId, offset, PAGE, view);
-            if (mine !== listing) return;
+            // Left if the list has been replaced, or the page was let go again while it was on its way.
+            if (mine !== listing || !asked.has(offset)) return;
             total = page.total;
             const next = rows.slice();
             page.messages.forEach((message, i) => (next[offset + i] = message));
@@ -635,44 +796,103 @@
         }
     }
 
-    /** Fetch again what is on screen, in place, so new mail appears without the list jumping. */
-    async function refresh() {
-        if (!accountId || !folderId || searching) return;
+    /** The fetching again that is under way, if one is, and whether another has been asked for since it began. */
+    let refreshing: Promise<void> | null = null;
+    let stale = false;
+
+    /**
+     * Fetch again what is on screen, in place, so new mail appears without
+     * the list jumping. One at a time: asked for while one is under way, it
+     * is done once more when that is over, and both end together.
+     */
+    function refresh(): Promise<void> {
+        if (refreshing) {
+            stale = true;
+            return refreshing;
+        }
+        const turns = (async () => {
+            try {
+                do {
+                    stale = false;
+                    await fetchAgain();
+                } while (stale);
+            } finally {
+                refreshing = null;
+            }
+        })();
+        refreshing = turns;
+        return turns;
+    }
+
+    /**
+     * Fetch again the pages near what is on screen and the page the selected
+     * line is on. A page further off may no longer start where it did, so it
+     * is let go, to be fetched when it is scrolled to. While lines are chosen
+     * across pages, or being gathered to be, every page is fetched: which
+     * lines are chosen is told from the rows.
+     */
+    async function fetchAgain() {
+        const [account, within] = [accountId, folderId];
+        if (!account || !within || searching) return;
         const mine = listing;
-        const next = rows.slice();
+        const had = [...asked].sort((a, b) => a - b);
+        const whole = () => many || gathering > 0;
+        const at = rows.findIndex((row) => row?.id === selectedId);
+        const near = (offset: number) => (offset + PAGE > seen.first - PAGE && offset < seen.last + PAGE) || (at >= offset && at < offset + PAGE);
+        const fetched = new Map<number, Message[]>();
         let now = total;
-        for (const offset of [...asked].sort((a, b) => a - b)) {
-            const page = await listMessages(accountId, folderId, offset, PAGE, view);
+        for (const offset of had) {
+            if (!whole() && !near(offset)) continue;
+            const page = await listMessages(account, within, offset, PAGE, view);
             if (mine !== listing) return;
             now = page.total;
-            for (let i = 0; i < PAGE; i++) next[offset + i] = page.messages[i];
+            fetched.set(offset, page.messages);
+        }
+        // Put into the rows as they are now, not as they were, so that a page loaded meanwhile is kept.
+        const next = rows.slice();
+        for (const offset of had) {
+            const page = fetched.get(offset);
+            if (page) {
+                for (let i = 0; i < PAGE; i++) next[offset + i] = page[i];
+            } else if (whole()) {
+                // Wanted after all, since lines began to be chosen: fetched on the turn after this.
+                stale = true;
+            } else {
+                for (let i = 0; i < PAGE; i++) next[offset + i] = undefined;
+                asked.delete(offset);
+            }
         }
         next.length = Math.min(next.length, now);
         rows = next;
         total = now;
     }
 
-    async function search() {
+    /** Search for the words in the box, or for those given. With none, the folder is shown again. */
+    async function search(words = query) {
         clearTimeout(searchSoon);
         if (!accountId) return;
-        if (!query.trim()) {
+        // A search still under way is no longer the one wanted: its answer is left.
+        const mine = ++seeking;
+        if (!words.trim()) {
             if (searching && folderId) await showFolder(folderId);
             return;
         }
-        // The list is replaced when the answer is in, not emptied first, so
-        // it does not flicker with every letter typed.
-        listing += 1;
-        asked.clear();
-        const mine = listing;
         try {
-            const found = await searchMail(accountId, query, everywhere ? undefined : (folderId ?? undefined));
-            if (mine !== listing) return;
+            const found = await searchMail(accountId, words, everywhere ? undefined : (folderId ?? undefined));
+            if (mine !== seeking) return;
+            // The list is replaced when the answer is in, not emptied first, so
+            // it does not flicker with every letter typed. Only now is the
+            // folder forgotten: a search that fails leaves it as it was.
+            listing += 1;
+            asked.clear();
             searching = true;
+            sought = words;
+            capped = found.length >= SEARCH_MOST;
             picked = [];
             rows = found;
             total = found.length;
         } catch (failure) {
-            problem = say(failure);
+            if (mine === seeking) problem = say(failure);
         }
     }
 
@@ -680,12 +900,20 @@
     let searchSoon: ReturnType<typeof setTimeout> | undefined;
     function typedSearch() {
         clearTimeout(searchSoon);
-        searchSoon = setTimeout(search, query.trim() ? 150 : 0);
+        searchSoon = setTimeout(() => search(), query.trim() ? 150 : 0);
     }
+
+    /** How many runs of lines are being gathered to be chosen. Until they are, no page is let go. */
+    let gathering = 0;
 
     /** Load every page of the folder that holds a position from one to another. */
     async function load(from: number, to: number) {
-        for (let offset = Math.floor(from / PAGE) * PAGE; offset <= to; offset += PAGE) await need(offset);
+        gathering += 1;
+        try {
+            for (let offset = Math.floor(from / PAGE) * PAGE; offset <= to; offset += PAGE) await need(offset);
+        } finally {
+            gathering -= 1;
+        }
     }
 
     /** Choose these lines. One alone is opened to be read; several are held to be acted on together. */
@@ -698,6 +926,8 @@
         picked = ids;
         selectedId = ids.length === 0 ? null : cursor;
         readingId = null;
+        reads += 1;
+        opening = false;
         opened = null;
         thread = [];
         attachments = [];
@@ -708,7 +938,8 @@
         if (how === "one") return open(message);
         const mine = listing;
         if (how === "toggle") {
-            const now = many ? picked : selectedId ? [selectedId] : [];
+            // The selected line counts only if it is in this list: it may be of a folder since left.
+            const now = many ? picked : selectedId && rows.some((row) => row?.id === selectedId) ? [selectedId] : [];
             anchorId = message.id;
             return pick(now.includes(message.id) ? now.filter((id) => id !== message.id) : [...now, message.id], message.id);
         }
@@ -755,8 +986,11 @@
         anchorId = message.id;
         if (message.is_draft && accountId) {
             selectedId = message.id;
+            const of = accountId;
             try {
-                writing = await openDraft(accountId, message.id);
+                const draft = await openDraft(of, message.id);
+                if (accountId !== of) return;
+                writing = draft;
                 await loadDrafts();
             } catch (failure) {
                 problem = say(failure);
@@ -764,6 +998,9 @@
             return;
         }
         selectedId = message.id;
+        // A message being written has the pane. The line is chosen, and is opened when the writing is put aside,
+        // so that nothing is marked read that has not been shown.
+        if (writing) return;
         thread = [];
         const reading = read(message);
         if (accountId && view.conversations && !searching && message.conversation_id) {
@@ -778,7 +1015,8 @@
     }
 
     async function read(message: Message, withImages = false) {
-        if (!accountId) return;
+        const of = accountId;
+        if (!of) return;
         readingId = message.id;
         imagesShown = withImages;
         if (opened?.message.id !== message.id) {
@@ -786,36 +1024,37 @@
             saved = null;
         }
         opening = true;
+        const mine = ++reads;
         readingProblem = null;
         try {
-            const result = await openMessage(accountId, message.id, withImages, view.plain);
-            if (readingId !== message.id) return;
+            const result = await openMessage(of, message.id, withImages, view.plain);
+            // Another message has been asked for since, or another account chosen.
+            if (readingId !== message.id || accountId !== of) return;
             opened = result;
             imagesShown = result.remote_content_allowed;
             // Reading it is what marks it read. Quietly: there is nothing to undo about having read something.
             if (!result.message.is_read) void change([message.id], { is_read: true });
             if (result.message.has_attachments && attachments.length === 0) {
                 try {
-                    const all = await listAttachments(accountId, message.id);
-                    if (readingId === message.id) attachments = all.filter((each) => !each.is_inline);
+                    const all = await listAttachments(of, message.id);
+                    if (readingId === message.id && accountId === of) attachments = all.filter((each) => !each.is_inline);
                 } catch (failure) {
-                    if (readingId === message.id) saved = say(failure);
+                    if (readingId === message.id && accountId === of) saved = say(failure);
                 }
             }
         } catch (failure) {
-            if (readingId === message.id) {
+            if (readingId === message.id && accountId === of) {
                 opened = null;
                 readingProblem = say(failure);
             }
         } finally {
-            opening = false;
+            if (mine === reads) opening = false;
         }
     }
 
     async function sync() {
         if (syncing) return;
         syncing = true;
-        problem = null;
         // A first sync of a large mailbox takes minutes. What has arrived so
         // far is shown as it comes, not held back until the last of it.
         const showing = setInterval(async () => {
@@ -829,13 +1068,13 @@
         try {
             const results = await syncNow();
             const failed = results.find((r) => r.account_id === accountId && !r.ok) ?? results.find((r) => !r.ok);
-            if (failed) problem = failed.error;
+            syncProblem = failed ? failed.error : null;
             await loadFolders();
             await refresh();
             if (!failed) await tellOfRefusals();
             await loadDrafts();
         } catch (failure) {
-            problem = say(failure);
+            syncProblem = say(failure);
         } finally {
             clearInterval(showing);
             syncing = false;
@@ -843,13 +1082,24 @@
         }
     }
 
-    // New mail is fetched every two minutes while the window is open, and
-    // when the window is come back to after half a minute or more away.
+    // New mail is fetched every two minutes while the window is open on
+    // mail, and when it is come back to after half a minute or more away.
+    // Come back to sooner from another screen, what is on this computer is
+    // shown as it now is, without a sync.
     const EVERY = 2 * 60_000;
     let lastSync = 0;
     $effect(() => {
-        const timer = setInterval(sync, EVERY);
+        if (!shown) return;
         const back = () => Date.now() - lastSync > 30_000 && sync();
+        untrack(() => {
+            // Not at the start, when the first account is still to be chosen and is then synced.
+            if (!accountId || back()) return;
+            loadFolders()
+                .then(refresh)
+                .then(loadDrafts)
+                .catch(() => {});
+        });
+        const timer = setInterval(sync, EVERY);
         window.addEventListener("focus", back);
 
         return () => {
@@ -859,6 +1109,8 @@
     });
 
     function keydown(event: KeyboardEvent) {
+        // Another screen is shown, or a question or the palette over the window has the keys, not the mail behind it.
+        if (!shown || inDialog(event)) return;
         if (event.key === "F9") {
             event.preventDefault();
             sync();
@@ -884,14 +1136,15 @@
             } catch {
                 // Focused, then, to be opened with the keyboard.
             }
-        } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
+        } else if (current && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
             event.preventDefault();
             write(event.shiftKey ? "reply_all" : "reply");
-        } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        } else if (current && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
             event.preventDefault();
             write("forward");
-        } else if (targets.length > 0 && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) {
-            const ctrl = event.ctrlKey || event.metaKey;
+        } else if (targets.length > 0 && !typing(event)) {
+            // With Shift these are other things: Ctrl+Shift+Q is a new meeting.
+            const ctrl = (event.ctrlKey || event.metaKey) && !event.shiftKey;
             if (ctrl && event.key.toLowerCase() === "q") {
                 event.preventDefault();
                 markRead(true);
@@ -901,7 +1154,7 @@
             } else if (event.key === "Insert") {
                 event.preventDefault();
                 // Several are flagged unless every one of them already is.
-                flag((many ? chosen.every((each) => each.flag_status === "flagged") : opened?.message.flag_status === "flagged") ? "notFlagged" : "flagged");
+                flag((many ? chosen.every((each) => each.flag_status === "flagged") : current?.flag_status === "flagged") ? "notFlagged" : "flagged");
             } else if (event.key === "Delete") {
                 event.preventDefault();
                 remove();
@@ -913,20 +1166,36 @@
                 selectOne();
             }
         }
-        if (undoable && !writing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !(event.target instanceof HTMLInputElement)) {
+        if (undoable && !writing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !typing(event)) {
             event.preventDefault();
             takeBack();
         }
     }
 
+    /** Show another account. Nothing of the one before is kept, and what it answers late is left. */
     async function chooseAccount(id: string) {
         accountId = id;
         recallCollapsed();
         folderId = null;
         opened = null;
         selectedId = null;
+        readingId = null;
         anchorId = null;
         writing = null;
+        thread = [];
+        attachments = [];
+        saved = null;
+        categories = [];
+        drafts = [];
+        problem = null;
+        refusal = null;
+        readingProblem = null;
+        reads += 1;
+        opening = false;
+        clearTimeout(undoTimer);
+        undoable = null;
+        clearTimeout(noticeTimer);
+        notice = null;
         reset();
         await loadFolders().catch((failure) => (problem = say(failure)));
         await loadDrafts();
@@ -937,9 +1206,10 @@
     }
 
     // Show what is already on this computer at once, then fetch what is new.
+    // The same when the account shown has been removed: the first of those left is.
     $effect(() => {
         const firstAccount = accounts[0];
-        if (!accountId && firstAccount) {
+        if (firstAccount && !accounts.some((each) => each.id === accountId)) {
             chooseAccount(firstAccount.id).then(sync);
         }
     });
@@ -947,14 +1217,15 @@
 
 <svelte:window onkeydown={keydown} />
 
-<div class="mailview">
+<div class="mailview" hidden={!shown}>
 <Toolbar
-    message={writing || many ? null : (opened?.message ?? null)}
+    message={writing || many ? null : current}
     several={writing ? [] : chosen}
     {folders}
     {within}
     {categories}
     {syncing}
+    {working}
     onWrite={write}
     onDelete={remove}
     onPurge={purge}
@@ -1089,13 +1360,19 @@
             </select>
         </div>
 
-        {#if problem}
-            <p class="problem" role="alert">{problem}</p>
-        {/if}
+        {#snippet wrong(words: string, dismiss: () => void)}
+            <p class="problem" role="alert">
+                <span>{words}</span>
+                <button type="button" aria-label="Dismiss" title="Dismiss" onclick={dismiss}><X size={14} aria-hidden="true" /></button>
+            </p>
+        {/snippet}
+        {#if syncProblem}{@render wrong(syncProblem, () => (syncProblem = null))}{/if}
+        {#if refusal}{@render wrong(refusal, refusalSeen)}{/if}
+        {#if problem}{@render wrong(problem, () => (problem = null))}{/if}
 
         <p class="heading">
             {#if searching}
-                {total === 1 ? "1 result" : `${total} results`} for “{query}” {everywhere ? "in all folders" : `in ${folder?.name ?? "this folder"}`}
+                {capped ? `The first ${total} results` : total === 1 ? "1 result" : `${total} results`} for “{sought}” {everywhere ? "in all folders" : `in ${folder?.name ?? "this folder"}`}
             {:else if folder}
                 {@const things = view.conversations ? "conversation" : "message"}
                 {folder.name} <span class="muted">· {total === 1 ? `1 ${things}` : `${total.toLocaleString()} ${things}s`}</span>
@@ -1148,7 +1425,7 @@
             </p>
         {:else}
             <div class="rows">
-                <MessageList {total} {rows} {selectedId} {picked} {categories} onSelect={select} onAll={selectAll} onFlag={flagLine} onDelete={folder?.well_known === "deleteditems" && !searching ? undefined : removeLine} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
+                <MessageList {total} {rows} {selectedId} {picked} {categories} onSelect={select} onAll={selectAll} onFlag={flagLine} onDelete={folder?.well_known === "deleteditems" && !searching ? undefined : removeLine} onNeed={need} onSeen={(first, last) => (seen = { first, last })} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
             </div>
         {/if}
         {#if notice}
@@ -1228,6 +1505,10 @@
         min-height: 0;
         display: flex;
         flex-direction: column;
+    }
+
+    .mailview[hidden] {
+        display: none;
     }
 
     .mail {
@@ -1493,8 +1774,26 @@
     .problem {
         margin: 0.5rem;
         padding: 0.5rem 0.75rem;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
         border-radius: 0.4rem;
         background: color-mix(in srgb, var(--danger) 12%, var(--surface));
         font-size: 0.85rem;
+    }
+
+    .problem span {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .problem button {
+        flex: none;
+        display: grid;
+        place-items: center;
+        padding: 0.15rem;
+        border: 0;
+        background: none;
+        color: inherit;
     }
 </style>

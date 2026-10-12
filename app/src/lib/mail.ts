@@ -167,9 +167,12 @@ export const openMessage = (account_id: string, message_id: string, allow_remote
 export const setTrustedSender = (account_id: string, address: string, trusted: boolean) =>
     execute<{ trusted: boolean }>("mail.trusted_senders.set", { account_id, address, trusted });
 
+/** The most a search is asked for. As many as this found, and there may be more that are not shown. */
+export const SEARCH_MOST = 200;
+
 /** Search synced mail: in one folder, or with none named in all of them. */
 export const searchMail = async (account_id: string, query: string, folder_id?: string) =>
-    (await execute<{ messages: Message[] }>("mail.search", { account_id, query, limit: 200, ...(folder_id ? { folder_id } : {}) })).messages;
+    (await execute<{ messages: Message[] }>("mail.search", { account_id, query, limit: SEARCH_MOST, ...(folder_id ? { folder_id } : {}) })).messages;
 
 export const listAttachments = async (account_id: string, message_id: string) =>
     (await execute<{ attachments: Attachment[] }>("mail.attachments.list", { account_id, message_id })).attachments;
