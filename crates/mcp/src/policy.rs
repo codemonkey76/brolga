@@ -38,7 +38,7 @@ impl Default for Policy {
 /// The command that sends a message.
 #[cfg(test)]
 const SEND: &str = "mail.drafts.send";
-use brolga_commands::agents::{INVITES, NEVER, WRITES_TO_PEOPLE};
+use brolga_commands::agents::{ASKS_WHEN_GIVEN, INVITES, NEVER, NEVER_ARGUMENTS, WRITES_TO_PEOPLE};
 
 /// Whether this command, asked this way, sends something to other people.
 fn reaches_people(id: &str, args: &Value) -> bool {
@@ -51,6 +51,13 @@ fn reaches_people(id: &str, args: &Value) -> bool {
 }
 /// The command the server itself writes its record with. Never an agent's.
 pub(crate) const RECORD: &str = "app.agent_log.record";
+
+/// Whether an argument was given at all. A null is as good as leaving it
+/// out, and a `false` asks for nothing.
+fn given(args: &Value, name: &str) -> bool {
+    args.get(name)
+        .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
+}
 
 /// The command the server asks the user's say-so with, and the ones a
 /// person sees the questions and answers them with. Never an agent's.
@@ -118,6 +125,17 @@ impl Policy {
             ));
         }
 
+        // Whether a message's remote pictures are fetched is the person's
+        // to choose: fetching them tells the sender the message was opened.
+        if let Some((_, argument)) = NEVER_ARGUMENTS
+            .iter()
+            .find(|(command, argument)| *command == id && given(args, argument))
+        {
+            return Err(format!(
+                "`{id}` cannot be given `{argument}` by an agent. Whether a message's remote pictures are fetched is the user's to choose, in the app."
+            ));
+        }
+
         if reaches_people(id, args) {
             let hour = Duration::from_secs(3600);
             session.sends.retain(|at| at.elapsed() < hour);
@@ -132,7 +150,11 @@ impl Policy {
 
         // Last, so that the user is only ever asked about something that
         // would otherwise go ahead.
-        if spec.consequential && !self.allow_consequential {
+        let asks = spec.consequential
+            || ASKS_WHEN_GIVEN
+                .iter()
+                .any(|(command, argument)| *command == id && args.get(argument).is_some());
+        if asks && !self.allow_consequential {
             return Ok(Needs::SaySo);
         }
 
@@ -277,6 +299,63 @@ mod tests {
                 "{own}"
             );
         }
+    }
+
+    #[test]
+    fn an_agent_cannot_have_a_messages_remote_pictures_fetched() {
+        let get = spec("mail.messages.get", CommandKind::Query, false);
+        let policy = Policy {
+            access: Access::Full,
+            allow_consequential: true,
+            ..Policy::default()
+        };
+
+        for argument in ["allow_remote_content", "allow_for_trusted_senders"] {
+            let refused = policy.permit(
+                &get,
+                &json!({ "message_id": "m-1", argument: true }),
+                &mut Session::default(),
+            );
+            assert!(refused.unwrap_err().contains(argument), "{argument}");
+        }
+        // Reading is still a reader's, and saying no to pictures asks for nothing.
+        assert!(allowed(
+            &Policy::default(),
+            &get,
+            json!({ "message_id": "m-1", "format": "html", "allow_remote_content": false })
+        ));
+    }
+
+    #[test]
+    fn changing_where_a_contact_is_written_to_needs_a_say_so() {
+        let update = spec("contacts.update", CommandKind::Action, false);
+        let full = Policy {
+            access: Access::Full,
+            ..Policy::default()
+        };
+
+        assert_eq!(
+            full.permit(
+                &update,
+                &json!({ "contact_id": "c-1", "emails": ["x@elsewhere.test"] }),
+                &mut Session::default()
+            ),
+            Ok(Needs::SaySo)
+        );
+        // Taking every address away is a change to them too.
+        assert_eq!(
+            full.permit(
+                &update,
+                &json!({ "contact_id": "c-1", "emails": [] }),
+                &mut Session::default()
+            ),
+            Ok(Needs::SaySo)
+        );
+        assert!(allowed(
+            &full,
+            &update,
+            json!({ "contact_id": "c-1", "job_title": "Director" })
+        ));
     }
 
     #[test]

@@ -432,7 +432,9 @@ async fn the_commands_an_agent_may_draft_with_are_real_and_are_all_drafting() {
         assert!(!spec.consequential, "`{id}` reaches other people");
     }
     // The ids an agent is limited or refused by name all answer to something.
-    use brolga_commands::agents::{INVITES, NEVER, WINDOW_ONLY, WRITES_TO_PEOPLE};
+    use brolga_commands::agents::{
+        ASKS_WHEN_GIVEN, INVITES, NEVER, NEVER_ARGUMENTS, WINDOW_ONLY, WRITES_TO_PEOPLE,
+    };
     for id in NEVER
         .iter()
         .chain(WRITES_TO_PEOPLE)
@@ -440,6 +442,14 @@ async fn the_commands_an_agent_may_draft_with_are_real_and_are_all_drafting() {
         .chain(WINDOW_ONLY)
     {
         assert!(registry.spec(id).is_some(), "`{id}` is not a command");
+    }
+    // The arguments an agent is refused or asked about are ones the
+    // commands really take.
+    for (id, argument) in NEVER_ARGUMENTS.iter().chain(ASKS_WHEN_GIVEN) {
+        let takes = registry
+            .spec(id)
+            .is_some_and(|spec| spec.args_schema["properties"].get(argument).is_some());
+        assert!(takes, "`{id}` takes no `{argument}`");
     }
     // A file on this computer is always named by `path`, which is the one
     // argument the MCP server refuses every agent.

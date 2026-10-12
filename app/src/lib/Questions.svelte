@@ -67,6 +67,7 @@
         "mail.drafts.send": "send a message",
         "mail.messages.delete_permanently": "delete messages for good",
         "mail.automatic_replies.set": "change your automatic replies",
+        "contacts.update": "change a contact's email addresses",
     };
 </script>
 

@@ -48,7 +48,7 @@ argument `mcp`.
 | `search_people` | Find a person among your contacts and in your organisation's directory. |
 | `get_contact` | One personal contact, whole. |
 | `create_contact` | Add a personal contact. |
-| `update_contact` | Change a personal contact: only what is given. |
+| `update_contact` | Change a personal contact: only what is given. Changing its email addresses asks you first, as a consequential command does. |
 | `delete_contact` | Delete a personal contact. Consequential. |
 | `list_rules` | The inbox's rules in the order they run, each also said as a sentence. |
 | `update_rule` | Turn a rule on or off, rename it, reorder it, or replace what it looks for or does. Consequential. |
@@ -100,12 +100,15 @@ agent the access you would give a program you run yourself. The one thing no
 program can do from outside is answer a question put to you: that is done in
 Brolga's window and nowhere else.
 
-Four things hold whatever the access:
+Five things hold whatever the access:
 
 - **No files by path.** An agent cannot name a place on your computer: not to
   attach a file from, save an attachment or exported contacts to, or import
   contacts or an archive from. Where a command takes a file's contents, it
   gives those instead.
+- **No remote pictures.** An agent cannot have a message's remote pictures
+  fetched, which would tell the sender the message was opened. It reads the
+  message without them.
 - **A limit on sending.** At most 20 messages and invitations in any hour, or
   the number given with `--max-sends-per-hour`. Meeting invitations,
   cancellations, answers to invitations and calendar sharing all count.
@@ -122,9 +125,10 @@ Four things hold whatever the access:
 
 **Sending asks first.** With `--access full` and without
 `--allow-consequential`, a command that reaches other people or cannot be
-undone (sending, deleting for good, setting automatic replies) is put to you
-in the app. It runs only if you allow it, once. If you say no, do not answer
-in two minutes, or the app is not open, the agent is told no.
+undone (sending, deleting for good, setting automatic replies, changing a
+contact's email addresses) is put to you in the app. It runs only if you
+allow it, once. If you say no, do not answer in two minutes, or the app is
+not open, the agent is told no.
 
 - For a message, you are shown the address it goes from, every address it
   goes to (the address first; a name is whatever the writer typed), the
