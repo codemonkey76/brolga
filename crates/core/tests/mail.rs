@@ -5053,3 +5053,31 @@ async fn a_holiday_made_without_this_computer_being_told_is_not_made_again_at_th
         .sum();
     assert_eq!(on_the_server(), known);
 }
+
+#[tokio::test]
+async fn contacts_in_a_folder_inside_another_are_synced_too() {
+    let f = Fixture::signed_in().await;
+    let suppliers = f.graph.add_contact_folder("Suppliers");
+    let freight = f.graph.add_contact_folder_in(&suppliers, "Freight");
+    let rail = f.graph.add_contact_folder_in(&freight, "Rail");
+    f.graph.add_contact(
+        Some(&freight),
+        json!({ "companyName": "Harbour Freight Lines", "emailAddresses": [{ "address": "ops@harbour.test" }] }),
+    );
+    f.graph.add_contact(
+        Some(&rail),
+        json!({ "companyName": "Inland Rail Co", "emailAddresses": [{ "address": "desk@inland.test" }] }),
+    );
+
+    let synced = f.sync().await;
+    assert_eq!(synced["contacts_error"], Value::Null);
+
+    let all = f.run("contacts.list", json!({})).await;
+    let names: Vec<&str> = all["contacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|each| each["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Harbour Freight Lines", "Inland Rail Co"]);
+}

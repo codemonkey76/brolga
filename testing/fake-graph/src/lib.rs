@@ -200,6 +200,10 @@ impl FakeGraph {
                 get(contacts_in).post(create_contact_in),
             )
             .route(
+                "/v1.0/me/contactFolders/{folder}/childFolders",
+                get(contact_child_folders),
+            )
+            .route(
                 "/v1.0/me/contacts/{contact}",
                 axum::routing::patch(update_contact).delete(delete_contact),
             )
@@ -517,6 +521,14 @@ impl FakeGraph {
 
     pub fn add_contact_folder(&self, name: &str) -> String {
         lock(&self.shared).people.add_folder(name)
+    }
+
+    /// Add a folder of contacts inside another.
+    pub fn add_contact_folder_in(&self, parent: &str, name: &str) -> String {
+        lock(&self.shared)
+            .people
+            .add_folder_in(parent, name)
+            .unwrap_or_default()
     }
 
     /// Every contact in a folder (empty for the main one), as Graph would give them.
@@ -1105,6 +1117,18 @@ async fn require_token(request: Request, next: Next) -> Response {
 /// "List contactFolders" (SOURCES.md).
 async fn contact_folders(State(shared): State<Shared>) -> Response {
     axum::Json(lock(&shared).people.folders()).into_response()
+}
+
+/// "List childFolders" (SOURCES.md).
+async fn contact_child_folders(
+    State(shared): State<Shared>,
+    Path(folder): Path<String>,
+) -> Response {
+    let inner = lock(&shared);
+    if !inner.people.has_folder(&folder) {
+        return event_refused("ErrorItemNotFound");
+    }
+    axum::Json(inner.people.child_folders(&folder)).into_response()
 }
 
 /// "List contacts" (SOURCES.md), for the main folder.

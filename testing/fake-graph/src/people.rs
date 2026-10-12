@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 pub struct People {
     /// The folders of contacts beside the main one: (id, name).
     folders: Vec<(String, String)>,
+    /// The folder each folder that is inside another is in, by their ids.
+    inside: BTreeMap<String, String>,
     /// Every contact: the folder it is in (empty for the main one), and itself.
     contacts: BTreeMap<String, (String, Value)>,
     /// The organisation: each a person as "List people" gives one.
@@ -45,11 +47,35 @@ impl People {
         self.folders.iter().any(|each| each.0 == id)
     }
 
+    /// A folder inside another: the id of the one made, or nothing if
+    /// there is no such folder to put it in.
+    pub fn add_folder_in(&mut self, parent: &str, name: &str) -> Option<String> {
+        if !self.has_folder(parent) {
+            return None;
+        }
+        let id = self.add_folder(name);
+        self.inside.insert(id.clone(), parent.to_owned());
+
+        Some(id)
+    }
+
+    /// "List contactFolders" (SOURCES.md): the folders in the main
+    /// Contacts folder itself, and not the ones inside those.
     pub fn folders(&self) -> Value {
+        self.folders_in(None)
+    }
+
+    /// "List childFolders" (SOURCES.md): the folders directly inside one.
+    pub fn child_folders(&self, parent: &str) -> Value {
+        self.folders_in(Some(parent))
+    }
+
+    fn folders_in(&self, parent: Option<&str>) -> Value {
         let all: Vec<Value> = self
             .folders
             .iter()
-            .map(|(id, name)| json!({ "id": id, "displayName": name }))
+            .filter(|(id, _)| self.inside.get(id).map(String::as_str) == parent)
+            .map(|(id, name)| json!({ "id": id, "displayName": name, "parentFolderId": parent.unwrap_or("contacts") }))
             .collect();
         json!({ "value": all })
     }
