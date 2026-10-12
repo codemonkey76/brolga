@@ -55,6 +55,8 @@ export interface FakeMail {
     styles?: string;
     /** Whether the mailbox thinks it matters. Left out, it does. */
     focused?: boolean;
+    /** What was last done with it: `replied`, `replied_all` or `forwarded`. */
+    last_action?: string;
 }
 
 const person = (name: string) => ({ name, address: `${name.toLowerCase().replace(/ /g, ".")}@example.test` });
@@ -391,6 +393,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             flag_status: flags.get(m.id) ?? "notFlagged",
             flag_due: dues.get(m.id) ?? null,
             categories: tags.get(m.id) ?? [],
+            last_action: m.last_action ?? null,
             focused: m.focused ?? true,
         });
         const inFolder = (id: unknown) => mail.filter((m) => m.folder_id === id);

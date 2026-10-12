@@ -17,7 +17,9 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | Microsoft Graph error responses and resource types | https://learn.microsoft.com/graph/errors | The shape of an error body, and the meaning of 401, 404 and 503, in the fake Graph server |
 | Use delta query to track changes in Microsoft Graph data | https://learn.microsoft.com/graph/delta-query-overview | nextLink and deltaLink, `@removed`, replays, the 410 reset and `syncStateNotFound`, in `crates/graph` and `crates/sync` |
 | Get incremental changes to messages in a folder | https://learn.microsoft.com/graph/delta-query-messages | The message sync round, in `crates/sync` |
-| message: delta | https://learn.microsoft.com/graph/api/message-delta | `/me/mailFolders/{id}/messages/delta`, `$select`, `$orderby=receivedDateTime desc`, `Prefer: odata.maxpagesize` |
+| message: delta | https://learn.microsoft.com/graph/api/message-delta | `/me/mailFolders/{id}/messages/delta`, `$select`, `$expand`, `$orderby=receivedDateTime desc`, `Prefer: odata.maxpagesize` |
+| Outlook extended properties overview | https://learn.microsoft.com/graph/api/resources/extended-properties-overview | Naming a property Graph has no name for by its type and property tag: `Integer 0x1081` |
+| Get singleValueLegacyExtendedProperty | https://learn.microsoft.com/graph/api/singlevaluelegacyextendedproperty-get | `$expand=singleValueExtendedProperties($filter=id eq '…')` on a message, and the `id` and `value` it answers with |
 | mailFolder: delta | https://learn.microsoft.com/graph/api/mailfolder-delta | `/me/mailFolders/delta` |
 | mailFolder resource type | https://learn.microsoft.com/graph/api/resources/mailfolder | Folder properties and the well-known folder names. v1.0 has no property naming a folder's role, so each is fetched by name |
 | message resource type | https://learn.microsoft.com/graph/api/resources/message | Message properties, with followupFlag, recipient, emailAddress and itemBody |
@@ -101,6 +103,7 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | RFC 6350, vCard Format Specification | https://www.rfc-editor.org/rfc/rfc6350 | Which properties of a card become which fields of a contact (`FN`, `N`, `ORG`, `TITLE`, `EMAIL`, `TEL` and its `TYPE`, `BDAY`, `NOTE`, `CATEGORIES`), read in any version and written as 3.0 |
 | MS-PST, Outlook Personal Folders (.pst) File Format | https://learn.microsoft.com/openspecs/office_file_formats/ms-pst/141923d5-15ab-4ef1-a524-6dce75aae546 | The format a PST or OST file is in. It is read by Microsoft's own open-source parser written from this document (the `outlook-pst` crate, MIT), through a file opened for reading alone |
 | MS-OXPROPS, Exchange Server Protocols Master Property List | https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-oxprops/f6ab1613-aefe-447d-a49c-18217230b148 | Which numbered property of a message, recipient or attachment in a PST holds what: subject, sender, times, flags, importance, the plain and HTML bodies and their code page, attachment name, type, content id and data |
+| MS-OXOMSG, Email Object Protocol: PidTagLastVerbExecuted | https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-oxomsg/87a8b6b8-59a4-4859-9dcd-8b0f36e3d729 | What was last done with a message, property 0x1081: 102 a reply to its sender, 103 a reply to all, 104 forwarding it |
 | OpenID Connect Core 1.0 | https://openid.net/specs/openid-connect-core-1_0.html | Section 3.1.3.7: an ID token received straight from the token endpoint over TLS need not have its signature checked |
 
 ## Data

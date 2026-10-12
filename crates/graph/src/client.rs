@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::Semaphore;
 
 use crate::delta::{read_list_page, read_page};
-use crate::mail::{ATTACHMENT_SELECT, FOLDER_SELECT, MESSAGE_SELECT};
+use crate::mail::{ATTACHMENT_SELECT, FOLDER_SELECT, MESSAGE_EXPAND, MESSAGE_SELECT};
 use crate::{
     Attachment, Calendar, DeltaPage, Event, FileAttachment, GraphError, ItemBody, MailFolder,
     Message, RetryPolicy,
@@ -119,7 +119,7 @@ impl GraphClient {
         page_size: u32,
     ) -> Result<DeltaPage<Message>, GraphError> {
         let start = format!(
-            "{}/me/mailFolders/{folder_id}/messages/delta?$select={MESSAGE_SELECT}&$orderby=receivedDateTime+desc",
+            "{}/me/mailFolders/{folder_id}/messages/delta?$select={MESSAGE_SELECT}&$expand={MESSAGE_EXPAND}&$orderby=receivedDateTime+desc",
             self.base
         );
 

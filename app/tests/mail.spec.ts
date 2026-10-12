@@ -1323,3 +1323,152 @@ test("a sender nobody knows still has a card, with their mail and nothing claime
     await expect(card).not.toContainText("In your");
     await expect(card.getByRole("list", { name: "Coming up together" })).toHaveCount(0);
 });
+
+test("Shift and the arrow keys choose a run of messages, which are deleted together and brought back with one undo", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const chosen = messages(page).getByRole("option", { selected: true });
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await rows.first().click();
+
+    await page.keyboard.press("Shift+ArrowDown");
+    await expect(chosen).toHaveCount(2);
+    await expect(picked).toContainText("2 messages selected");
+    await page.keyboard.press("Shift+ArrowDown");
+    await expect(picked).toContainText("3 messages selected");
+    // Back up the way it came: the run is from where it began to here.
+    await page.keyboard.press("Shift+ArrowUp");
+    await expect(chosen).toHaveCount(2);
+    // Answering is for one message.
+    await expect(page.getByRole("button", { name: "Reply", exact: true })).toBeDisabled();
+
+    await page.keyboard.press("Delete");
+    await expect(rows).toHaveCount(2);
+    await expect(page.getByText("Moved to Deleted Items: 2 messages")).toBeVisible();
+    expect((await ran(page)).find((r) => r.command === "mail.messages.move")?.args).toMatchObject({ message_ids: ["m1", "m2"], folder_id: "deleteditems" });
+    // The next message takes their place, alone.
+    await expect(chosen).toHaveCount(1);
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Invoice 2041 attached");
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(rows).toHaveCount(4);
+});
+
+test("Ctrl and Shift with a click choose messages, Ctrl+A chooses them all, and Escape goes back to one", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const chosen = messages(page).getByRole("option", { selected: true });
+    const picked = page.getByRole("region", { name: "Messages selected" });
+    await rows.first().click();
+
+    await rows.nth(2).click({ modifiers: ["ControlOrMeta"] });
+    await expect(picked).toContainText("2 messages selected");
+    await expect(rows.nth(1)).toHaveAttribute("aria-selected", "false");
+    await rows.nth(2).click({ modifiers: ["ControlOrMeta"] });
+    await expect(picked).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Budget review moved to Thursday");
+
+    await rows.nth(3).click({ modifiers: ["Shift"] });
+    await expect(picked).toContainText("4 messages selected");
+    await picture(page, "several-selected");
+
+    await page.keyboard.press("Escape");
+    await expect(chosen).toHaveCount(1);
+    await expect(page.getByRole("region", { name: "Message" }).getByRole("heading")).toHaveText("Action needed: confirm your password");
+
+    await page.keyboard.press("Control+a");
+    await expect(picked).toContainText("4 messages selected");
+    await picked.getByRole("button", { name: "Clear the selection" }).click();
+    await expect(chosen).toHaveCount(1);
+});
+
+test("several messages are marked, flagged and given a category together, each keeping the categories it had", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const actions = page.getByRole("toolbar", { name: "Message actions" });
+    const menu = page.getByRole("list", { name: "Categories" });
+    // The second has a category of its own before any are chosen together.
+    await rows.nth(1).click();
+    await actions.locator('summary[aria-label="Categories"]').click();
+    await menu.getByRole("checkbox", { name: "Red category" }).check();
+    await expect(rows.nth(1).getByLabel("Category Red category")).toBeVisible();
+
+    await rows.nth(2).click({ modifiers: ["Shift"] });
+    await expect(page.getByRole("region", { name: "Messages selected" })).toContainText("2 messages selected");
+
+    await actions.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(page.getByText("Marked as unread: 2 messages")).toBeVisible();
+    await expect(rows.nth(1)).toHaveClass(/unread/);
+    await expect(rows.nth(2)).toHaveClass(/unread/);
+    await page.keyboard.press("Control+q");
+    await expect(rows.nth(2)).not.toHaveClass(/unread/);
+
+    await page.keyboard.press("Insert");
+    await expect(rows.nth(1).getByLabel("Flagged")).toBeVisible();
+    await expect(rows.nth(2).getByLabel("Flagged")).toBeVisible();
+
+    // The menu is still open. One of the two has it, so the box is neither ticked nor clear.
+    await expect(menu.getByRole("checkbox", { name: "Red category" })).toHaveJSProperty("indeterminate", true);
+    await menu.getByRole("checkbox", { name: "Clients" }).check();
+    await expect(rows.nth(1).getByLabel("Category Clients")).toBeVisible();
+    await expect(rows.nth(1).getByLabel("Category Red category")).toBeVisible();
+    await expect(rows.nth(2).getByLabel("Category Clients")).toBeVisible();
+    await expect(rows.nth(2).getByLabel("Category Red category")).toHaveCount(0);
+
+    // One undo takes it back from both.
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(rows.nth(1).getByLabel("Category Clients")).toHaveCount(0);
+    await expect(rows.nth(2).getByLabel("Category Clients")).toHaveCount(0);
+    await expect(rows.nth(1).getByLabel("Category Red category")).toBeVisible();
+});
+
+test("in Deleted Items several messages are deleted for good together, after asking twice", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox.map((m) => ({ ...m, folder_id: "deleted" })) });
+    await folder(page, "Deleted Items").click();
+    const rows = messages(page).getByRole("option");
+    await rows.first().click();
+    await rows.nth(2).click({ modifiers: ["Shift"] });
+
+    await page.getByRole("button", { name: "Delete permanently" }).click();
+    await page.getByRole("button", { name: "Delete 3 for good? It cannot be undone" }).click();
+
+    await expect(rows).toHaveCount(1);
+    await expect(page.getByText("3 messages deleted permanently.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+});
+
+test("each line has its sender's initials, and under the mouse a box to choose it and buttons to flag and delete it", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const rows = messages(page).getByRole("option");
+    const pane = page.getByRole("region", { name: "Message" });
+    await expect(rows.first().locator(".circle")).toHaveText("ST");
+    await rows.first().click();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+
+    // Flagging another line from the line leaves what is being read alone.
+    await rows.nth(2).hover();
+    await rows.nth(2).getByTitle("Flag", { exact: true }).click();
+    await expect(rows.nth(2).getByLabel("Flagged")).toBeVisible();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+
+    await rows.nth(2).getByTitle("Delete").click();
+    await expect(rows).toHaveCount(3);
+    await expect(page.getByText("Moved to Deleted Items")).toBeVisible();
+    await expect(pane.getByRole("heading")).toHaveText("Budget review moved to Thursday");
+
+    // The box chooses a line along with the one being read.
+    await rows.nth(1).hover();
+    await rows.nth(1).getByTitle("Select").click();
+    await expect(page.getByRole("region", { name: "Messages selected" })).toContainText("2 messages selected");
+});
+
+test("a message that has been answered or sent on is marked on its line", async ({ page }) => {
+    const did = ["replied", "replied_all", "forwarded", undefined];
+    await withCore(page, { accounts: [robin], mail: inbox.map((m, i) => ({ ...m, last_action: did[i] })) });
+    const rows = messages(page).getByRole("option");
+
+    await expect(rows.nth(0).getByLabel("Replied", { exact: true })).toBeVisible();
+    await expect(rows.nth(1).getByLabel("Replied to all")).toBeVisible();
+    await expect(rows.nth(2).getByLabel("Forwarded")).toBeVisible();
+    await expect(rows.nth(3).locator(".done")).toHaveCount(0);
+});

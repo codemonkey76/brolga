@@ -678,6 +678,12 @@ impl FakeGraph {
         lock(&self.shared).mailbox.flag(message)
     }
 
+    /// Note that a message has been answered (102), answered to all (103)
+    /// or forwarded (104), as the server does when it is.
+    pub fn set_last_verb(&self, message: &str, verb: u32) {
+        lock(&self.shared).mailbox.set_last_verb(message, verb);
+    }
+
     pub fn add_message(&self, folder: &str, message: FakeMessage) -> String {
         lock(&self.shared).mailbox.add_message(folder, message)
     }
@@ -1752,7 +1758,14 @@ async fn messages_delta(
     Query(query): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let inner = lock(&shared);
+    let mut inner = lock(&shared);
+    // A round keeps what its first request asked for: the links it is given
+    // carry it on ("message: delta", query parameters).
+    if token(&query).is_none() {
+        inner.mailbox.expands_last_verb = query.get("$expand").is_some_and(|expand| {
+            expand == "singleValueExtendedProperties($filter=id eq 'Integer 0x1081')"
+        });
+    }
     let link = format!("{}/me/mailFolders/{folder}/messages/delta", inner.base);
 
     delta_answer(

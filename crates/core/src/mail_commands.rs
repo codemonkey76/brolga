@@ -846,6 +846,7 @@ fn shown(row: &MessageRow) -> Value {
         "importance": row.importance,
         "flag_status": row.flag_status,
         "flag_due": Some(&row.flag_due).filter(|due| !due.is_empty()),
+        "last_action": Some(&row.last_action).filter(|action| !action.is_empty()),
         "categories": list(&row.categories),
         "focused": row.inference != "other",
     })
@@ -879,6 +880,7 @@ fn message_schema() -> Value {
             "importance": { "type": "string" },
             "flag_status": { "type": "string" },
             "flag_due": { "type": ["string", "null"], "description": "The day a flagged message is to be followed up by, YYYY-MM-DD." },
+            "last_action": { "type": ["string", "null"], "enum": ["replied", "replied_all", "forwarded", null], "description": "What was last done with the message, if it has been answered or sent on." },
             "categories": { "type": "array", "items": { "type": "string" } },
             "focused": { "type": "boolean", "description": "False for mail Microsoft 365 sorted into Other." },
             "conversation": {

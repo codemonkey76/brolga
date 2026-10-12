@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { Check, Flag, FlagOff, Forward, Reply, ReplyAll, Trash } from "@lucide/svelte";
     import { type Category, type Message, categoryColour, dateGroup, when, who } from "./mail";
 
     interface Props {
@@ -7,7 +8,16 @@
         /** The messages by position. A gap is one not loaded yet. */
         rows: (Message | undefined)[];
         selectedId: string | null;
-        onSelect: (message: Message) => void;
+        /** The lines chosen together, when there is more than one. */
+        picked: string[];
+        /** Choose a line alone, add it to or take it from those chosen, or choose all from where the choosing began to it. */
+        onSelect: (message: Message, how: "one" | "toggle" | "range") => void;
+        /** Choose every line. */
+        onAll: () => void;
+        /** Flag a line, or clear its flag, from the line itself. */
+        onFlag: (message: Message) => void;
+        /** Delete a line from the line itself. Left out where there is nowhere further to delete to. */
+        onDelete?: (message: Message) => void;
         /** Asked for when a position on screen has not been loaded. */
         onNeed: (index: number) => void;
         /** The mailbox's categories, for the colour of each. */
@@ -16,7 +26,9 @@
         byDate: boolean;
     }
 
-    let { total, rows, selectedId, onSelect, onNeed, byDate, categories }: Props = $props();
+    let { total, rows, selectedId, picked, onSelect, onAll, onFlag, onDelete, onNeed, byDate, categories }: Props = $props();
+
+    const chosen = $derived(new Set(picked.length > 1 ? picked : selectedId ? [selectedId] : []));
 
     // Only the rows on screen are in the page, however long the folder is,
     // so a folder of a hundred thousand scrolls like one of a hundred.
@@ -49,12 +61,40 @@
         }
     });
 
-    function move(by: number) {
+    /** What has been done with a message, to mark its line with. */
+    const DONE = {
+        replied: { shape: Reply, said: "Replied" },
+        replied_all: { shape: ReplyAll, said: "Replied to all" },
+        forwarded: { shape: Forward, said: "Forwarded" },
+    };
+
+    /** A sender's initials, for the circle beside their mail. */
+    function initials(name: string) {
+        const words = name.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+        const last = words.length > 1 ? words[words.length - 1] : "";
+        return ((words[0]?.[0] ?? "?") + (last[0] ?? "")).toUpperCase();
+    }
+
+    // Dark enough for white letters. One sender is always the same colour.
+    const CIRCLES = ["#1d4a8c", "#52307a", "#7a1f40", "#005a52", "#8f1d1f", "#5c3a20", "#3c4f5a", "#1f5f1f"];
+    function circle(of: string) {
+        let sum = 0;
+        for (const letter of of) sum = (sum * 31 + letter.charCodeAt(0)) >>> 0;
+        return CIRCLES[sum % CIRCLES.length];
+    }
+
+    /** Something done from a line with the mouse, which is not also a click on the line. */
+    function act(event: MouseEvent, what: () => void) {
+        event.stopPropagation();
+        what();
+    }
+
+    function move(by: number, how: "one" | "range") {
         const at = rows.findIndex((row) => row?.id === selectedId);
         const to = Math.min(total - 1, Math.max(0, at < 0 ? 0 : at + by));
         const row = rows[to];
         if (!row) return onNeed(to);
-        onSelect(row);
+        onSelect(row, how);
         // Keep the selection on screen.
         if (viewport) {
             if (to * ROW < viewport.scrollTop) viewport.scrollTop = to * ROW;
@@ -63,11 +103,17 @@
     }
 
     function keydown(event: KeyboardEvent) {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+            event.preventDefault();
+            onAll();
+            return;
+        }
         const moves: Record<string, number> = { ArrowDown: 1, ArrowUp: -1, PageDown: 8, PageUp: -8, Home: -total, End: total };
         const by = moves[event.key];
         if (by === undefined) return;
         event.preventDefault();
-        move(by);
+        // With Shift held, everything from where the choosing began to here is chosen.
+        move(by, event.shiftKey ? "range" : "one");
     }
 </script>
 
@@ -78,6 +124,7 @@
     class="viewport"
     role="listbox"
     aria-label="Messages"
+    aria-multiselectable="true"
     tabindex="0"
     bind:this={viewport}
     bind:clientHeight={height}
@@ -89,22 +136,45 @@
             {@const message = rows[index]}
             <div
                 class="row"
-                class:selected={message?.id === selectedId}
+                class:selected={message && chosen.has(message.id)}
+                class:cursor={picked.length > 1 && message?.id === selectedId}
                 class:unread={message && (message.conversation ? message.conversation.unread > 0 : !message.is_read)}
                 style:transform="translateY({index * ROW}px)"
                 role="option"
-                aria-selected={message?.id === selectedId}
+                aria-selected={!!message && chosen.has(message.id)}
                 aria-setsize={total}
                 aria-posinset={index + 1}
                 tabindex="-1"
-                onclick={() => message && onSelect(message)}
+                onclick={(event) => message && onSelect(message, event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "one")}
                 onkeydown={() => {}}
             >
                 {#if starts(index)}
                     <span class="starts">{group(index)}</span>
                 {/if}
                 {#if message}
+                    {@const sender = who(message.from)}
+                    {@const ticked = picked.length > 1 && chosen.has(message.id)}
+                    <!-- The circle, the box and the buttons are for the mouse. The keys and the toolbar do the same, and say so to a screen reader. -->
+                    <span class="lead" class:ticked aria-hidden="true">
+                        <span class="circle" style:background={circle(message.from.address ?? sender)}>{initials(sender)}</span>
+                        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                        <span class="box" title="Select" onclick={(event) => act(event, () => onSelect(message, "toggle"))}>{#if ticked}<Check size={13} />{/if}</span>
+                    </span>
+                    <!-- Not buttons: a line of a list cannot hold one, and these are never reached by key. -->
+                    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                    <span class="acts" aria-hidden="true">
+                        <span class="act" title={message.flag_status === "flagged" ? "Clear flag" : "Flag"} onclick={(event) => act(event, () => onFlag(message))}>
+                            {#if message.flag_status === "flagged"}<FlagOff size={15} />{:else}<Flag size={15} />{/if}
+                        </span>
+                        {#if onDelete}
+                            <span class="act" title="Delete" onclick={(event) => act(event, () => onDelete(message))}><Trash size={15} /></span>
+                        {/if}
+                    </span>
                     <span class="from">{who(message.from)}</span>
+                    {#if message.last_action && DONE[message.last_action]}
+                        {@const done = DONE[message.last_action]}
+                        <span class="done" role="img" title={done.said} aria-label={done.said}><done.shape size={14} aria-hidden="true" /></span>
+                    {/if}
                     <span class="date">{when(message.received_at)}</span>
                     <span class="subject">
                         {#if message.has_attachments}<span class="clip" title="Has attachments" aria-label="Has attachments">📎</span>{/if}
@@ -176,13 +246,16 @@
         box-sizing: border-box;
         padding: 0.5rem 0.75rem;
         display: grid;
-        grid-template-columns: 1fr auto;
+        grid-template-columns: 2rem 1fr auto;
         grid-template-rows: auto auto auto;
-        column-gap: 0.5rem;
+        column-gap: 0.6rem;
         border-bottom: 1px solid var(--line);
         border-left: 3px solid transparent;
         cursor: default;
         font-size: 0.85rem;
+        /* A click with Shift held chooses lines, not their words. */
+        user-select: none;
+        -webkit-user-select: none;
     }
 
     .row span {
@@ -199,6 +272,11 @@
         background: color-mix(in srgb, var(--accent) 16%, var(--surface));
     }
 
+    /* Among several chosen, the one the keys move from. */
+    .row.cursor {
+        box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
     .row.unread {
         border-left-color: var(--accent);
     }
@@ -213,9 +291,112 @@
         font-size: 0.75rem;
     }
 
-    .subject,
+    .from {
+        grid-area: 1 / 2;
+    }
+
+    /* Answered or sent on: at the end of the sender's line. */
+    .done {
+        grid-area: 1 / 3;
+        justify-self: end;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+    }
+
+    .subject {
+        grid-area: 2 / 2;
+    }
+
+    .date {
+        grid-area: 2 / 3;
+    }
+
     .preview {
-        grid-column: 1 / -1;
+        grid-area: 3 / 2 / auto / -1;
+    }
+
+    /* The sender's circle. Under the mouse, or once several are chosen, a box to choose the line with. */
+    .row .lead {
+        grid-row: 1 / -1;
+        grid-column: 1;
+        align-self: center;
+        display: grid;
+        width: 2rem;
+        height: 2rem;
+        overflow: visible;
+    }
+
+    .circle,
+    .box {
+        grid-area: 1 / 1;
+        display: grid;
+        place-items: center;
+    }
+
+    .circle {
+        border-radius: 50%;
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+
+    .box {
+        place-self: center;
+        width: 1.05rem;
+        height: 1.05rem;
+        border: 1px solid var(--muted);
+        border-radius: 0.2rem;
+        background: var(--surface);
+        visibility: hidden;
+    }
+
+    .row:hover .box,
+    .lead.ticked .box {
+        visibility: visible;
+    }
+
+    .row:hover .circle,
+    .lead.ticked .circle {
+        visibility: hidden;
+    }
+
+    .lead.ticked .box {
+        border-color: var(--accent-fill);
+        background: var(--accent-fill);
+        color: var(--on-accent);
+    }
+
+    /* What can be done to a line from the line, shown over the end of the sender's name while the mouse is on it. */
+    .row .acts {
+        position: absolute;
+        top: 0.35rem;
+        right: 0.5rem;
+        display: none;
+        gap: 0.1rem;
+        overflow: visible;
+    }
+
+    .row:hover .acts {
+        display: flex;
+    }
+
+    .row .act {
+        display: grid;
+        place-items: center;
+        width: 1.5rem;
+        height: 1.3rem;
+        border-radius: 0.3rem;
+        background: var(--raised);
+        cursor: pointer;
+    }
+
+    .row.selected .act {
+        background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    }
+
+    .row .act:hover {
+        background: color-mix(in srgb, CanvasText 12%, var(--raised));
     }
 
     .preview {

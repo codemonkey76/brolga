@@ -25,9 +25,11 @@
     interface Props {
         /** The message the actions are for. None, and they are greyed out. */
         message: Message | null;
+        /** The messages chosen together, when there is more than one. The actions that can be are for all of them. */
+        several: Message[];
         /** Every folder, to move the message to one. */
         folders: Folder[];
-        /** The standard folder the message is in, if it is in one. */
+        /** The standard folder the message is in, or several are all in, if it is one. */
         within: string | null;
         categories: Category[];
         syncing: boolean;
@@ -42,17 +44,31 @@
         onSetRead: (isRead: boolean) => void;
         /** `due` is a day, `YYYY-MM-DD`; empty for no day; left out to leave the day as it is. */
         onSetFlag: (status: FlagStatus, due?: string) => void;
-        onCategorise: (names: string[]) => void;
+        /** Give the category, or take it away. */
+        onCategorise: (name: string, on: boolean) => void;
         onSync: () => void;
     }
 
-    let { message, folders, within, categories, syncing, onWrite, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onSetRead, onSetFlag, onCategorise, onSync }: Props =
+    let { message, several, folders, within, categories, syncing, onWrite, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onSetRead, onSetFlag, onCategorise, onSync }: Props =
         $props();
 
     /** The message being asked about, once "Delete permanently" has been pressed once. */
     let sureOf = $state<string | null>(null);
     let dayMenu = $state<HTMLDetailsElement>();
-    const none = $derived(message === null);
+    /** What the actions are for. */
+    const all = $derived(message ? [message] : several);
+    const none = $derived(all.length === 0);
+    /** Answering is for one message. */
+    const alone = $derived(message === null);
+    /** What is being asked about, to be sure of it. */
+    const asking = $derived(message ? message.id : several.length > 0 ? `${several.length} from ${several[0].id}` : null);
+    /** The folder they are all in. */
+    const from = $derived(all.length > 0 && all.every((each) => each.folder_id === all[0].folder_id) ? all[0].folder_id : null);
+    const anyRead = $derived(all.some((each) => each.is_read));
+    const anyUnread = $derived(all.some((each) => !each.is_read));
+    const anyFlagged = $derived(all.some((each) => each.flag_status === "flagged"));
+    const anyComplete = $derived(all.some((each) => each.flag_status === "complete"));
+    const anyUnflagged = $derived(all.some((each) => each.flag_status !== "flagged" && each.flag_status !== "complete"));
     const SIZE = 18;
 
     function due(day: string) {
@@ -69,19 +85,19 @@
     <button type="button" class="primary" aria-label="New message" title="New message (Ctrl+N)" onclick={() => onWrite("new")}><SquarePen size={SIZE} aria-hidden="true" /></button>
 
     <span class="gap"></span>
-    <button type="button" disabled={none} aria-label="Reply" title="Reply (Ctrl+R)" onclick={() => onWrite("reply")}><Reply size={SIZE} aria-hidden="true" /></button>
-    <button type="button" disabled={none} aria-label="Reply all" title="Reply all (Ctrl+Shift+R)" onclick={() => onWrite("reply_all")}><ReplyAll size={SIZE} aria-hidden="true" /></button>
-    <button type="button" disabled={none} aria-label="Forward" title="Forward (Ctrl+F)" onclick={() => onWrite("forward")}><Forward size={SIZE} aria-hidden="true" /></button>
-    <button type="button" disabled={none} aria-label="Forward as attachment" title="Forward as attachment" onclick={() => onWrite("forward_as_attachment")}><Paperclip size={SIZE} aria-hidden="true" /></button>
+    <button type="button" disabled={alone} aria-label="Reply" title="Reply (Ctrl+R)" onclick={() => onWrite("reply")}><Reply size={SIZE} aria-hidden="true" /></button>
+    <button type="button" disabled={alone} aria-label="Reply all" title="Reply all (Ctrl+Shift+R)" onclick={() => onWrite("reply_all")}><ReplyAll size={SIZE} aria-hidden="true" /></button>
+    <button type="button" disabled={alone} aria-label="Forward" title="Forward (Ctrl+F)" onclick={() => onWrite("forward")}><Forward size={SIZE} aria-hidden="true" /></button>
+    <button type="button" disabled={alone} aria-label="Forward as attachment" title="Forward as attachment" onclick={() => onWrite("forward_as_attachment")}><Paperclip size={SIZE} aria-hidden="true" /></button>
 
     <span class="gap"></span>
     {#if within !== "deleteditems"}
         <button type="button" disabled={none} aria-label="Delete" title="Delete (Del)" onclick={onDelete}><Trash size={SIZE} aria-hidden="true" /></button>
-    {:else if message && sureOf === message.id}
-        <button type="button" class="danger words" onclick={() => ((sureOf = null), onPurge())}>Delete for good? It cannot be undone</button>
+    {:else if asking && sureOf === asking}
+        <button type="button" class="danger words" onclick={() => ((sureOf = null), onPurge())}>{several.length > 1 ? `Delete ${several.length.toLocaleString()} for good?` : "Delete for good?"} It cannot be undone</button>
         <button type="button" aria-label="Keep" title="Keep it" onclick={() => (sureOf = null)}><X size={SIZE} aria-hidden="true" /></button>
     {:else}
-        <button type="button" disabled={none} aria-label="Delete permanently" title="Delete permanently" onclick={() => (sureOf = message?.id ?? null)}><Shredder size={SIZE} aria-hidden="true" /></button>
+        <button type="button" disabled={none} aria-label="Delete permanently" title="Delete permanently" onclick={() => (sureOf = asking)}><Shredder size={SIZE} aria-hidden="true" /></button>
     {/if}
     {#if within !== "archive" && folders.some((f) => f.well_known === "archive")}
         <button type="button" disabled={none} aria-label="Archive" title="Archive (Backspace)" onclick={onArchive}><Archive size={SIZE} aria-hidden="true" /></button>
@@ -103,28 +119,31 @@
         }}
     >
         <option value="" disabled>Move to…</option>
-        {#each folders.filter((f) => f.id !== message?.folder_id) as each (each.id)}
+        {#each folders.filter((f) => f.id !== from) as each (each.id)}
             <option value={each.id}>{"  ".repeat(each.depth)}{each.name}</option>
         {/each}
     </select>
 
     <span class="gap"></span>
-    {#if message?.is_read ?? true}
-        <button type="button" disabled={none} aria-label="Mark as unread" title="Mark as unread (Ctrl+U)" onclick={() => onSetRead(false)}><Unread size={SIZE} aria-hidden="true" /></button>
-    {:else}
+    {#if anyUnread}
         <button type="button" aria-label="Mark as read" title="Mark as read (Ctrl+Q)" onclick={() => onSetRead(true)}><MailOpen size={SIZE} aria-hidden="true" /></button>
     {/if}
-    {#if message?.flag_status === "flagged"}
+    {#if anyRead || none}
+        <button type="button" disabled={none} aria-label="Mark as unread" title="Mark as unread (Ctrl+U)" onclick={() => onSetRead(false)}><Unread size={SIZE} aria-hidden="true" /></button>
+    {/if}
+    {#if anyFlagged}
         <button type="button" aria-label="Mark complete" title="Mark complete" onclick={() => onSetFlag("complete")}><CircleCheck size={SIZE} aria-hidden="true" /></button>
-        <button type="button" aria-label="Clear flag" title="Clear flag (Insert)" onclick={() => onSetFlag("notFlagged")}><FlagOff size={SIZE} aria-hidden="true" /></button>
-    {:else if message?.flag_status === "complete"}
-        <button type="button" aria-label="Clear flag" title="Clear flag" onclick={() => onSetFlag("notFlagged")}><FlagOff size={SIZE} aria-hidden="true" /></button>
-    {:else}
+    {/if}
+    {#if anyFlagged || anyComplete}
+        <button type="button" aria-label="Clear flag" title={anyUnflagged ? "Clear flag" : "Clear flag (Insert)"} onclick={() => onSetFlag("notFlagged")}><FlagOff size={SIZE} aria-hidden="true" /></button>
+    {/if}
+    {#if anyUnflagged || none}
         <button type="button" disabled={none} aria-label="Flag" title="Flag (Insert)" onclick={() => onSetFlag("flagged")}><Flag size={SIZE} aria-hidden="true" /></button>
     {/if}
-    {#if message && message.flag_status !== "complete"}
+    {#if all.some((each) => each.flag_status !== "complete")}
+        {@const flagged = all.every((each) => each.flag_status === "flagged")}
         <details class="menu" bind:this={dayMenu}>
-            <summary aria-label={message.flag_status === "flagged" ? "Due…" : "Flag for…"} title={message.flag_status === "flagged" ? "Change the day it is due" : "Flag for a day"}>
+            <summary aria-label={flagged ? "Due…" : "Flag for…"} title={flagged ? "Change the day it is due" : "Flag for a day"}>
                 <CalendarClock size={SIZE} aria-hidden="true" />
             </summary>
             <ul aria-label="Follow up by">
@@ -134,22 +153,23 @@
                 <li>
                     <label>On <input type="date" aria-label="Another day" onchange={(event) => event.currentTarget.value && due(event.currentTarget.value)} /></label>
                 </li>
-                {#if message.flag_due}
+                {#if all.some((each) => each.flag_due)}
                     <li><button type="button" class="plain" onclick={() => due("")}>No day</button></li>
                 {/if}
             </ul>
         </details>
     {/if}
-    {#if message && categories.length > 0}
-        {@const mine = message.categories ?? []}
+    {#if !none && categories.length > 0}
         <details class="menu">
             <summary aria-label="Categories" title="Categories"><Tag size={SIZE} aria-hidden="true" /></summary>
             <ul aria-label="Categories">
                 {#each categories as each (each.name)}
-                    {@const has = mine.includes(each.name)}
+                    {@const have = all.filter((one) => (one.categories ?? []).includes(each.name)).length}
+                    {@const has = have === all.length}
                     <li>
                         <label>
-                            <input type="checkbox" checked={has} onchange={() => onCategorise(has ? mine.filter((n) => n !== each.name) : [...mine, each.name])} />
+                            <!-- Some of several have it: neither ticked nor clear, and a click gives it to the rest. -->
+                            <input type="checkbox" checked={has} indeterminate={have > 0 && !has} onchange={() => onCategorise(each.name, !has)} />
                             <span class="dot" style:background={categoryColour(each.color)}></span>
                             {each.name}
                         </label>

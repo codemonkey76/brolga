@@ -45,6 +45,7 @@ Enter.
 | Delete, archive | Delete, Backspace |
 | Move to a folder | Ctrl+Shift+V |
 | Next, previous message | Ctrl+. and Ctrl+, |
+| Choose several messages | Shift+Up, Shift+Down; Ctrl+A for all; Escape for one again |
 | Search mail | Ctrl+E or F3 |
 | Undo the last change | Ctrl+Z |
 | Sync now | F9 |

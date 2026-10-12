@@ -1388,6 +1388,7 @@ mod tests {
             flag_status: "notFlagged".to_owned(),
             flag_due: String::new(),
             is_meeting: false,
+            last_action: String::new(),
             categories: "[]".to_owned(),
             inference: "focused".to_owned(),
         };

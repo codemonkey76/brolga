@@ -333,6 +333,17 @@ const STEPS: &[&str] = &[
         PRIMARY KEY (message_id, attachment_id)
     ) STRICT;
 ",
+    "
+    -- What was last done with a message: `replied`, `replied_all`,
+    -- `forwarded`, or nothing.
+    ALTER TABLE messages ADD COLUMN last_action TEXT NOT NULL DEFAULT '';
+
+    -- The server says it only when asked, and a sync carries on from a link
+    -- that was made before it was. So every folder's messages are gone over
+    -- again from the start, once, to learn it of the mail already here.
+    UPDATE sync_state SET link = NULL, generation = generation + 1, reconciling = 1
+    WHERE resource LIKE 'messages:%';
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,6 +396,8 @@ pub struct MessageRow {
     pub flag_due: String,
     /// It is about a meeting: an invitation, a cancellation or an answer.
     pub is_meeting: bool,
+    /// What was last done with it: `replied`, `replied_all`, `forwarded`, or empty.
+    pub last_action: String,
     /// JSON: an array of strings.
     pub categories: String,
     pub inference: String,
@@ -467,6 +480,8 @@ pub struct MessageChange {
     /// `YYYY-MM-DD`, or empty for none.
     pub flag_due: Option<String>,
     pub is_meeting: Option<bool>,
+    /// `replied`, `replied_all` or `forwarded`.
+    pub last_action: Option<String>,
     pub categories: Option<String>,
     pub inference: Option<String>,
 }
@@ -920,8 +935,8 @@ impl AccountDb {
             .query_map(params![folder_id, offset, limit], |row| {
                 Ok(ConversationRow {
                     latest: read_message(row)?,
-                    count: row.get(20)?,
-                    unread: row.get(21)?,
+                    count: row.get(21)?,
+                    unread: row.get(22)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -1274,7 +1289,7 @@ impl AccountDb {
 
 const COLUMNS: &str = "id, folder_id, conversation_id, subject, preview, from_name, from_address, to_recipients, \
                        cc_recipients, received_at, sent_at, is_read, is_draft, has_attachments, importance, \
-                       flag_status, categories, inference, flag_due, is_meeting";
+                       flag_status, categories, inference, flag_due, is_meeting, last_action";
 
 fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -1298,6 +1313,7 @@ fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         inference: row.get(17)?,
         flag_due: row.get(18)?,
         is_meeting: row.get(19)?,
+        last_action: row.get(20)?,
     })
 }
 
@@ -1498,6 +1514,12 @@ pub(crate) fn upsert_message(
         transaction.execute(
             "UPDATE messages SET is_meeting = ?2 WHERE id = ?1",
             params![m.id, is_meeting],
+        )?;
+    }
+    if let Some(last_action) = &m.last_action {
+        transaction.execute(
+            "UPDATE messages SET last_action = ?2 WHERE id = ?1",
+            params![m.id, last_action],
         )?;
     }
     if let Some(due) = &m.flag_due {

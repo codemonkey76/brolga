@@ -2,7 +2,7 @@
     import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { type Asked, chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import ReadingPane from "./ReadingPane.svelte";
@@ -54,6 +54,37 @@
     let selectedId = $state<string | null>(null);
     /** The message being read, which in a conversation need not be the one selected in the list. */
     let readingId: string | null = null;
+    /** The lines chosen together, when there is more than one. `selectedId` is then the one the keys move from. */
+    let picked = $state<string[]>([]);
+    /** Where a run of lines chosen with Shift begins. */
+    let anchorId: string | null = null;
+    const many = $derived(picked.length > 1);
+    const chosen = $derived.by(() => {
+        if (picked.length < 2) return [];
+        const ids = new Set(picked);
+        return rows.filter((row): row is Message => !!row && ids.has(row.id));
+    });
+    /** What an action is for: the lines chosen, or else the message being read. */
+    const targets = $derived(many ? chosen.map((each) => each.id) : opened ? [opened.message.id] : []);
+    /** The core takes this many messages at a time. */
+    const MOST = 500;
+    /** The most lines chosen at once. */
+    const MOST_PICKED = 5_000;
+
+    /** Do something to messages, as many at a time as the core takes. Every part that changed anything can be undone. */
+    async function inBatches(ids: string[], each: (some: string[]) => Promise<Edited>) {
+        let changed = 0;
+        const undos: string[] = [];
+        for (let at = 0; at < ids.length; at += MOST) {
+            const done = await each(ids.slice(at, at + MOST));
+            changed += done.changed;
+            if (done.changed > 0) undos.push(done.undo_id);
+        }
+        return { changed, undos };
+    }
+
+    /** What was done, and to how many when it was more than one. */
+    const counted = (said: string, count: number) => (count > 1 ? `${said}: ${count.toLocaleString()} messages` : said);
     /** The whole conversation of the selected line, oldest first, when it has more than one message. */
     let thread = $state<Message[]>([]);
 
@@ -163,22 +194,39 @@
     /** The categories the mailbox has, to show each in its colour and to choose from. */
     let categories = $state<Category[]>([]);
 
-    async function categorise(names: string[]) {
-        if (!accountId || !opened) return;
-        const id = opened.message.id;
+    /** Give the messages a category, or take it from them. Each keeps whatever others it had. */
+    async function categorise(name: string, on: boolean) {
+        const of = many ? chosen : opened ? [opened.message] : [];
+        if (!accountId || of.length === 0) return;
+        const account = accountId;
+        // The core sets a message's categories whole, so those that end up alike are sent together.
+        const alike = new Map<string, { names: string[]; ids: string[] }>();
+        const now = new Map<string, string[]>();
+        for (const each of of) {
+            const had = each.categories ?? [];
+            if (had.includes(name) === on) continue;
+            const names = on ? [...had, name] : had.filter((n) => n !== name);
+            now.set(each.id, names);
+            const key = JSON.stringify(names);
+            alike.set(key, { names, ids: [...(alike.get(key)?.ids ?? []), each.id] });
+        }
+        if (now.size === 0) return;
         try {
-            const done = await setCategories(accountId, [id], names);
-            if (opened?.message.id === id) opened = { ...opened, message: { ...opened.message, categories: names } };
-            if (searching) rows = rows.map((row) => (row?.id === id ? { ...row, categories: names } : row));
+            const undos: string[] = [];
+            for (const { names, ids } of alike.values()) undos.push(...(await inBatches(ids, (some) => setCategories(account, some, names))).undos);
+            const mine = opened && now.get(opened.message.id);
+            if (opened && mine) opened = { ...opened, message: { ...opened.message, categories: mine } };
+            if (searching) rows = rows.map((row) => (row && now.has(row.id) ? { ...row, categories: now.get(row.id) ?? [] } : row));
             else await refresh();
-            if (done.changed > 0) offerUndo(names.length === 0 ? "Categories cleared" : "Categories changed", done.undo_id);
+            const cleared = [...now.values()].every((names) => names.length === 0);
+            if (undos.length > 0) offerUndo(counted(cleared ? "Categories cleared" : "Categories changed", now.size), undos);
         } catch (failure) {
             problem = say(failure);
         }
     }
 
     /** The last action, while it can still be taken back. */
-    let undoable = $state<{ said: string; id: string } | null>(null);
+    let undoable = $state<{ said: string; ids: string[] } | null>(null);
     let undoTimer: ReturnType<typeof setTimeout> | undefined;
     const UNDO_FOR = 10_000;
 
@@ -199,8 +247,9 @@
      */
     async function change(ids: string[], what: { is_read: boolean } | { flag_status: FlagStatus; due?: string }, said?: string) {
         if (!accountId || ids.length === 0) return;
+        const account = accountId;
         try {
-            const done = "is_read" in what ? await setRead(accountId, ids, what.is_read) : await setFlag(accountId, ids, what.flag_status, what.due);
+            const done = await inBatches(ids, (some) => ("is_read" in what ? setRead(account, some, what.is_read) : setFlag(account, some, what.flag_status, what.due)));
             if ("is_read" in what) {
                 await redraw(what, ids);
             } else {
@@ -208,7 +257,7 @@
                 const day = what.flag_status !== "flagged" ? { flag_due: null } : what.due === undefined ? {} : { flag_due: what.due || null };
                 await redraw({ flag_status: what.flag_status, ...day }, ids);
             }
-            if (said && done.changed > 0) offerUndo(said, done.undo_id);
+            if (said && done.changed > 0) offerUndo(said, done.undos);
         } catch (failure) {
             problem = say(failure);
         }
@@ -216,11 +265,11 @@
 
     async function takeBack() {
         if (!accountId || !undoable) return;
-        const { id } = undoable;
+        const { ids } = undoable;
         clearTimeout(undoTimer);
         undoable = null;
         try {
-            await undo(accountId, id);
+            for (const id of ids) await undo(accountId, id);
             await refresh();
             folders = await listFolders(accountId);
             // The message being read is drawn again from what the list now says of it.
@@ -236,83 +285,99 @@
         }
     }
 
-    const markRead = (isRead: boolean) => opened && change([opened.message.id], { is_read: isRead }, isRead ? "Marked as read" : "Marked as unread");
+    const markRead = (isRead: boolean) => change(targets, { is_read: isRead }, counted(isRead ? "Marked as read" : "Marked as unread", targets.length));
     const flag = (status: FlagStatus, due?: string) =>
-        opened &&
         change(
-            [opened.message.id],
+            targets,
             { flag_status: status, due },
-            status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged",
+            counted(status === "complete" ? "Marked complete" : status === "notFlagged" ? "Flag cleared" : due ? `Flagged for ${dueSaid(due)}` : "Flagged", targets.length),
         );
 
-    function offerUndo(said: string, id: string) {
+    function offerUndo(said: string, ids: string[]) {
         clearTimeout(undoTimer);
-        undoable = { said, id };
+        undoable = { said, ids };
         undoTimer = setTimeout(() => (undoable = null), UNDO_FOR);
     }
 
     /**
-     * Move the message being read to another folder. Deleting and archiving
-     * are this. The next message in the list takes its place, so a run of
-     * mail can be dealt with one key at a time.
+     * Move the lines chosen, or the message being read, to another folder.
+     * Deleting and archiving are this. The next message in the list takes
+     * their place, so a run of mail can be dealt with one key at a time.
      */
-    async function moveTo(destination: string, said: string) {
-        if (!accountId || !opened) return;
-        const id = opened.message.id;
-        const at = rows.findIndex((row) => row?.id === id);
+    async function moveTo(destination: string, said: string, ids = targets) {
+        if (!accountId || ids.length === 0) return;
+        const account = accountId;
         try {
-            const done = await moveMessages(accountId, [id], destination);
-            if (searching) {
-                rows = rows.filter((row) => row?.id !== id);
-                total = rows.length;
-            } else {
-                await refresh();
-            }
-            folders = await listFolders(accountId);
-            const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
-            if (next) {
-                await open(next);
-            } else {
-                opened = null;
-                selectedId = null;
-                thread = [];
-            }
-            if (done.changed > 0) offerUndo(said, done.undo_id);
+            const at = place(ids);
+            const done = await inBatches(ids, (some) => moveMessages(account, some, destination));
+            await gone(ids, at);
+            if (done.changed > 0) offerUndo(counted(said, ids.length), done.undos);
         } catch (failure) {
             problem = say(failure);
         }
     }
 
-    /** Delete the message being read for good. There is no undo, so there is no offer of one. */
+    /** Where in the list the first of these is. */
+    function place(ids: string[]) {
+        const going = new Set(ids);
+        return rows.findIndex((row) => row && going.has(row.id));
+    }
+
+    /** Draw the list without what has left it, and open what is now where the first of them was. */
+    async function gone(ids: string[], at: number) {
+        if (!accountId) return;
+        const going = new Set(ids);
+        // Something else was being read, and still is.
+        const stays = !many && !!opened && !going.has(opened.message.id);
+        picked = [];
+        if (searching) {
+            rows = rows.filter((row) => !row || !going.has(row.id));
+            total = rows.length;
+        } else {
+            await refresh();
+        }
+        folders = await listFolders(accountId);
+        if (stays) return;
+        const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
+        if (next) {
+            await open(next);
+        } else {
+            opened = null;
+            selectedId = null;
+            thread = [];
+        }
+    }
+
+    /** What a button on a line of the list is for: every line chosen if it is one of them, or else that line alone. */
+    const lineOf = (message: Message) => (many && picked.includes(message.id) ? targets : [message.id]);
+
+    function flagLine(message: Message) {
+        const ids = lineOf(message);
+        const clear = message.flag_status === "flagged";
+        void change(ids, { flag_status: clear ? "notFlagged" : "flagged" }, counted(clear ? "Flag cleared" : "Flagged", ids.length));
+    }
+
+    const removeLine = (message: Message) => moveTo("deleteditems", "Moved to Deleted Items", lineOf(message));
+
+    /** Delete for good the lines chosen, or the message being read. There is no undo, so there is no offer of one. */
     async function purge() {
-        if (!accountId || !opened) return;
-        const id = opened.message.id;
-        const at = rows.findIndex((row) => row?.id === id);
+        const ids = targets;
+        if (!accountId || ids.length === 0) return;
         try {
-            await deletePermanently(accountId, [id]);
-            if (searching) {
-                rows = rows.filter((row) => row?.id !== id);
-                total = rows.length;
-            } else {
-                await refresh();
-            }
-            folders = await listFolders(accountId);
-            const next = at >= 0 ? rows[Math.min(at, total - 1)] : undefined;
-            if (next) {
-                await open(next);
-            } else {
-                opened = null;
-                selectedId = null;
-                thread = [];
-            }
-            tell("Deleted permanently.");
+            const at = place(ids);
+            for (let from = 0; from < ids.length; from += MOST) await deletePermanently(accountId, ids.slice(from, from + MOST));
+            await gone(ids, at);
+            tell(ids.length > 1 ? `${ids.length.toLocaleString()} messages deleted permanently.` : "Deleted permanently.");
         } catch (failure) {
             problem = say(failure);
         }
     }
 
-    /** The standard folder the message being read is in, if it is in one. */
-    const within = $derived(opened ? (folders.find((f) => f.id === opened?.message.folder_id)?.well_known ?? null) : null);
+    /** The standard folder the message being read is in, if it is in one. For several chosen, the one they are all in. */
+    const within = $derived.by(() => {
+        const from = many ? (chosen.every((each) => each.folder_id === chosen[0]?.folder_id) ? chosen[0]?.folder_id : undefined) : opened?.message.folder_id;
+        return folders.find((f) => f.id === from)?.well_known ?? null;
+    });
     const remove = () => within !== "deleteditems" && moveTo("deleteditems", "Moved to Deleted Items");
     const junk = () => within !== "junkemail" && folders.some((f) => f.well_known === "junkemail") && moveTo("junkemail", "Moved to Junk Email");
     const notJunk = () => within === "junkemail" && moveTo("inbox", "Moved to the inbox");
@@ -487,6 +552,7 @@
     function reset() {
         listing += 1;
         asked.clear();
+        picked = [];
         rows = [];
         total = 0;
     }
@@ -553,6 +619,7 @@
             const found = await searchMail(accountId, query, everywhere ? undefined : (folderId ?? undefined));
             if (mine !== listing) return;
             searching = true;
+            picked = [];
             rows = found;
             total = found.length;
         } catch (failure) {
@@ -567,9 +634,76 @@
         searchSoon = setTimeout(search, query.trim() ? 150 : 0);
     }
 
+    /** Load every page of the folder that holds a position from one to another. */
+    async function load(from: number, to: number) {
+        for (let offset = Math.floor(from / PAGE) * PAGE; offset <= to; offset += PAGE) await need(offset);
+    }
+
+    /** Choose these lines. One alone is opened to be read; several are held to be acted on together. */
+    function pick(ids: string[], cursor: string) {
+        if (ids.length === 1) {
+            const only = rows.find((row) => row?.id === ids[0]);
+            if (only && (many || readingId !== only.id)) void open(only);
+            return;
+        }
+        picked = ids;
+        selectedId = ids.length === 0 ? null : cursor;
+        readingId = null;
+        opened = null;
+        thread = [];
+        attachments = [];
+    }
+
+    /** A line of the list is chosen: alone, added to or taken from those chosen, or with all between it and where the choosing began. */
+    async function select(message: Message, how: "one" | "toggle" | "range") {
+        if (how === "one") return open(message);
+        const mine = listing;
+        if (how === "toggle") {
+            const now = many ? picked : selectedId ? [selectedId] : [];
+            anchorId = message.id;
+            return pick(now.includes(message.id) ? now.filter((id) => id !== message.id) : [...now, message.id], message.id);
+        }
+        const to = rows.findIndex((row) => row?.id === message.id);
+        const began = rows.findIndex((row) => row?.id === anchorId);
+        if (to < 0) return;
+        let from = began < 0 ? to : began;
+        if (Math.abs(to - from) >= MOST_PICKED) {
+            from = to > from ? to - MOST_PICKED + 1 : to + MOST_PICKED - 1;
+            tell(`${MOST_PICKED.toLocaleString()} are selected, which is the most at once.`);
+        }
+        const [low, high] = [Math.min(from, to), Math.max(from, to)];
+        await load(low, high);
+        if (mine !== listing) return;
+        const start = anchorId;
+        pick(rows.slice(low, high + 1).flatMap((row) => (row ? [row.id] : [])), message.id);
+        // Opening one alone starts the choosing again from it; a run keeps where it began.
+        if (began >= 0) anchorId = start;
+    }
+
+    /** Choose every line of the folder, or of what a search found. */
+    async function selectAll() {
+        if (total === 0) return;
+        const mine = listing;
+        const upTo = Math.min(total, MOST_PICKED);
+        await load(0, upTo - 1);
+        if (mine !== listing) return;
+        const ids = rows.slice(0, upTo).flatMap((row) => (row ? [row.id] : []));
+        pick(ids, selectedId && ids.includes(selectedId) ? selectedId : (ids[0] ?? ""));
+        if (total > upTo) tell(`The first ${upTo.toLocaleString()} are selected, which is the most at once.`);
+    }
+
+    /** Go back from several lines chosen to the one the keys were on. */
+    function selectOne() {
+        const at = rows.find((row) => row?.id === selectedId);
+        if (at) void open(at);
+        else pick([], "");
+    }
+
     /** Choose a line of the list. For a conversation, its other messages are fetched to read beside it. */
     async function open(message: Message) {
         // A draft is opened to be carried on with, wherever it was started.
+        picked = [];
+        anchorId = message.id;
         if (message.is_draft && accountId) {
             selectedId = message.id;
             try {
@@ -692,7 +826,7 @@
             // The next message, or the one before: as the arrow keys do in the list.
             event.preventDefault();
             document.querySelector('[role="listbox"][aria-label="Messages"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: event.key === "." ? "ArrowDown" : "ArrowUp", bubbles: true }));
-        } else if (opened && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "v") {
+        } else if (targets.length > 0 && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "v") {
             event.preventDefault();
             const move = document.querySelector<HTMLSelectElement>('select[aria-label="Move to folder"]');
             move?.focus();
@@ -707,7 +841,7 @@
         } else if (opened && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
             event.preventDefault();
             write("forward");
-        } else if (opened && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) {
+        } else if (targets.length > 0 && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) {
             const ctrl = event.ctrlKey || event.metaKey;
             if (ctrl && event.key.toLowerCase() === "q") {
                 event.preventDefault();
@@ -717,13 +851,17 @@
                 markRead(false);
             } else if (event.key === "Insert") {
                 event.preventDefault();
-                flag(opened.message.flag_status === "flagged" ? "notFlagged" : "flagged");
+                // Several are flagged unless every one of them already is.
+                flag((many ? chosen.every((each) => each.flag_status === "flagged") : opened?.message.flag_status === "flagged") ? "notFlagged" : "flagged");
             } else if (event.key === "Delete") {
                 event.preventDefault();
                 remove();
             } else if (event.key === "Backspace") {
                 event.preventDefault();
                 archive();
+            } else if (event.key === "Escape" && many) {
+                event.preventDefault();
+                selectOne();
             }
         }
         if (undoable && !writing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !(event.target instanceof HTMLInputElement)) {
@@ -738,6 +876,7 @@
         folderId = null;
         opened = null;
         selectedId = null;
+        anchorId = null;
         writing = null;
         reset();
         await loadFolders().catch((failure) => (problem = say(failure)));
@@ -761,7 +900,8 @@
 
 <div class="mailview">
 <Toolbar
-    message={writing ? null : (opened?.message ?? null)}
+    message={writing || many ? null : (opened?.message ?? null)}
+    several={writing ? [] : chosen}
     {folders}
     {within}
     {categories}
@@ -944,7 +1084,7 @@
             <p class="empty muted">{searching ? "Nothing matches." : syncing ? "Fetching your mail…" : "Nothing here."}</p>
         {:else}
             <div class="rows">
-                <MessageList {total} {rows} {selectedId} {categories} onSelect={open} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
+                <MessageList {total} {rows} {selectedId} {picked} {categories} onSelect={select} onAll={selectAll} onFlag={flagLine} onDelete={folder?.well_known === "deleteditems" && !searching ? undefined : removeLine} onNeed={need} byDate={!searching && (view.conversations || view.sort === "newest" || view.sort === "oldest")} />
             </div>
         {/if}
         {#if notice}
@@ -968,6 +1108,12 @@
                 onKept={loadDrafts}
             />
         {/key}
+    {:else if many}
+        <section class="picked" aria-label="Messages selected">
+            <p class="count" role="status">{chosen.length.toLocaleString()} messages selected</p>
+            <p class="muted">Mark, flag, categorise, move, archive or delete them together from the toolbar.</p>
+            <button type="button" title="Escape" onclick={selectOne}>Clear the selection</button>
+        </section>
     {:else}
         <ReadingPane
             {accountId}
@@ -992,6 +1138,27 @@
 </div>
 
 <style>
+    .picked {
+        height: 100%;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 1rem;
+        text-align: center;
+    }
+
+    .picked p {
+        margin: 0;
+    }
+
+    .picked .count {
+        font-size: 1.1rem;
+        font-weight: 600;
+    }
+
     .mailview {
         height: 100%;
         min-height: 0;

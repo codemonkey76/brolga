@@ -250,6 +250,15 @@ fn message_change(message: Message) -> MessageChange {
             serde_json::Value::Array(list).to_string()
         })
     };
+    // Answered or sent on, where the server says. Anything else it may have
+    // been last used for is not shown, and leaves what is known alone.
+    let last_action = match message.last_verb() {
+        Some(102) => Some("replied".to_owned()),
+        Some(103) => Some("replied_all".to_owned()),
+        Some(104) => Some("forwarded".to_owned()),
+        _ => None,
+    };
+
     let (from_name, from_address) = match message.from {
         Some(from) => (
             Some(from.email_address.name.unwrap_or_default()),
@@ -260,6 +269,7 @@ fn message_change(message: Message) -> MessageChange {
 
     MessageChange {
         id: message.id,
+        last_action,
         conversation_id: message.conversation_id,
         subject: message.subject,
         preview: message.body_preview,

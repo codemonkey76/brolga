@@ -33,6 +33,9 @@ pub struct FakeMessage {
     pub flag: String,
     /// The day a flag is due, `YYYY-MM-DD`.
     pub flag_due: Option<String>,
+    /// The number of the last thing done with it, where anything has been:
+    /// 102 a reply, 103 a reply to all, 104 forwarding it ([MS-OXOMSG]).
+    pub last_verb: Option<u32>,
     pub is_draft: bool,
     pub categories: Vec<String>,
     /// What it says of a meeting, if it is about one.
@@ -83,6 +86,7 @@ impl FakeMessage {
             conversation: None,
             flag: "notFlagged".to_owned(),
             flag_due: None,
+            last_verb: None,
             is_draft: false,
             categories: Vec::new(),
             meeting: None,
@@ -194,6 +198,8 @@ pub struct Mailbox {
     epoch: u64,
     /// Answer every delta request, even a first one, as stale.
     pub(crate) never_settles: bool,
+    /// A sync of messages has asked what was last done with each.
+    pub(crate) expands_last_verb: bool,
     next_id: u64,
     root: String,
     folders: BTreeMap<String, Folder>,
@@ -217,6 +223,7 @@ impl Default for Mailbox {
             seq: 0,
             epoch: 1,
             never_settles: false,
+            expands_last_verb: false,
             next_id: 0,
             root: "root".to_owned(),
             folders: BTreeMap::new(),
@@ -348,6 +355,15 @@ impl Mailbox {
     pub fn set_flag(&mut self, id: &str, flag: &str) {
         if let Some(stored) = self.messages.get_mut(id) {
             stored.message.flag = flag.to_owned();
+            let folder = stored.folder.clone();
+            self.log_message(&folder, id, false);
+        }
+    }
+
+    /// Note that a message has been answered or sent on, as the server does.
+    pub fn set_last_verb(&mut self, id: &str, verb: u32) {
+        if let Some(stored) = self.messages.get_mut(id) {
+            stored.message.last_verb = Some(verb);
             let folder = stored.folder.clone();
             self.log_message(&folder, id, false);
         }
@@ -493,6 +509,12 @@ impl Mailbox {
         });
         if with_body {
             value["body"] = json!({ "contentType": "html", "content": m.body_html });
+        }
+        // "Get singleValueLegacyExtendedProperty": given only when asked for
+        // by `$expand`, and only on a message that has it.
+        if let Some(verb) = m.last_verb.filter(|_| self.expands_last_verb) {
+            value["singleValueExtendedProperties"] =
+                json!([{ "id": "Integer 0x1081", "value": verb.to_string() }]);
         }
         // "eventMessage resource type": a message about a meeting says what
         // kind it is, in a list as well as on its own.

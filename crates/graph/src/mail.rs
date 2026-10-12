@@ -140,6 +140,44 @@ pub struct Message {
     /// `focused` or `other`.
     pub inference_classification: Option<String>,
     pub body: Option<ItemBody>,
+    /// The properties asked for by name that the message has. One it does
+    /// not have is not in the list, and with none there is no list.
+    pub single_value_extended_properties: Option<Vec<ExtendedProperty>>,
+}
+
+/// A property of a message that Graph does not give a name of its own
+/// ("singleValueLegacyExtendedProperty resource type").
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ExtendedProperty {
+    pub id: String,
+    /// Written as a string in the documentation's examples, whatever its type.
+    pub value: Option<serde_json::Value>,
+}
+
+/// What was last done with a message: answered, or sent on. Graph has no
+/// property of its own for it, so it is asked for by its property tag
+/// ("Outlook extended properties overview": `{type} {proptag}`). The tag and
+/// what its numbers mean are in [MS-OXOMSG], PidTagLastVerbExecuted.
+pub(crate) const LAST_VERB: &str = "Integer 0x1081";
+
+impl Message {
+    /// The number of the last thing done with the message, where the server
+    /// says: 102 for a reply to its sender, 103 for a reply to all, 104 for
+    /// forwarding it ([MS-OXOMSG], PidTagLastVerbExecuted).
+    pub fn last_verb(&self) -> Option<u32> {
+        let property = self
+            .single_value_extended_properties
+            .as_ref()?
+            .iter()
+            .find(|each| each.id.eq_ignore_ascii_case(LAST_VERB))?;
+        match property.value.as_ref()? {
+            serde_json::Value::String(text) => text.trim().parse().ok(),
+            serde_json::Value::Number(number) => {
+                number.as_u64().and_then(|n| u32::try_from(n).ok())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The message properties asked for in a sync: enough for the list, the
@@ -147,6 +185,12 @@ pub struct Message {
 pub(crate) const MESSAGE_SELECT: &str = "id,parentFolderId,conversationId,subject,bodyPreview,from,toRecipients,\
     ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,hasAttachments,importance,flag,categories,\
     inferenceClassification";
+
+/// Asked for beside them: what was last done with each message. A delta
+/// query takes `$expand` for messages ("message: delta"), and the one
+/// property is chosen as "Get singleValueLegacyExtendedProperty" shows.
+pub(crate) const MESSAGE_EXPAND: &str =
+    "singleValueExtendedProperties($filter=id%20eq%20'Integer%200x1081')";
 
 pub(crate) const FOLDER_SELECT: &str =
     "id,displayName,parentFolderId,unreadItemCount,totalItemCount,isHidden";
