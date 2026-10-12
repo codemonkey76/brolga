@@ -158,6 +158,12 @@ async fn dismiss(mailboxes: Arc<Mailboxes>, args: Dismiss) -> Result<Value, Comm
         .account(args.account_id.as_deref())
         .map_err(failed)?;
     let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    // Only an event this computer knows has a reminder to be done with: an
+    // id is whatever the caller says it is, and neither the database nor
+    // Graph is given one made up.
+    if mailbox.db.event(&args.event_id).map_err(failed)?.is_none() {
+        return Ok(json!({ "dismissed": false, "everywhere": false }));
+    }
     mailbox
         .db
         .dismiss_reminder(&args.event_id)
@@ -179,6 +185,11 @@ async fn snooze(mailboxes: Arc<Mailboxes>, args: Snooze) -> Result<Value, Comman
     let until = jiff::Timestamp::now()
         .checked_add(args.minutes.clamp(1, 7 * 24 * 60).minutes())
         .map_err(failed)?;
+    // As with dismissing: an event this computer does not know has no
+    // reminder to put off, and nothing is asked of Graph about it.
+    if mailbox.db.event(&args.event_id).map_err(failed)?.is_none() {
+        return Ok(json!({ "snoozed_until": stamp(until), "everywhere": false }));
+    }
     mailbox
         .db
         .snooze_reminder(&args.event_id, &stamp(until))

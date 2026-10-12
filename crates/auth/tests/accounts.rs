@@ -261,3 +261,54 @@ async fn no_token_is_ever_written_to_the_database_file() {
     drop(fixture);
     let _ = std::fs::remove_dir_all(folder);
 }
+
+#[tokio::test]
+async fn a_token_said_to_last_for_ever_does_not_stop_the_program() {
+    let fixture = Fixture::new().await;
+    fixture.identity.access_tokens_last(u64::MAX);
+
+    let accounts = fixture.start();
+    let account = fixture.sign_in(&accounts, &registration()).await;
+
+    assert!(
+        accounts
+            .access_token(&account.id)
+            .await
+            .unwrap()
+            .starts_with("access-")
+    );
+}
+
+/// A secret store that keeps what it is given and will not let it go.
+struct Clinging(MemorySecrets);
+
+impl SecretStore for Clinging {
+    fn get(&self, key: &str) -> Result<Option<String>, brolga_auth::SecretError> {
+        self.0.get(key)
+    }
+
+    fn set(&self, key: &str, secret: &str) -> Result<(), brolga_auth::SecretError> {
+        self.0.set(key, secret)
+    }
+
+    fn delete(&self, _: &str) -> Result<(), brolga_auth::SecretError> {
+        Err(brolga_auth::SecretError::Unavailable("locked".to_owned()))
+    }
+}
+
+#[tokio::test]
+async fn an_account_whose_sign_in_cannot_be_deleted_stays_to_be_removed_later() {
+    let fixture = Fixture::new().await;
+    let client = TokenClient::new(Authority::new(fixture.identity.base_url())).unwrap();
+    let secrets = Arc::new(Clinging(MemorySecrets::default()));
+    let accounts = Accounts::new(fixture.db.clone(), secrets.clone(), client);
+    let account = fixture.sign_in(&accounts, &registration()).await;
+
+    let removed = accounts.remove(&account.id).await;
+
+    assert!(matches!(removed, Err(AccountError::Secrets(_))));
+    // The token is still there, and so is the account that says whose it is.
+    let key = format!("refresh-token.{}", account.id);
+    assert!(secrets.get(&key).unwrap().is_some());
+    assert_eq!(accounts.list().unwrap(), std::slice::from_ref(&account));
+}

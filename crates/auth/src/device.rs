@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+use crate::token::life;
 use crate::{AuthError, Registration, TokenClient, Tokens};
 
 /// A sign-in that has been started and is waiting for the person to enter the
@@ -35,11 +36,12 @@ impl DeviceSignIn {
             user_code: body.user_code,
             verification_uri: body.verification_uri,
             message: body.message,
-            expires_in: Duration::from_secs(body.expires_in),
+            expires_in: life(body.expires_in),
             registration: registration.clone(),
             device_code: body.device_code,
-            // Never poll faster than once a second, whatever we are told.
-            interval: Duration::from_secs(body.interval.max(1)),
+            // Never poll faster than once a second, whatever we are told,
+            // nor so slowly that the code has run out before the first try.
+            interval: Duration::from_secs(body.interval.clamp(1, 60)),
         })
     }
 

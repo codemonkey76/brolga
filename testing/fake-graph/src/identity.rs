@@ -48,6 +48,9 @@ struct Inner {
     /// Every query the authorize endpoint was opened with.
     authorize_requests: Vec<HashMap<String, String>>,
     expires_in: Option<u64>,
+    /// Who signs in from now on, as (object id, sign-in name), where it is
+    /// not the one person there otherwise is.
+    someone_else: Option<(String, String)>,
     /// Permissions an administrator has given the app for everyone. Every
     /// token carries them, asked for or not, as a real one does.
     admin_granted: Vec<String>,
@@ -121,6 +124,12 @@ impl FakeIdentity {
         if let Ok(mut inner) = self.shared.lock() {
             inner.admin_granted = scopes.iter().map(|s| (*s).to_owned()).collect();
         }
+    }
+
+    /// Have someone else sign in from now on: another person of the same
+    /// organisation, as when the wrong account is chosen on the sign-in page.
+    pub fn sign_in_as(&self, object_id: &str, username: &str) {
+        lock(&self.shared).someone_else = Some((object_id.to_owned(), username.to_owned()));
     }
 
     pub fn access_tokens_last(&self, seconds: u64) {
@@ -328,10 +337,14 @@ fn issue(inner: &mut Inner, from: &str) -> Response {
         .chain(admin_granted.iter().map(String::as_str))
         .collect();
 
+    let (object_id, username) = inner.someone_else.clone().unwrap_or((
+        "00000000-0000-4000-8000-000000000001".to_owned(),
+        "robin@example.test".to_owned(),
+    ));
     let claims = json!({
         "tid": "00000000-0000-4000-8000-0000000000aa",
-        "oid": "00000000-0000-4000-8000-000000000001",
-        "preferred_username": "robin@example.test",
+        "oid": object_id,
+        "preferred_username": username,
         "name": "Robin Example"
     });
     let id_token = format!(

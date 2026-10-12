@@ -6,6 +6,7 @@
 //! anything but a picture. Each image is put into the message as a `data:`
 //! URL; one that cannot be had is simply left out.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::header::CONTENT_TYPE;
 
-/// The most images one message will have fetched for it.
+/// The most images one message will have asked for, had or not.
 const MAX_IMAGES: usize = 40;
 /// The largest single image.
 const MAX_BYTES: usize = 3 * 1024 * 1024;
@@ -39,13 +40,21 @@ impl RemoteImages {
     /// Replace each `<img src="https://…">` in cleaned HTML with the image
     /// itself. Returns the HTML and how many images could not be had.
     pub async fn inline(&self, html: &str) -> (String, u32) {
-        const OPEN: &str = "src=\"https://";
+        self.inline_any(html, "src=\"https://").await
+    }
+
+    /// As `inline`, of images whose `src` opens as `open` does: tests
+    /// have no `https` server to fetch from.
+    async fn inline_any(&self, html: &str, open: &str) -> (String, u32) {
         let mut out = String::with_capacity(html.len());
         let mut rest = html;
-        let (mut fetched, mut missing) = (0usize, 0u32);
+        let (mut asked, mut missing) = (0usize, 0u32);
         let deadline = tokio::time::Instant::now() + ALL_WITHIN;
+        // Each host is looked up once for the message, and asked through
+        // the one client held to the addresses that were checked.
+        let mut hosts = HashMap::new();
 
-        while let Some(at) = rest.find(OPEN) {
+        while let Some(at) = rest.find(open) {
             let start = at + "src=\"".len();
             let Some(length) = rest[start..].find('"') else {
                 break;
@@ -56,8 +65,12 @@ impl RemoteImages {
 
             // All of a message's pictures are had within the one stretch of
             // time, so that slow ones cannot hold the message up for long.
-            let image = if fetched < MAX_IMAGES {
-                tokio::time::timeout_at(deadline, self.fetch(&url))
+            // Those that fail are counted with those that are had: a
+            // message of a thousand pictures that are not there would
+            // otherwise have every one of them looked up and asked for.
+            let image = if asked < MAX_IMAGES {
+                asked += 1;
+                tokio::time::timeout_at(deadline, self.fetch(&url, &mut hosts))
                     .await
                     .ok()
                     .flatten()
@@ -66,7 +79,6 @@ impl RemoteImages {
             };
             match image {
                 Some(data_url) => {
-                    fetched += 1;
                     out.push_str("src=\"");
                     out.push_str(&data_url);
                     out.push('"');
@@ -81,7 +93,14 @@ impl RemoteImages {
         (out, missing)
     }
 
-    async fn fetch(&self, url: &str) -> Option<String> {
+    /// One image as a `data:` URL. `hosts` holds, for each host already
+    /// asked for this message, the client held to its addresses, or
+    /// nothing for a host that may not be asked.
+    async fn fetch(
+        &self,
+        url: &str,
+        hosts: &mut HashMap<String, Option<reqwest::Client>>,
+    ) -> Option<String> {
         let parsed = reqwest::Url::parse(url).ok()?;
         if parsed.scheme() != "https" && !(self.allow_private && parsed.scheme() == "http") {
             return None;
@@ -89,21 +108,15 @@ impl RemoteImages {
         // The name is looked up once, here, and the request is held to the
         // addresses that were checked: a name that answers with a public
         // address now and a private one a moment later gets nowhere.
-        let pinned;
         let http = if self.allow_private {
             self.http.as_ref()?
         } else {
             let host = parsed.host_str()?.trim_matches(['[', ']']).to_owned();
-            let port = parsed.port_or_known_default().unwrap_or(443);
-            let addresses: Vec<_> = tokio::net::lookup_host((host.as_str(), port))
-                .await
-                .ok()?
-                .collect();
-            if addresses.is_empty() || !addresses.iter().all(|a| is_public_address(a.ip())) {
-                return None;
+            if !hosts.contains_key(&host) {
+                let port = parsed.port_or_known_default().unwrap_or(443);
+                hosts.insert(host.clone(), pinned(&host, port).await);
             }
-            pinned = builder().resolve_to_addrs(&host, &addresses).build().ok()?;
-            &pinned
+            hosts.get(&host)?.as_ref()?
         };
 
         let mut response = http.get(parsed).send().await.ok()?;
@@ -146,6 +159,18 @@ impl RemoteImages {
     }
 }
 
+/// A client that asks a host at the addresses it has now, and no others,
+/// if every one of them is public. Nothing for a host that has none, or
+/// any that is not.
+async fn pinned(host: &str, port: u16) -> Option<reqwest::Client> {
+    let addresses: Vec<_> = tokio::net::lookup_host((host, port)).await.ok()?.collect();
+    if addresses.is_empty() || !addresses.iter().all(|a| is_public_address(a.ip())) {
+        return None;
+    }
+
+    builder().resolve_to_addrs(host, &addresses).build().ok()
+}
+
 /// Requests that carry nothing and follow nothing.
 fn builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
@@ -178,7 +203,8 @@ fn is_public_address(address: IpAddr) -> bool {
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => is_public_address(IpAddr::V4(v4)),
             None => {
-                let first = v6.segments()[0];
+                let parts = v6.segments();
+                let first = parts[0];
                 !(v6.is_loopback()
                     || v6.is_unspecified()
                     || v6.is_multicast()
@@ -189,8 +215,15 @@ fn is_public_address(address: IpAddr) -> bool {
                     || (first & 0xffc0) == 0xfec0
                     // IPv4 carried inside IPv6, where the address within
                     // could be any at all: NAT64 64:ff9b::/96 and 6to4 2002::/16.
-                    || (first == 0x0064 && v6.segments()[1] == 0xff9b)
-                    || first == 0x2002)
+                    // 64:ff9b:1::/48, NAT64 within one network, is among the first.
+                    || (first == 0x0064 && parts[1] == 0xff9b)
+                    || first == 0x2002
+                    // And two more of the kind: the retired "IPv4-compatible"
+                    // ::/96, and Teredo 2001::/32, which carries a server's
+                    // and a client's ("IANA IPv6 Special-Purpose Address
+                    // Registry", SOURCES.md).
+                    || parts[..6] == [0; 6]
+                    || (first == 0x2001 && parts[1] == 0))
             }
         },
     }
@@ -289,7 +322,10 @@ mod tests {
         let images = RemoteImages::new(true);
 
         assert_eq!(
-            images.fetch(&format!("{base}/ok.png")).await.as_deref(),
+            images
+                .fetch(&format!("{base}/ok.png"), &mut HashMap::new())
+                .await
+                .as_deref(),
             Some("data:image/png;base64,AQID")
         );
         for refused in [
@@ -300,7 +336,9 @@ mod tests {
             "missing.png",
         ] {
             assert_eq!(
-                images.fetch(&format!("{base}/{refused}")).await,
+                images
+                    .fetch(&format!("{base}/{refused}"), &mut HashMap::new())
+                    .await,
                 None,
                 "{refused}"
             );
@@ -308,7 +346,7 @@ mod tests {
         // And outside a test, nothing on this computer is fetched at all.
         assert_eq!(
             RemoteImages::new(false)
-                .fetch(&format!("{base}/ok.png"))
+                .fetch(&format!("{base}/ok.png"), &mut HashMap::new())
                 .await,
             None
         );
@@ -325,14 +363,45 @@ mod tests {
         assert!(!out.contains("src="));
     }
 
+    #[tokio::test]
+    async fn images_that_cannot_be_had_count_towards_the_most_asked_for() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let base = serve(axum::Router::new().fallback(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { axum::http::StatusCode::NOT_FOUND }
+        }))
+        .await;
+        let images = RemoteImages::new(true);
+        let html = format!("<img src=\"{base}/x.png\">").repeat(MAX_IMAGES + 5);
+        let (out, missing) = images.inline_any(&html, "src=\"http://").await;
+
+        assert_eq!(missing as usize, MAX_IMAGES + 5);
+        assert!(!out.contains("src="));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), MAX_IMAGES);
+    }
+
     #[test]
     fn an_ipv4_address_wrapped_in_ipv6_is_not_taken_for_public() {
-        for inside in ["64:ff9b::c0a8:1", "2002:c0a8:1::1", "fec0::1", "192.0.0.8"] {
+        for inside in [
+            "64:ff9b::c0a8:1",
+            "64:ff9b:1::c0a8:1",
+            "2002:c0a8:1::1",
+            "fec0::1",
+            "192.0.0.8",
+            "::c0a8:1",
+            "::7f00:1",
+            "::808:808",
+            "2001::1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+        ] {
             assert!(
                 !is_public_address(inside.parse().unwrap()),
                 "{inside} was taken for public"
             );
         }
-        assert!(is_public_address("2606:4700::1111".parse().unwrap()));
+        for public in ["2606:4700::1111", "2001:4860:4860::8888"] {
+            assert!(is_public_address(public.parse().unwrap()), "{public}");
+        }
     }
 }

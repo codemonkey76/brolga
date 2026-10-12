@@ -19,6 +19,19 @@ use crate::{
 /// purpose: Graph throttles a mailbox on concurrency as well as on volume.
 const IN_FLIGHT: usize = 4;
 
+/// The most pages of any one list that are followed. A list without end
+/// is a server gone wrong, and is not followed for ever.
+const MAX_PAGES: usize = 1_000;
+
+/// The largest answer that is read whole. The largest thing asked for is a
+/// message in MIME or one of its attachments, and Exchange Online lets a
+/// message be 150 MB at the most ("Exchange Online limits", SOURCES.md).
+const MAX_ANSWER: usize = 256 * 1024 * 1024;
+
+/// The largest refusal, or answer to `probe`, that is read: both are a few
+/// lines of JSON.
+const MAX_SMALL_ANSWER: usize = 4 * 1024 * 1024;
+
 /// Supplies an access token for the account a client is for.
 pub trait TokenSource: Send + Sync {
     fn token(&self) -> BoxFuture<'_, Result<String, GraphError>>;
@@ -29,6 +42,8 @@ pub struct GraphClient {
     http: reqwest::Client,
     /// `https://graph.microsoft.com/v1.0`, or a test server's stand-in for it.
     base: String,
+    /// The same, read as a URL: every request is held to its scheme, host and port.
+    origin: Url,
     tokens: Arc<dyn TokenSource>,
     retry: RetryPolicy,
     in_flight: Semaphore,
@@ -61,9 +76,14 @@ impl GraphClient {
             .build()
             .map_err(GraphError::Network)?;
 
+        let base = base.into().trim_end_matches('/').to_owned();
+        let origin = Url::parse(&base)
+            .map_err(|e| GraphError::Decode(format!("the address of Graph is not a URL: {e}")))?;
+
         Ok(Self {
             http,
-            base: base.into().trim_end_matches('/').to_owned(),
+            base,
+            origin,
             tokens,
             retry,
             in_flight: Semaphore::new(IN_FLIGHT),
@@ -80,15 +100,64 @@ impl GraphClient {
     }
 
     /// A request's address, for the mailbox this client is for.
-    fn addressed<'a>(&self, url: &'a str) -> std::borrow::Cow<'a, str> {
+    fn addressed<'a>(&self, url: &'a str) -> Result<std::borrow::Cow<'a, str>, GraphError> {
         let own = format!("{}/me", self.base);
         match (&self.mailbox, url.strip_prefix(&own)) {
             // `/me` itself, `/me/…` or `/me?…`: not a longer name that begins the same.
             (Some(address), Some(rest)) if rest.is_empty() || rest.starts_with(['/', '?']) => {
-                format!("{}/users/{address}{rest}", self.base).into()
+                Ok(format!("{}/users/{}{rest}", self.base, seg(address)?).into())
             }
-            _ => url.into(),
+            _ => Ok(url.into()),
         }
+    }
+
+    /// A request's address as a URL, for the mailbox this client is for,
+    /// once it is known to be one the token may go to.
+    ///
+    /// The token goes only to the server this client was made for. A link
+    /// to the next page comes from an answer, and is kept and followed
+    /// later; one that names another server, or the same one without TLS,
+    /// would otherwise be handed the token ("Paging Microsoft Graph data in
+    /// your app", SOURCES.md: the link is to be used as it is given, and it
+    /// is, but only where it leads back to Graph).
+    ///
+    /// Nor may the path be one that is rewritten on the way: `.` and `..`
+    /// as parts of a path are resolved before the request is sent, and
+    /// would make it a request for something else.
+    fn checked(&self, url: &str) -> Result<Url, GraphError> {
+        let addressed = self.addressed(url)?;
+        // Tabs and line ends are dropped from an address as it is read,
+        // which would let `.` and `..` past in pieces.
+        if addressed.contains(['\t', '\n', '\r']) {
+            return Err(GraphError::Decode(
+                "the address of a request has a tab or a line end in it".to_owned(),
+            ));
+        }
+        let path = addressed
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+            .replace('\\', "/");
+        if path.split('/').any(is_dots) {
+            return Err(GraphError::Decode(
+                "the address of a request has `.` or `..` for a part of its path".to_owned(),
+            ));
+        }
+        let url =
+            Url::parse(&addressed).map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
+        if url.origin() != self.origin.origin() {
+            return Err(GraphError::Decode(
+                "the address of a request is on another server than Microsoft Graph, so it was not asked"
+                    .to_owned(),
+            ));
+        }
+        if url.fragment().is_some() {
+            return Err(GraphError::Decode(
+                "the address of a request has a `#` in it".to_owned(),
+            ));
+        }
+
+        Ok(url)
     }
 
     pub fn production(tokens: Arc<dyn TokenSource>) -> Result<Self, GraphError> {
@@ -118,6 +187,7 @@ impl GraphClient {
         link: Option<&str>,
         page_size: u32,
     ) -> Result<DeltaPage<Message>, GraphError> {
+        let folder_id = seg(folder_id)?;
         let start = format!(
             "{}/me/mailFolders/{folder_id}/messages/delta?$select={MESSAGE_SELECT}&$orderby=receivedDateTime+desc",
             self.base
@@ -168,7 +238,7 @@ impl GraphClient {
     pub async fn calendars(&self) -> Result<Vec<Calendar>, GraphError> {
         let mut url = format!("{}/me/calendars", self.base);
         let mut all = Vec::new();
-        loop {
+        for _ in 0..MAX_PAGES {
             let page: DeltaPage<Calendar> = read_list_page(&self.get(&url, Some(100)).await?)?;
             for item in page.items {
                 if let crate::DeltaItem::Changed(calendar) = item {
@@ -176,10 +246,13 @@ impl GraphClient {
                 }
             }
             match page.next {
-                crate::Next::Page(next) => url = next,
-                crate::Next::Done(_) => return Ok(all),
+                // No mailbox has calendars without end; a server that says so is not believed.
+                crate::Next::Page(next) if all.len() < 5_000 => url = next,
+                _ => break,
             }
         }
+
+        Ok(all)
     }
 
     /// One page of changes to the events of the default calendar between
@@ -211,6 +284,7 @@ impl GraphClient {
         window: (&str, &str),
         page_size: u32,
     ) -> Result<DeltaPage<Event>, GraphError> {
+        let calendar_id = seg(calendar_id)?;
         let start = format!(
             "{}/me/calendars/{calendar_id}/calendarView?startDateTime={}&endDateTime={}",
             self.base, window.0, window.1
@@ -221,6 +295,7 @@ impl GraphClient {
 
     /// One event whole, with its body and, for a series master, how it repeats.
     pub async fn event(&self, event_id: &str) -> Result<Event, GraphError> {
+        let event_id = seg(event_id)?;
         let url = format!("{}/me/events/{event_id}", self.base);
 
         decode(&self.get(&url, None).await?)
@@ -242,6 +317,7 @@ impl GraphClient {
     /// Delete a calendar and everything in it ("Delete calendar",
     /// SOURCES.md). One that is already gone is as good as deleted.
     pub async fn delete_calendar(&self, calendar_id: &str) -> Result<(), GraphError> {
+        let calendar_id = seg(calendar_id)?;
         let url = format!("{}/me/calendars/{calendar_id}", self.base);
 
         match self
@@ -256,6 +332,7 @@ impl GraphClient {
     /// Have done with an event's reminder, for every device ("event:
     /// dismissReminder", SOURCES.md).
     pub async fn dismiss_reminder(&self, event_id: &str) -> Result<(), GraphError> {
+        let event_id = seg(event_id)?;
         let url = format!("{}/me/events/{event_id}/dismissReminder", self.base);
         self.send(reqwest::Method::POST, &url, None, None, true)
             .await?;
@@ -266,6 +343,7 @@ impl GraphClient {
     /// Put an event's reminder off until a moment in UTC, for every device
     /// ("event: snoozeReminder", SOURCES.md).
     pub async fn snooze_reminder(&self, event_id: &str, until: &str) -> Result<(), GraphError> {
+        let event_id = seg(event_id)?;
         let url = format!("{}/me/events/{event_id}/snoozeReminder", self.base);
         let body = serde_json::json!({
             "newReminderTime": { "dateTime": until.trim_end_matches('Z'), "timeZone": "UTC" }
@@ -280,15 +358,17 @@ impl GraphClient {
     async fn list_values(&self, first: String) -> Result<Vec<serde_json::Value>, GraphError> {
         let mut url = first;
         let mut all = Vec::new();
-        loop {
+        for _ in 0..MAX_PAGES {
             let page: serde_json::Value = decode(&self.get(&url, Some(100)).await?)?;
             all.extend(page["value"].as_array().cloned().unwrap_or_default());
             match page["@odata.nextLink"].as_str() {
                 // A list without end is a server gone wrong, and is not followed for ever.
                 Some(next) if all.len() < 50_000 => url = next.to_owned(),
-                _ => return Ok(all),
+                _ => break,
             }
         }
+
+        Ok(all)
     }
 
     /// The folders of contacts beside the main one, as `(id, name)` ("List
@@ -315,6 +395,7 @@ impl GraphClient {
         &self,
         folder_id: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, GraphError> {
+        let folder_id = folder_id.map(seg).transpose()?;
         self.list_values(match folder_id {
             Some(folder) => format!("{}/me/contactFolders/{folder}/contacts", self.base),
             None => format!("{}/me/contacts", self.base),
@@ -329,6 +410,7 @@ impl GraphClient {
         folder_id: Option<&str>,
         contact: &serde_json::Value,
     ) -> Result<serde_json::Value, GraphError> {
+        let folder_id = folder_id.map(seg).transpose()?;
         let url = match folder_id {
             Some(folder) => format!("{}/me/contactFolders/{folder}/contacts", self.base),
             None => format!("{}/me/contacts", self.base),
@@ -347,6 +429,7 @@ impl GraphClient {
         contact_id: &str,
         changes: &serde_json::Value,
     ) -> Result<serde_json::Value, GraphError> {
+        let contact_id = seg(contact_id)?;
         let url = format!("{}/me/contacts/{contact_id}", self.base);
 
         decode(
@@ -359,6 +442,7 @@ impl GraphClient {
     /// Delete a contact ("Delete contact", SOURCES.md). One already gone
     /// is as good as deleted.
     pub async fn delete_contact(&self, contact_id: &str) -> Result<(), GraphError> {
+        let contact_id = seg(contact_id)?;
         let url = format!("{}/me/contacts/{contact_id}", self.base);
 
         match self
@@ -414,15 +498,17 @@ impl GraphClient {
     pub async fn rooms(&self) -> Result<Vec<serde_json::Value>, GraphError> {
         let mut url = format!("{}/places/microsoft.graph.room", self.base);
         let mut all = Vec::new();
-        loop {
+        for _ in 0..MAX_PAGES {
             let page: serde_json::Value = decode(&self.get(&url, Some(100)).await?)?;
             all.extend(page["value"].as_array().cloned().unwrap_or_default());
             match page["@odata.nextLink"].as_str() {
                 // No organisation has rooms without end; a server that says so is not believed.
                 Some(next) if all.len() < 5_000 => url = next.to_owned(),
-                _ => return Ok(all),
+                _ => break,
             }
         }
+
+        Ok(all)
     }
 
     /// Times the server suggests for a meeting ("user: findMeetingTimes",
@@ -471,6 +557,7 @@ impl GraphClient {
     /// An event whole, as Graph gives it: for a series, its master, with
     /// how it repeats ("Get event", SOURCES.md).
     pub async fn event_raw(&self, event_id: &str) -> Result<serde_json::Value, GraphError> {
+        let event_id = seg(event_id)?;
         let url = format!("{}/me/events/{event_id}", self.base);
 
         decode(&self.get(&url, None).await?)
@@ -487,6 +574,7 @@ impl GraphClient {
         calendar_id: Option<&str>,
         event: &serde_json::Value,
     ) -> Result<Event, GraphError> {
+        let calendar_id = calendar_id.map(seg).transpose()?;
         let url = match calendar_id {
             Some(calendar) => format!("{}/me/calendars/{calendar}/events", self.base),
             None => format!("{}/me/events", self.base),
@@ -511,6 +599,7 @@ impl GraphClient {
         event_id: &str,
         changes: &serde_json::Value,
     ) -> Result<Event, GraphError> {
+        let event_id = seg(event_id)?;
         let url = format!("{}/me/events/{event_id}", self.base);
 
         decode(
@@ -524,6 +613,7 @@ impl GraphClient {
     /// the owner organised, the server tells those invited it is off. One
     /// that is already gone is as good as deleted.
     pub async fn delete_event(&self, event_id: &str) -> Result<(), GraphError> {
+        let event_id = seg(event_id)?;
         let url = format!("{}/me/events/{event_id}", self.base);
 
         match self
@@ -540,6 +630,7 @@ impl GraphClient {
     ///
     /// Not safe to repeat blindly: the cancellation is mail to everyone.
     pub async fn cancel_event(&self, event_id: &str, comment: &str) -> Result<(), GraphError> {
+        let event_id = seg(event_id)?;
         let url = format!("{}/me/events/{event_id}/cancel", self.base);
         let body = serde_json::json!({ "comment": comment });
         self.send(reqwest::Method::POST, &url, None, Some(&body), false)
@@ -562,6 +653,8 @@ impl GraphClient {
         send_response: bool,
         proposed: Option<(&str, &str)>,
     ) -> Result<(), GraphError> {
+        let event_id = seg(event_id)?;
+        let answer = seg(answer)?;
         let url = format!("{}/me/events/{event_id}/{answer}", self.base);
         let mut body = serde_json::json!({ "comment": comment, "sendResponse": send_response });
         // Another time, proposed with the answer: its start and end in UTC
@@ -579,6 +672,7 @@ impl GraphClient {
     /// The id of one of the folders every mailbox has, by its well-known
     /// name. Nothing if this mailbox has no such folder.
     pub async fn well_known_folder(&self, name: &str) -> Result<Option<String>, GraphError> {
+        let name = seg(name)?;
         let url = format!("{}/me/mailFolders/{name}?$select=id", self.base);
 
         match self.get(&url, None).await {
@@ -590,6 +684,7 @@ impl GraphClient {
 
     /// A message's body, as it was sent.
     pub async fn message_body(&self, message_id: &str) -> Result<ItemBody, GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}?$select=id,body", self.base);
         let message: Message = decode(&self.get(&url, None).await?)?;
 
@@ -602,19 +697,23 @@ impl GraphClient {
     /// are left out by naming the other properties: a list would otherwise
     /// carry every file whole.
     pub async fn attachments(&self, message_id: &str) -> Result<Vec<Attachment>, GraphError> {
+        let message_id = seg(message_id)?;
         let mut url = format!(
             "{}/me/messages/{message_id}/attachments?$select={ATTACHMENT_SELECT}",
             self.base
         );
         let mut all = Vec::new();
-        loop {
+        for _ in 0..MAX_PAGES {
             let page: AttachmentPage = decode(&self.get(&url, None).await?)?;
             all.extend(page.value);
             match page.next_link {
-                Some(next) => url = next,
-                None => return Ok(all),
+                // No message has attachments without end; a server that says so is not believed.
+                Some(next) if all.len() < 5_000 => url = next,
+                _ => break,
             }
         }
+
+        Ok(all)
     }
 
     /// One file attachment whole: its contents, and the name a body refers
@@ -624,6 +723,8 @@ impl GraphClient {
         message_id: &str,
         attachment_id: &str,
     ) -> Result<FileAttachment, GraphError> {
+        let message_id = seg(message_id)?;
+        let attachment_id = seg(attachment_id)?;
         let url = format!(
             "{}/me/messages/{message_id}/attachments/{attachment_id}",
             self.base
@@ -640,6 +741,8 @@ impl GraphClient {
         message_id: &str,
         attachment_id: &str,
     ) -> Result<Vec<u8>, GraphError> {
+        let message_id = seg(message_id)?;
+        let attachment_id = seg(attachment_id)?;
         let url = format!(
             "{}/me/messages/{message_id}/attachments/{attachment_id}/$value",
             self.base
@@ -657,6 +760,7 @@ impl GraphClient {
         message_id: &str,
         changes: &serde_json::Value,
     ) -> Result<(), GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}", self.base);
         self.send(reqwest::Method::PATCH, &url, None, Some(changes), true)
             .await?;
@@ -675,6 +779,7 @@ impl GraphClient {
         message_id: &str,
         destination: &str,
     ) -> Result<(), GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}/move", self.base);
         let body = serde_json::json!({ "destinationId": destination });
         self.send(reqwest::Method::POST, &url, None, Some(&body), false)
@@ -705,6 +810,8 @@ impl GraphClient {
         message_id: &str,
         action: &str,
     ) -> Result<Message, GraphError> {
+        let message_id = seg(message_id)?;
+        let action = seg(action)?;
         let url = format!("{}/me/messages/{message_id}/{action}", self.base);
 
         decode(
@@ -727,6 +834,7 @@ impl GraphClient {
     ) -> Result<(), GraphError> {
         use base64::Engine;
 
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}/attachments", self.base);
         let mut body = serde_json::json!({
             "@odata.type": "#microsoft.graph.fileAttachment",
@@ -761,6 +869,7 @@ impl GraphClient {
         content: &[u8],
         content_id: Option<&str>,
     ) -> Result<(), GraphError> {
+        let message_id = seg(message_id)?;
         // "Keep each byte range less than 4 MB."
         const PIECE: usize = 3 * 1024 * 1024;
 
@@ -883,6 +992,7 @@ impl GraphClient {
     /// Change a category's colour, which is all of one that can be changed
     /// ("Update outlookCategory", SOURCES.md).
     pub async fn update_category(&self, id: &str, colour: &str) -> Result<(), GraphError> {
+        let id = seg(id)?;
         let url = format!("{}/me/outlook/masterCategories/{id}", self.base);
         let body = serde_json::json!({ "color": colour });
         self.send(reqwest::Method::PATCH, &url, None, Some(&body), true)
@@ -894,6 +1004,7 @@ impl GraphClient {
     /// Take a category off the mailbox's list ("Delete outlookCategory",
     /// SOURCES.md). One already gone is as good as deleted.
     pub async fn delete_category(&self, id: &str) -> Result<(), GraphError> {
+        let id = seg(id)?;
         let url = format!("{}/me/outlook/masterCategories/{id}", self.base);
 
         match self
@@ -935,6 +1046,7 @@ impl GraphClient {
         id: &str,
         role: &str,
     ) -> Result<serde_json::Value, GraphError> {
+        let id = seg(id)?;
         let url = format!("{}/me/calendar/calendarPermissions/{id}", self.base);
         let body = serde_json::json!({ "role": role });
 
@@ -948,6 +1060,7 @@ impl GraphClient {
     /// Stop sharing the main calendar with someone ("Delete
     /// calendarPermission", SOURCES.md). One already gone is as good as removed.
     pub async fn delete_calendar_permission(&self, id: &str) -> Result<(), GraphError> {
+        let id = seg(id)?;
         let url = format!("{}/me/calendar/calendarPermissions/{id}", self.base);
 
         match self
@@ -986,6 +1099,7 @@ impl GraphClient {
         rule_id: &str,
         changes: &serde_json::Value,
     ) -> Result<serde_json::Value, GraphError> {
+        let rule_id = seg(rule_id)?;
         let url = format!("{}/me/mailFolders/inbox/messageRules/{rule_id}", self.base);
 
         decode(
@@ -998,6 +1112,7 @@ impl GraphClient {
     /// Delete a rule ("Delete rule", SOURCES.md). One already gone is as
     /// good as deleted.
     pub async fn delete_rule(&self, rule_id: &str) -> Result<(), GraphError> {
+        let rule_id = seg(rule_id)?;
         let url = format!("{}/me/mailFolders/inbox/messageRules/{rule_id}", self.base);
 
         match self
@@ -1012,6 +1127,7 @@ impl GraphClient {
     /// Send a draft ("message: send", SOURCES.md). It is saved in Sent
     /// Items. Never repeated here: a second request could send a second copy.
     pub async fn send_draft(&self, message_id: &str) -> Result<(), GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}/send", self.base);
         self.send(reqwest::Method::POST, &url, None, None, false)
             .await?;
@@ -1022,6 +1138,7 @@ impl GraphClient {
     /// A draft whole, as it is on the server: its subject, its body and
     /// everyone it is addressed to, the blind copies included.
     pub async fn draft(&self, message_id: &str) -> Result<Message, GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!(
             "{}/me/messages/{message_id}?$select=id,subject,body,toRecipients,ccRecipients,bccRecipients,isDraft",
             self.base
@@ -1032,6 +1149,7 @@ impl GraphClient {
 
     /// Whether a message is still a draft. Nothing if it is no longer there.
     pub async fn is_draft(&self, message_id: &str) -> Result<Option<bool>, GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}?$select=id,isDraft", self.base);
 
         match self.get(&url, None).await {
@@ -1045,6 +1163,7 @@ impl GraphClient {
     /// it goes where no mail program can reach it, and is purged in time.
     /// A message already gone counts as deleted, so asking twice is safe.
     pub async fn delete_permanently(&self, message_id: &str) -> Result<(), GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}/permanentDelete", self.base);
 
         match self
@@ -1059,6 +1178,7 @@ impl GraphClient {
     /// A message whole, in MIME: what a `.eml` file holds ("Get MIME
     /// content of a message", SOURCES.md).
     pub async fn message_mime(&self, message_id: &str) -> Result<Vec<u8>, GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!("{}/me/messages/{message_id}/$value", self.base);
 
         self.get(&url, None).await
@@ -1068,6 +1188,7 @@ impl GraphClient {
     /// that it is about ("Get eventMessage", SOURCES.md). As Graph gives it:
     /// what it holds differs between an invitation and an answer to one.
     pub async fn meeting_message(&self, message_id: &str) -> Result<serde_json::Value, GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!(
             "{}/me/messages/{message_id}?$expand=microsoft.graph.eventMessage/event",
             self.base
@@ -1078,6 +1199,7 @@ impl GraphClient {
 
     /// The id of the folder a message is in now.
     pub async fn message_folder(&self, message_id: &str) -> Result<Option<String>, GraphError> {
+        let message_id = seg(message_id)?;
         let url = format!(
             "{}/me/messages/{message_id}?$select=id,parentFolderId",
             self.base
@@ -1101,8 +1223,8 @@ impl GraphClient {
                 "a path begins with `/`, and is what follows `/me`".to_owned(),
             ));
         }
-        let url = Url::parse(&self.addressed(&format!("{}/me{path}", self.base)))
-            .map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
+        // A path with `..` in it is refused there: it would leave `/me`.
+        let url = self.checked(&format!("{}/me{path}", self.base))?;
         let token = self.tokens.token().await?;
         let response = self
             .http
@@ -1113,9 +1235,9 @@ impl GraphClient {
             .await
             .map_err(GraphError::Network)?;
         let status = response.status().as_u16();
-        let said = response.text().await.map_err(GraphError::Network)?;
+        let said = read_capped(response, MAX_SMALL_ANSWER).await?;
 
-        Ok((status, said))
+        Ok((status, String::from_utf8_lossy(&said).into_owned()))
     }
 
     async fn get(&self, url: &str, page_size: Option<u32>) -> Result<Vec<u8>, GraphError> {
@@ -1135,8 +1257,7 @@ impl GraphClient {
         body: Option<&serde_json::Value>,
         repeatable: bool,
     ) -> Result<Vec<u8>, GraphError> {
-        let url = Url::parse(&self.addressed(url))
-            .map_err(|e| GraphError::Decode(format!("not a URL: {e}")))?;
+        let url = self.checked(url)?;
         // Closing the semaphore is not something this client ever does.
         let _permit = self
             .in_flight
@@ -1185,11 +1306,7 @@ impl GraphClient {
 
             let status = response.status();
             if status.is_success() {
-                return response
-                    .bytes()
-                    .await
-                    .map(|b| b.to_vec())
-                    .map_err(GraphError::Network);
+                return read_capped(response, MAX_ANSWER).await;
             }
 
             // Throttled: the request was turned away before anything was
@@ -1248,7 +1365,9 @@ async fn refusal(response: reqwest::Response) -> GraphError {
         .get(WWW_AUTHENTICATE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let body = response.bytes().await.unwrap_or_default();
+    let body = read_capped(response, MAX_SMALL_ANSWER)
+        .await
+        .unwrap_or_default();
     let detail = serde_json::from_slice::<ErrorBody>(&body)
         .map(|b| b.error)
         .unwrap_or(ErrorDetail {
@@ -1272,6 +1391,94 @@ async fn refusal(response: reqwest::Response) -> GraphError {
     }
 }
 
+/// An answer's body, read a piece at a time and given up on once it is
+/// larger than anything asked for could be: a server need not say how much
+/// it is about to send, and one gone wrong could send without end.
+async fn read_capped(mut response: reqwest::Response, most: usize) -> Result<Vec<u8>, GraphError> {
+    let too_large = || GraphError::Decode("an answer too large to be one".to_owned());
+    if response
+        .content_length()
+        .is_some_and(|length| length > most as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(piece) = response.chunk().await.map_err(GraphError::Network)? {
+        if body.len() + piece.len() > most {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&piece);
+    }
+
+    Ok(body)
+}
+
+/// Whether a part of a path is `.` or `..`, however it is written: `%2e`
+/// stands for a dot in one ("URL Standard", SOURCES.md: single-dot and
+/// double-dot URL path segments).
+fn is_dots(part: &str) -> bool {
+    let plain = part.to_ascii_lowercase().replace("%2e", ".");
+
+    plain == "." || plain == ".."
+}
+
+/// An id as one part of a request's path, and never more than that.
+///
+/// An id is whatever the caller of a command says it is. Written into an
+/// address as it came, one with `/`, `?`, `#` or `..` in it would make the
+/// request one for something else: an event's id that ends in
+/// `/messages/…/send` would send mail. So everything but letters, digits
+/// and `-._~=@` is percent-encoded (RFC 3986 section 2.3, and `=` and `@`
+/// from section 3.3, neither of which ends a part of a path), which leaves
+/// the ids Graph gives out and an address as they are; and an id that is
+/// empty, `.` or `..` is refused, since those are not names of anything.
+fn seg(id: &str) -> Result<String, GraphError> {
+    if id.is_empty() || is_dots(id) {
+        return Err(GraphError::Decode(format!(
+            "`{id}` is not the id of anything"
+        )));
+    }
+    let mut part = String::with_capacity(id.len());
+    for byte in id.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~=@".contains(&byte) {
+            part.push(char::from(byte));
+        } else {
+            part.push_str(&format!("%{byte:02X}"));
+        }
+    }
+
+    Ok(part)
+}
+
 fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, GraphError> {
     serde_json::from_slice(body).map_err(|e| GraphError::Decode(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_id_is_one_part_of_a_path_whatever_is_in_it() {
+        // Ids as Graph gives them out, and an address, are left as they are.
+        for plain in [
+            "AAMkAGI2TG93AAA=",
+            "AQMkADAwATM0MDAAMS0xMzQ2LWE1NjYtMDACLTAwCgBGAAAD-_x1=",
+            "event-0004.20261005",
+            "deleteditems",
+            "support@example.test",
+        ] {
+            assert_eq!(seg(plain).unwrap(), plain);
+        }
+        assert_eq!(
+            seg("../messages/draft-1/send#").unwrap(),
+            "..%2Fmessages%2Fdraft-1%2Fsend%23"
+        );
+        assert_eq!(seg("a?b&c d\\e%2e").unwrap(), "a%3Fb%26c%20d%5Ce%252e");
+        assert_eq!(seg("info+sales@x.test").unwrap(), "info%2Bsales@x.test");
+        assert_eq!(seg(".\t.").unwrap(), ".%09.");
+        for refused in ["", ".", "..", "%2e%2E", ".%2e"] {
+            assert!(seg(refused).is_err(), "{refused}");
+        }
+    }
 }
