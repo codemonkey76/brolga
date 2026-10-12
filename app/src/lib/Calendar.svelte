@@ -37,7 +37,7 @@
     import MonthGrid from "./MonthGrid.svelte";
     import EventEditor from "./EventEditor.svelte";
     import Rsvp from "./Rsvp.svelte";
-    import { Pencil, Plus, Trash } from "@lucide/svelte";
+    import { Pencil, Plus, Trash, X } from "@lucide/svelte";
     import TimeGrid from "./TimeGrid.svelte";
 
     interface Props {
@@ -431,10 +431,14 @@
                         </span>
                     </label>
                     {#if dropping === each.id}
-                        <span class="drop">
-                            <button type="button" class="danger" onclick={() => dropCalendar(each)}>Delete it and its events?</button>
-                            <button type="button" onclick={() => (dropping = null)}>Keep</button>
+                        <!-- The bin asks once more in the room it had: itself in red to go ahead, and a cross to keep the calendar. -->
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <span class="drop" onkeydown={(e) => e.key === "Escape" && (dropping = null)}>
+                            <button type="button" class="danger" aria-label={`Delete ${each.name} and its events`} title="Delete this calendar and its events" onclick={() => dropCalendar(each)}><Trash size={13} aria-hidden="true" /></button>
+                            <!-- svelte-ignore a11y_autofocus -->
+                            <button type="button" aria-label="Keep" title="Keep it" autofocus onclick={() => (dropping = null)}><X size={13} aria-hidden="true" /></button>
                         </span>
+                        <span class="sure" role="status">Delete with its events?</span>
                     {:else if !each.is_default && each.can_edit}
                         <button type="button" class="bin" aria-label={`Delete ${each.name}`} title="Delete this calendar" onclick={() => (dropping = each.id)}><Trash size={13} aria-hidden="true" /></button>
                     {/if}
@@ -685,9 +689,21 @@
 
     .drop {
         display: flex;
-        flex-wrap: wrap;
-        gap: 0.3rem;
-        font-size: 0.8rem;
+        gap: 0.2rem;
+    }
+
+    .drop button {
+        display: inline-grid;
+        place-items: center;
+        padding: 0.15rem;
+    }
+
+    /* Under the calendar's name, so that asking takes no more room across. */
+    .sure {
+        flex-basis: 100%;
+        padding-left: 1.5rem;
+        font-size: 0.75rem;
+        color: var(--danger);
     }
 
     .proposal {

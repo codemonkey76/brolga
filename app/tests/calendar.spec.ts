@@ -652,10 +652,17 @@ test("a calendar is added and deleted from the list, and the main one cannot be"
     // The main calendar has no delete; the family one has, and takes its events with it.
     await expect(list.getByRole("button", { name: "Delete Calendar" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /School pickup/ })).toBeVisible();
-    await list.getByRole("button", { name: "Delete Family" }).click();
+    // The bin asks once more where it is, and says under the name what would go. A cross, or Escape, keeps it.
+    const bin = list.getByRole("button", { name: "Delete Family", exact: true });
+    await bin.click();
+    await expect(list.getByRole("status")).toHaveText("Delete with its events?");
     await list.getByRole("button", { name: "Keep" }).click();
-    await list.getByRole("button", { name: "Delete Family" }).click();
-    await list.getByRole("button", { name: "Delete it and its events?" }).click();
+    await expect(list.getByRole("status")).toHaveCount(0);
+    await bin.click();
+    await page.keyboard.press("Escape");
+    await expect(list.getByRole("status")).toHaveCount(0);
+    await bin.click();
+    await list.getByRole("button", { name: "Delete Family and its events" }).click();
     await expect(list.getByRole("checkbox", { name: "Family" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /School pickup/ })).toHaveCount(0);
 });
