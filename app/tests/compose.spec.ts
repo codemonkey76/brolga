@@ -173,6 +173,97 @@ test("an address half typed does not stop the rest being kept, and is said befor
     await expect(to).toHaveValue("jo@example.test");
 });
 
+test("throwing a draft away stops being one click off when the focus moves on, or a few seconds pass", async ({ page }) => {
+    await page.clock.install();
+    const form = await newMessage(page);
+
+    await form.getByRole("button", { name: "Discard" }).click();
+    await expect(form.getByRole("button", { name: "Discard for good?" })).toBeVisible();
+    await form.getByRole("textbox", { name: "Subject" }).click();
+    await expect(form.getByRole("button", { name: "Discard for good?" })).toHaveCount(0);
+
+    await form.getByRole("button", { name: "Discard" }).click();
+    await expect(form.getByRole("button", { name: "Discard for good?" })).toBeVisible();
+    await page.clock.runFor(6_000);
+    await expect(form.getByRole("button", { name: "Discard for good?" })).toHaveCount(0);
+    await expect(form.getByRole("button", { name: "Discard" })).toBeVisible();
+});
+
+test("what was typed a moment before leaving a message is kept as it is left", async ({ page }) => {
+    const form = await newMessage(page);
+    await form.getByRole("textbox", { name: "Subject" }).fill("First");
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+    await page.getByRole("button", { name: "New message" }).click();
+    await expect(page.getByRole("list", { name: "Being written" }).getByRole("button")).toHaveCount(2);
+    await form.getByRole("textbox", { name: "Subject" }).fill("Second");
+    await form.getByRole("textbox", { name: "Message" }).click();
+    await page.keyboard.type("Typed just before going.");
+
+    // Straight to the other draft, sooner than what is typed would have been kept by itself.
+    await page.getByRole("list", { name: "Being written" }).getByRole("button", { name: "First" }).click();
+
+    const last = (await edits(page)).at(-1);
+    expect(last).toMatchObject({ subject: "Second" });
+    expect(String(last?.body)).toContain("Typed just before going.");
+});
+
+test("a picture deleted and brought back with undo is still sent", async ({ page }) => {
+    const form = await newMessage(page);
+    const words = form.getByRole("textbox", { name: "Message" });
+    await form.getByRole("combobox", { name: "To" }).fill("jo@example.test");
+    await words.click();
+    await form.getByLabel("Choose pictures").setInputFiles({ name: "chart.png", mimeType: "image/png", buffer: Buffer.from(PIXEL, "base64") });
+    await expect(words.locator("img")).toHaveCount(1);
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+
+    await words.click();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.press("Delete");
+    await expect(words.locator("img")).toHaveCount(0);
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+    // Its file is not thrown away while the message is still being written.
+    expect((await ran(page)).filter((r) => r.command === "mail.drafts.files.remove")).toHaveLength(0);
+
+    await page.keyboard.press("Control+z");
+    await expect(words.locator("img")).toHaveCount(1);
+    await form.getByRole("button", { name: "Send" }).click();
+
+    await expect(form).toHaveCount(0);
+    const went = (await sent(page))[0] as { body: string; files: { content_id: string | null }[] };
+    expect(went.body).toContain('src="cid:picture-1@brolga"');
+    expect(went.files.map((file) => file.content_id)).toEqual(["picture-1@brolga"]);
+});
+
+test("a file dialog that cannot be opened is said", async ({ page }) => {
+    const form = await newMessage(page, { pickFails: "The file dialog could not be opened." });
+
+    await form.getByRole("button", { name: "Attach…" }).click();
+
+    await expect(form.getByRole("alert")).toContainText("The file dialog could not be opened.");
+    await expect(form.getByRole("button", { name: "Attach…" })).toBeEnabled();
+});
+
+test("a draft from an address that is no longer offered shows who it is from", async ({ page }) => {
+    const form = await newMessage(page);
+    await form.getByRole("textbox", { name: "Subject" }).fill("From elsewhere");
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+    // The draft was set, somewhere else, to go out under an address this mailbox no longer offers.
+    await page.evaluate(() =>
+        (window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, payload: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke("execute_command", {
+            command: "mail.drafts.edit",
+            args: { account_id: "tenant-1.robin", draft_id: "draft-1", from: "sales@example.test" },
+        }),
+    );
+    await page.keyboard.press("Escape");
+    await expect(form).toHaveCount(0);
+
+    await page.getByRole("list", { name: "Being written" }).getByRole("button", { name: "From elsewhere" }).click();
+
+    const from = form.getByRole("combobox", { name: "From" });
+    await expect(from).toHaveValue("sales@example.test");
+    await expect(from.getByRole("option")).toHaveText(["robin@example.test", "sales@example.test"]);
+});
+
 test("two people suggested with one address are both listed, and the list still changes", async ({ page }) => {
     const twice = [
         { name: "Sam Taylor", address: "sam.taylor@example.test" },

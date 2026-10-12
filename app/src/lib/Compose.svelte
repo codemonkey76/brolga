@@ -1,5 +1,6 @@
 <script lang="ts">
     import { Bold, Image, Italic, Link, List, ListOrdered, Paperclip, Send, Underline, X } from "@lucide/svelte";
+    import { onDestroy } from "svelte";
     import { chooseFiles, say } from "./commands";
     import { isAddress, lineOf, peopleOn } from "./people-line";
     import Recipients from "./Recipients.svelte";
@@ -19,7 +20,9 @@
     let { accountId, draft, fromChoices = [], onDone, onKept }: Props = $props();
 
     // svelte-ignore state_referenced_locally
-    let from = $state(draft.from ?? fromChoices[0] ?? "");
+    let from = $state(fromChoices.find((each) => each.toLowerCase() === draft.from?.toLowerCase()) ?? draft.from ?? fromChoices[0] ?? "");
+    /** The addresses offered, and the one the draft is from where it is none of them: a draft says who it is from, whoever that is. */
+    const froms = $derived(from && !fromChoices.includes(from) ? [...fromChoices, from] : fromChoices);
 
     /** Kept at once: who it is from is not something to lose to a slow save. */
     async function chooseFrom(address: string) {
@@ -229,7 +232,12 @@
         if (choosing) return;
         choosing = true;
         try {
-            const paths = await chooseFiles().catch(() => []);
+            let paths: string[] = [];
+            try {
+                paths = await chooseFiles();
+            } catch (failure) {
+                problem = say(failure);
+            }
             for (const path of paths) {
                 try {
                     files = [...files, await attachFile(accountId, start.id, path)];
@@ -258,6 +266,8 @@
     let problem = $state<string | null>(start.state === "failed" ? `This was not sent. ${start.error ?? ""}` : null);
     let sending = $state(false);
     let sure = $state(false);
+    /** Lets go of `sure` a few seconds after it was asked, so a later click does not throw the draft away unasked. */
+    let unsure: ReturnType<typeof setTimeout> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let first = $state<HTMLInputElement>();
     let words = $state<HTMLTextAreaElement>();
@@ -289,7 +299,6 @@
         kept = "keeping";
         try {
             await editDraft(accountId, start.id, { to: whole(to), cc: whole(cc), bcc: whole(bcc), subject, body, format });
-            await dropUnused();
             if (kept === "keeping") kept = "kept";
             problem = null;
             onKept();
@@ -310,6 +319,7 @@
                 problem = `\`${unfinished[0]}\` is not an email address. Finish it or take it out before sending.`;
                 return;
             }
+            await dropUnused();
             await sendDraft(accountId, start.id);
             onDone("sent");
         } catch (failure) {
@@ -320,22 +330,35 @@
     }
 
     async function close() {
-        if (await keep()) onDone("closed");
+        if (!(await keep())) return;
+        await dropUnused();
+        onDone("closed");
     }
 
     async function discard() {
+        clearTimeout(unsure);
         if (!sure) {
             sure = true;
+            unsure = setTimeout(() => (sure = false), 5_000);
             return;
         }
         clearTimeout(timer);
         try {
             await discardDraft(accountId, start.id);
+            // There is nothing left to keep.
+            kept = "kept";
             onDone("discarded");
         } catch (failure) {
             problem = say(failure);
         }
     }
+
+    // Leaving the message another way than by Close, with something typed
+    // in the last moment: it is kept now, not when the timer would have.
+    onDestroy(() => {
+        clearTimeout(unsure);
+        if (kept === "changed") keep();
+    });
 
     /** The boxes of one line each, and then the words: where Enter goes on to. */
     const FIELDS = 'input[type="text"], textarea, [contenteditable="true"]';
@@ -379,7 +402,7 @@
         <button type="button" class="primary" disabled={sending} title="Ctrl+Enter" onclick={send}><Send size={16} aria-hidden="true" />{sending ? "Sending…" : "Send"}</button>
         <button type="button" disabled={choosing} onclick={attach}><Paperclip size={16} aria-hidden="true" />{choosing ? "Choosing…" : "Attach…"}</button>
         <button type="button" onclick={close} title="Escape">Close</button>
-        <button type="button" class:danger={sure} onclick={discard}>{sure ? "Discard for good?" : "Discard"}</button>
+        <button type="button" class:danger={sure} onclick={discard} onblur={() => (sure = false)}>{sure ? "Discard for good?" : "Discard"}</button>
         <span class="kept muted" role="status">{kept === "kept" ? "Draft kept on this computer" : kept === "keeping" ? "Keeping…" : ""}</span>
     </div>
 
@@ -390,11 +413,11 @@
         <p class="muted unfinished" role="status">`{unfinished[0]}` is not an email address yet, so it is not kept with the draft.</p>
     {/if}
 
-    {#if fromChoices.length > 1}
+    {#if froms.length > 1}
         <label>
             <span>From</span>
             <select aria-label="From" value={from} onchange={(event) => chooseFrom(event.currentTarget.value)}>
-                {#each fromChoices as each (each)}
+                {#each froms as each (each)}
                     <option value={each}>{each}</option>
                 {/each}
             </select>
