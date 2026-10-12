@@ -73,6 +73,24 @@ test("signing in with a code shows the code and where to enter it", async ({ pag
     await picture(page, "sign-in-with-code");
 });
 
+test("a sign-in being waited for can be given up on, in the browser or with a code", async ({ page }) => {
+    await withCore(page, { signInHangs: true });
+    const browser = page.getByRole("button", { name: "Sign in with your browser" });
+
+    await browser.click();
+    await expect(page.getByText("Finish signing in in your browser")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByText("Finish signing in in your browser")).toHaveCount(0);
+    await expect(browser).toBeEnabled();
+
+    await page.getByRole("button", { name: "Sign in with a code instead" }).click();
+    await expect(page.getByLabel("Sign-in code")).toHaveText("ABCD1234");
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByLabel("Sign-in code")).toHaveCount(0);
+    await expect(browser).toBeEnabled();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
 test("an account that needs it can sign in again, as itself", async ({ page }) => {
     await withCore(page, { accounts: [robin, sam], signIn: { ...sam, needs_sign_in: false } });
     await page.getByRole("button", { name: "Accounts" }).click();
