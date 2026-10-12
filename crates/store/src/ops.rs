@@ -365,7 +365,8 @@ fn set(
 
 /// After a sync has written the server's values for some messages, put back
 /// on top of them whatever is still waiting to be sent, so a change made
-/// here is not seen to flick back before it reaches the server.
+/// here is not seen to flick back before it reaches the server. What the
+/// server said is kept as what the waiting change was made from.
 pub(crate) fn keep_queued_edits(
     transaction: &Transaction<'_>,
     message_ids: &[&str],
@@ -389,6 +390,22 @@ pub(crate) fn keep_queued_edits(
         let Some(column) = column(kind) else {
             continue;
         };
+        // What the server now says is what the oldest waiting change would
+        // go back to, were it refused or undone: not what was here when
+        // the change was made, which the server has since moved on from.
+        // The value found is the server's only if it is neither what that
+        // change asks for (the server has had it, and the answer is still
+        // to come) nor the newest waiting value (which is what was put
+        // back last time, where the sync did not speak of the property).
+        let mut server_says = transaction.prepare(&format!(
+            "UPDATE ops SET before = (SELECT CAST({column} AS TEXT) FROM messages WHERE id = ?1)
+             WHERE id = (SELECT min(id) FROM ops WHERE message_id = ?1 AND kind = ?2 AND state = 'queued')
+               AND EXISTS (SELECT 1 FROM messages WHERE id = ?1)
+               AND value <> (SELECT CAST({column} AS TEXT) FROM messages WHERE id = ?1)
+               AND (SELECT CAST({column} AS TEXT) FROM messages WHERE id = ?1) <>
+                   (SELECT value FROM ops WHERE message_id = ?1 AND kind = ?2 AND state = 'queued'
+                    ORDER BY id DESC LIMIT 1)"
+        ))?;
         let mut statement = transaction.prepare(&format!(
             "UPDATE messages SET {column} = o.value
              FROM (SELECT value FROM ops WHERE message_id = ?1 AND kind = ?2 AND state = 'queued'
@@ -396,6 +413,7 @@ pub(crate) fn keep_queued_edits(
              WHERE messages.id = ?1"
         ))?;
         for id in message_ids {
+            server_says.execute(params![id, kind])?;
             statement.execute(params![id, kind])?;
         }
     }
@@ -555,6 +573,70 @@ mod tests {
         db.apply_messages("inbox", &[server("1", false)], &[], "next", Round::Finished)
             .unwrap();
         assert!(!read(&db, "1"));
+    }
+
+    #[test]
+    fn a_refused_change_goes_back_to_what_the_server_has_since_said() {
+        let db = db();
+        let flagged = |status: &str| MessageChange {
+            flag_status: Some(status.to_owned()),
+            ..server("1", false)
+        };
+        db.queue_edit("a", &ids(&["1"]), &MessageEdit::Flag("flagged".to_owned()))
+            .unwrap();
+
+        // While it waits, the message is marked complete in another mail
+        // program, and a sync says so.
+        db.apply_messages(
+            "inbox",
+            &[flagged("complete")],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        assert_eq!(db.message("1").unwrap().unwrap().flag_status, "flagged");
+
+        db.op_refused(db.queued_ops().unwrap()[0].id, "No.")
+            .unwrap();
+        assert_eq!(db.message("1").unwrap().unwrap().flag_status, "complete");
+    }
+
+    #[test]
+    fn a_sync_that_shows_a_waiting_change_made_leaves_what_it_would_be_undone_to() {
+        let db = db();
+        db.queue_edit("a", &ids(&["1"]), &MessageEdit::Read(true))
+            .unwrap();
+        db.queue_edit("b", &ids(&["1"]), &MessageEdit::Read(false))
+            .unwrap();
+        db.queue_edit("c", &ids(&["2"]), &MessageEdit::Read(true))
+            .unwrap();
+
+        // The server has had the first change to each, though the answers
+        // have not come; and a sync that does not speak of a property says
+        // nothing of it.
+        db.apply_messages(
+            "inbox",
+            &[
+                server("1", true),
+                MessageChange {
+                    id: "2".to_owned(),
+                    ..MessageChange::default()
+                },
+            ],
+            &[],
+            "next",
+            Round::Finished,
+        )
+        .unwrap();
+        for op in db.queued_ops().unwrap() {
+            db.op_sent(op.id).unwrap();
+        }
+
+        assert_eq!(db.undo("c", "undo-c").unwrap(), 1);
+        assert!(!read(&db, "2"));
+        assert_eq!(db.undo("b", "undo-b").unwrap(), 1);
+        assert!(read(&db, "1"));
     }
 
     #[test]

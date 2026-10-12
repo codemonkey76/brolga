@@ -344,6 +344,36 @@ const STEPS: &[&str] = &[
     UPDATE sync_state SET link = NULL, generation = generation + 1, reconciling = 1
     WHERE resource LIKE 'messages:%';
 ",
+    "
+    -- The id the server gave a draft's file on its copy of the draft, once
+    -- that is known.
+    ALTER TABLE draft_files ADD COLUMN attachment_id TEXT;
+
+    -- What was attached to the server's copy of a draft before any file
+    -- went to it from here: a JSON array of ids, written before the first
+    -- goes. Those are not this computer's to count as its own or take off.
+    ALTER TABLE drafts ADD COLUMN attachments_before TEXT;
+    -- A draft that was part-way through sending when this was added is
+    -- carried on with as it would have been: nothing counts as there first.
+    UPDATE drafts SET attachments_before = '[]'
+    WHERE id IN (SELECT draft_id FROM draft_files WHERE upload_tried = 1);
+
+    -- Files taken off a draft that may be on the server's copy of it, to
+    -- be taken off there too before it is sent.
+    CREATE TABLE draft_files_removed (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        draft_id TEXT NOT NULL REFERENCES drafts (id) ON DELETE CASCADE,
+        attachment_id TEXT,
+        name TEXT NOT NULL
+    ) STRICT;
+
+    -- Copies of drafts on the server that are no longer wanted, and are
+    -- not among the messages here to be moved as one of those would be.
+    CREATE TABLE draft_discards (
+        server_id TEXT PRIMARY KEY NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

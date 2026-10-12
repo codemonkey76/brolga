@@ -693,11 +693,13 @@ dependencies = [
 name = "brolga-ops"
 version = "0.1.10"
 dependencies = [
+ "brolga-calendar",
  "brolga-fake-graph",
  "brolga-graph",
  "brolga-mail",
  "brolga-store",
  "futures",
+ "jiff",
  "serde_json",
  "tokio",
 ]

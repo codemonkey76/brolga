@@ -81,6 +81,14 @@ struct Inner {
     lose_next_send_answer: bool,
     /// Attach the next file and then answer as if it had failed.
     lose_next_attachment_answer: bool,
+    /// Answer the next request to attach a file as busy, and attach nothing.
+    drop_next_attachment: bool,
+    /// How many files requests have attached, to give each an id of its own.
+    attachments_made: u32,
+    /// Requests whose method and path hold these words wait at this gate.
+    hold: Option<(String, Arc<tokio::sync::Semaphore>)>,
+    /// How many requests have come to the gate.
+    held: u32,
     /// Make the next move and then answer as if it had failed.
     lose_next_move_answer: bool,
     /// The next event is made, and the caller is told the server is busy.
@@ -265,13 +273,14 @@ impl FakeGraph {
             )
             .route(
                 "/v1.0/me/messages/{message}/attachments/{attachment}",
-                get(attachment),
+                get(attachment).delete(delete_attachment),
             )
             .route(
                 "/v1.0/me/messages/{message}/attachments/{attachment}/$value",
                 get(attachment_content),
             )
             .fallback(not_built)
+            .layer(middleware::from_fn_with_state(shared.clone(), hold))
             // Room for a piece of a large file, or a small file in base64.
             .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
             // Outermost last: a request is logged, then faulted, then checked for a token.
@@ -642,6 +651,45 @@ impl FakeGraph {
         lock(&self.shared).lose_next_attachment_answer = true;
     }
 
+    /// The next request to attach a file is answered as busy, and nothing
+    /// is attached.
+    pub fn drop_next_attachment(&self) {
+        lock(&self.shared).drop_next_attachment = true;
+    }
+
+    /// From now on, make every request whose method and path hold these
+    /// words (`POST /v1.0/me/messages`, or only `/send`) wait until it is
+    /// let go, so that a test can act while the request is on its way. No
+    /// other request is answered while one waits.
+    pub fn hold(&self, words: &str) -> Held {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut inner = lock(&self.shared);
+        inner.hold = Some((words.to_owned(), gate.clone()));
+        inner.held = 0;
+
+        Held {
+            gate,
+            shared: self.shared.clone(),
+        }
+    }
+
+    /// The moment a message's flag is due, in UTC, as a request last set it.
+    pub fn flag_due_at(&self, message: &str) -> Option<String> {
+        lock(&self.shared)
+            .mailbox
+            .stored(message)
+            .and_then(|m| m.flag_due_at)
+    }
+
+    /// What is attached to a message, as the server has it.
+    pub fn attached(&self, message: &str) -> Vec<FakeAttachment> {
+        lock(&self.shared)
+            .mailbox
+            .stored(message)
+            .map(|m| m.attachments)
+            .unwrap_or_default()
+    }
+
     /// The next draft is sent, but the answer to the request is an error.
     pub fn lose_next_send_answer(&self) {
         lock(&self.shared).lose_next_send_answer = true;
@@ -788,6 +836,50 @@ async fn record(State(shared): State<Shared>, request: Request, next: Next) -> R
     lock(&shared)
         .requests
         .push(format!("{} {}", request.method(), request.uri().path()));
+    next.run(request).await
+}
+
+/// Requests made to wait by [`FakeGraph::hold`].
+pub struct Held {
+    gate: Arc<tokio::sync::Semaphore>,
+    shared: Shared,
+}
+
+impl Held {
+    /// Wait until a request has come to the gate and is waiting there.
+    pub async fn reached(&self) {
+        while lock(&self.shared).held == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    }
+
+    /// Let the waiting request go on, and hold no more.
+    pub fn release(self) {
+        lock(&self.shared).hold = None;
+        self.gate.add_permits(1024);
+    }
+}
+
+async fn hold(State(shared): State<Shared>, request: Request, next: Next) -> Response {
+    let gate = {
+        let mut inner = lock(&shared);
+        let asked = format!("{} {}", request.method(), request.uri().path());
+        let gate = inner
+            .hold
+            .as_ref()
+            .filter(|(words, _)| asked.contains(words.as_str()))
+            .map(|(_, gate)| gate.clone());
+        if gate.is_some() {
+            inner.held += 1;
+        }
+        gate
+    };
+    if let Some(gate) = gate
+        && let Ok(permit) = gate.acquire().await
+    {
+        permit.forget();
+    }
+
     next.run(request).await
 }
 
@@ -2020,12 +2112,28 @@ async fn update_message(
                     .as_str()
                     .and_then(|at| at.get(..10))
                     .map(str::to_owned);
+                // "dateTimeTimeZone resource type": a time by the clock in
+                // the zone named, which is kept as the moment it is.
+                let due_at = flag["dueDateTime"]["dateTime"].as_str().and_then(|at| {
+                    brolga_calendar::utc(
+                        at,
+                        flag["dueDateTime"]["timeZone"].as_str().unwrap_or("UTC"),
+                    )
+                });
+                // Given as null, a date is taken away; not given, it is left.
+                let no_date = flag.get("dueDateTime").is_some_and(Value::is_null);
                 inner.mailbox.set_flag(&message, &status);
                 // A flag that is cleared or done has no day; one set afresh keeps the day it had.
-                if status != "flagged" {
-                    inner.mailbox.edit(&message, |m| m.flag_due = None);
+                if status != "flagged" || no_date {
+                    inner.mailbox.edit(&message, |m| {
+                        m.flag_due = None;
+                        m.flag_due_at = None;
+                    });
                 } else if due.is_some() {
-                    inner.mailbox.edit(&message, |m| m.flag_due = due);
+                    inner.mailbox.edit(&message, |m| {
+                        m.flag_due = due;
+                        m.flag_due_at = due_at;
+                    });
                 }
             }
             _ => {
@@ -2077,7 +2185,14 @@ async fn add_attachment(
         );
     }
 
+    if std::mem::take(&mut inner.drop_next_attachment) {
+        // Not attached, and the caller is told to come back.
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
+    inner.attachments_made += 1;
     let file = FakeAttachment {
+        id: format!("attached-{}", inner.attachments_made),
         name: attachment["name"].as_str().unwrap_or_default().to_owned(),
         content_type: attachment["contentType"]
             .as_str()
@@ -2088,6 +2203,15 @@ async fn add_attachment(
         kind: "file",
         content_id: attachment["contentId"].as_str().map(str::to_owned),
     };
+    // "Add attachment": 201 and the attachment, with the id it was given.
+    let answer = json!({
+        "id": file.id,
+        "name": file.name,
+        "contentType": file.content_type,
+        "size": file.content.len(),
+        "isInline": file.inline,
+        "contentId": file.content_id,
+    });
     inner.mailbox.edit(&message, |m| {
         // A picture within the body does not make a message one "with attachments".
         m.has_attachments |= !file.inline;
@@ -2098,11 +2222,7 @@ async fn add_attachment(
         return StatusCode::BAD_GATEWAY.into_response();
     }
 
-    (
-        StatusCode::CREATED,
-        axum::Json(json!({ "id": "attachment" })),
-    )
-        .into_response()
+    (StatusCode::CREATED, axum::Json(answer)).into_response()
 }
 
 /// A large file on its way up: which draft it is for, what it will be
@@ -2224,7 +2344,10 @@ async fn upload_piece(
     let Some(done) = inner.uploads.remove(&session) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    inner.attachments_made += 1;
+    let id = format!("attached-{}", inner.attachments_made);
     let file = FakeAttachment {
+        id: id.clone(),
         name: done.name,
         content_type: "application/octet-stream".to_owned(),
         content: done.received,
@@ -2237,11 +2360,15 @@ async fn upload_piece(
         m.has_attachments = true;
     });
 
-    (
-        StatusCode::CREATED,
-        [(header::LOCATION, format!("{}/attachment", inner.base))],
-    )
-        .into_response()
+    // "Attach large files to Outlook messages or events": the last piece is
+    // answered with where the attachment now is, its id within the address.
+    let root = inner.base.trim_end_matches("/v1.0");
+    let location = format!(
+        "{root}/api/v2.0/Users('robin@example.test')/Messages('{}')/Attachments('{id}')",
+        done.message
+    );
+
+    (StatusCode::CREATED, [(header::LOCATION, location)]).into_response()
 }
 
 /// Recipients as Graph writes them, read into `(name, address)`.
@@ -2513,6 +2640,25 @@ async fn attachment(
             "itemNotFound",
             "There is no such attachment.",
         ),
+    }
+}
+
+/// "Delete attachment" (SOURCES.md): taken off the message, answered 204.
+async fn delete_attachment(
+    State(shared): State<Shared>,
+    Path((message, attachment)): Path<(String, String)>,
+) -> Response {
+    if lock(&shared)
+        .mailbox
+        .remove_attachment(&message, &attachment)
+    {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such attachment.",
+        )
     }
 }
 

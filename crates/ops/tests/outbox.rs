@@ -576,3 +576,399 @@ async fn a_draft_thrown_away_elsewhere_is_still_here_and_can_still_be_sent() {
     assert!(f.graph.sent()[0].body_html.contains("Still wanted."));
     assert_eq!(f.graph.sent().len(), 1);
 }
+
+/// A draft with a subject and words and nobody to send it to, so that the
+/// server takes its files and then will not send it.
+fn to_nobody() -> DraftEdit {
+    DraftEdit {
+        subject: Some("Lunch".to_owned()),
+        body: Some("Friday?".to_owned()),
+        ..DraftEdit::default()
+    }
+}
+
+#[tokio::test]
+async fn a_send_taken_back_while_it_is_on_its_way_does_not_go() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    // The outbox has the draft in hand and is filling in the server's copy
+    // when the send is cancelled and the words are changed.
+    let held = f.graph.hold("PATCH /v1.0/me/messages/");
+
+    let (drained, ()) = tokio::join!(f.outbox.drain(), async {
+        held.reached().await;
+        assert!(f.db.unqueue_draft(&draft.id).unwrap());
+        let change = DraftEdit {
+            body: Some("Not Friday after all.".to_owned()),
+            ..DraftEdit::default()
+        };
+        assert!(f.db.edit_draft(&draft.id, &change).unwrap());
+        held.release();
+    });
+
+    assert_eq!(drained.unwrap().sent, 0);
+    assert!(f.graph.sent().is_empty(), "a cancelled message was sent");
+    let kept = f.db.draft(&draft.id).unwrap().unwrap();
+    assert_eq!(
+        (kept.state.as_str(), kept.body.as_str()),
+        ("editing", "Not Friday after all.")
+    );
+
+    // Sent again, it goes once, as it now reads.
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.sent().len(), 1);
+    assert!(
+        f.graph.sent()[0]
+            .body_html
+            .contains("Not Friday after all.")
+    );
+}
+
+#[tokio::test]
+async fn a_send_taken_back_and_queued_again_goes_as_it_was_last_written() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    let held = f.graph.hold("PATCH /v1.0/me/messages/");
+
+    let (drained, ()) = tokio::join!(f.outbox.drain(), async {
+        held.reached().await;
+        assert!(f.db.unqueue_draft(&draft.id).unwrap());
+        let change = DraftEdit {
+            body: Some("Saturday?".to_owned()),
+            ..DraftEdit::default()
+        };
+        assert!(f.db.edit_draft(&draft.id, &change).unwrap());
+        assert!(f.db.queue_draft(&draft.id).unwrap());
+        held.release();
+    });
+
+    // The pass that had the older words in hand does not send them.
+    assert_eq!(drained.unwrap().sent, 0);
+    assert!(f.graph.sent().is_empty(), "the older words were sent");
+
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.sent().len(), 1);
+    assert!(f.graph.sent()[0].body_html.contains("Saturday?"));
+}
+
+#[tokio::test]
+async fn a_message_whose_sending_cannot_be_confirmed_is_kept() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    f.graph.lose_next_send_answer();
+    assert_eq!(f.outbox.drain().await.unwrap().waiting, 1);
+    // Whatever became of it, the message is no longer on the server to be
+    // asked about.
+    let server_id = f.db.draft(&draft.id).unwrap().unwrap().server_id.unwrap();
+    f.graph.delete_message(&server_id);
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!((drained.sent, drained.refused), (0, 1));
+    let kept = f.db.draft(&draft.id).unwrap().unwrap();
+    assert_eq!(kept.state, "failed");
+    assert_eq!(kept.body, "Friday?");
+    assert!(
+        kept.error.as_deref().unwrap().contains("Check Sent Items"),
+        "{:?}",
+        kept.error
+    );
+}
+
+#[tokio::test]
+async fn a_file_taken_off_a_draft_is_taken_off_the_servers_copy_too() {
+    let f = fixture().await;
+    let draft = f.db.create_draft("new", None, &to_nobody()).unwrap();
+    let wrong =
+        f.db.attach_to_draft(&draft.id, "wrong.txt", "text/plain", b"Not this one.")
+            .unwrap()
+            .unwrap();
+    f.db.attach_to_draft(&draft.id, "right.txt", "text/plain", b"This one.")
+        .unwrap();
+    f.db.attach_inline_to_draft(&draft.id, "logo.png", "image/png", b"picture")
+        .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    // Both files reach the server's copy before it refuses to send.
+    assert_eq!(f.outbox.drain().await.unwrap().refused, 1);
+    let server_id = f.db.draft(&draft.id).unwrap().unwrap().server_id.unwrap();
+    assert_eq!(f.graph.attached(&server_id).len(), 3);
+
+    let picture = f.db.draft_files(&draft.id).unwrap()[2].id;
+    assert!(f.db.detach_from_draft(&draft.id, wrong.id).unwrap());
+    assert!(f.db.detach_from_draft(&draft.id, picture).unwrap());
+    f.db.edit_draft(&draft.id, &to("jo@example.test")).unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+
+    let sent = &f.graph.sent()[0];
+    let names: Vec<&str> = sent.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["right.txt"], "a file taken off was sent");
+}
+
+#[tokio::test]
+async fn a_file_taken_off_after_a_lost_answer_is_not_sent() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    let wrong =
+        f.db.attach_to_draft(&draft.id, "notes.txt", "text/plain", b"Not this one.")
+            .unwrap()
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    // The file is attached, and the answer saying so is lost.
+    f.graph.lose_next_attachment_answer();
+    assert_eq!(f.outbox.drain().await.unwrap().waiting, 1);
+
+    // The send is taken back, and a file of the same name put in its place.
+    assert!(f.db.unqueue_draft(&draft.id).unwrap());
+    assert!(f.db.detach_from_draft(&draft.id, wrong.id).unwrap());
+    f.db.attach_to_draft(&draft.id, "notes.txt", "text/plain", b"This one, yes.")
+        .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+
+    let sent = &f.graph.sent()[0];
+    assert_eq!(sent.attachments.len(), 1, "{:?}", sent.attachments);
+    assert_eq!(sent.attachments[0].content, b"This one, yes.");
+}
+
+#[tokio::test]
+async fn files_go_again_when_the_servers_copy_has_to_be_made_again() {
+    let f = fixture().await;
+    let draft = f.db.create_draft("new", None, &to_nobody()).unwrap();
+    f.db.attach_to_draft(&draft.id, "notes.txt", "text/plain", b"Some notes.")
+        .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().refused, 1);
+    let server_id = f.db.draft(&draft.id).unwrap().unwrap().server_id.unwrap();
+    assert_eq!(f.graph.attached(&server_id).len(), 1);
+
+    // The server's copy, file and all, is deleted in another mail program.
+    f.graph.delete_message(&server_id);
+    f.db.edit_draft(&draft.id, &to("jo@example.test")).unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    let mut passes = 0;
+    while f.graph.sent().is_empty() {
+        f.outbox.drain().await.unwrap();
+        passes += 1;
+        assert!(passes < 5, "never sent");
+    }
+
+    let sent = &f.graph.sent()[0];
+    assert_eq!(sent.attachments.len(), 1, "the file was left behind");
+    assert_eq!(sent.attachments[0].content, b"Some notes.");
+}
+
+#[tokio::test]
+async fn a_file_already_on_the_draft_is_not_taken_for_one_attached_here() {
+    let f = fixture().await;
+    // A draft written in another mail program, with a file on it.
+    let mut elsewhere = FakeMessage::new("Report", "Robin", "robin@example.test", "").attach(
+        "report.pdf",
+        "application/pdf",
+        b"The first report",
+    );
+    elsewhere.is_draft = true;
+    elsewhere.to = vec![("Jo".to_owned(), "jo@example.test".to_owned())];
+    let server_id = f.graph.add_message(&f.graph.folder_id("drafts"), elsewhere);
+    let draft =
+        f.db.adopt_draft(&server_id, &to("jo@example.test"))
+            .unwrap();
+    // Carried on with here, and given a second file of the same name and size.
+    f.db.attach_to_draft(
+        &draft.id,
+        "report.pdf",
+        "application/pdf",
+        b"Another report..",
+    )
+    .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    // The first try at attaching it does not reach the server.
+    f.graph.drop_next_attachment();
+    assert_eq!(f.outbox.drain().await.unwrap().waiting, 1);
+
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+
+    let sent = &f.graph.sent()[0];
+    let contents: Vec<&[u8]> = sent
+        .attachments
+        .iter()
+        .map(|a| a.content.as_slice())
+        .collect();
+    assert_eq!(
+        contents,
+        [&b"The first report"[..], &b"Another report.."[..]],
+        "the file attached here was left behind"
+    );
+}
+
+#[tokio::test]
+async fn a_message_moved_here_and_deleted_for_good_elsewhere_is_forgotten() {
+    let f = fixture().await;
+    let archive = f.graph.folder_id("archive");
+    f.db.queue_edit("a", &f.ids[..1], &MessageEdit::Move(archive))
+        .unwrap();
+    f.db.queue_edit("b", &f.ids[..1], &MessageEdit::Read(true))
+        .unwrap();
+    f.graph.delete_message(&f.ids[0]);
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!((drained.waiting, drained.refused), (0, 0));
+    assert!(
+        f.db.message(&f.ids[0]).unwrap().is_none(),
+        "it is still shown"
+    );
+    let (queued, failed) = f.db.outbox().unwrap();
+    assert_eq!((queued, failed.len()), (0, 0));
+}
+
+#[tokio::test]
+async fn a_move_to_a_folder_deleted_elsewhere_is_taken_back_and_reported() {
+    let f = fixture().await;
+    let inbox = f.graph.folder_id("inbox");
+    let gone = f.graph.add_folder("Projects", None);
+    f.db.queue_edit("a", &f.ids[..1], &MessageEdit::Move(gone.clone()))
+        .unwrap();
+    f.graph.remove_folder(&gone);
+
+    let drained = f.outbox.drain().await.unwrap();
+
+    assert_eq!((drained.sent, drained.refused), (0, 1));
+    assert_eq!(f.db.message(&f.ids[0]).unwrap().unwrap().folder_id, inbox);
+    let (_, failed) = f.db.outbox().unwrap();
+    assert_eq!(failed[0].message_id, f.ids[0]);
+}
+
+#[tokio::test]
+async fn taking_the_day_off_a_flag_reaches_the_server() {
+    let f = fixture().await;
+    let one = &f.ids[..1];
+    f.db.queue_edit("a", one, &MessageEdit::Flag("flagged".to_owned()))
+        .unwrap();
+    f.db.queue_edit("a", one, &MessageEdit::FlagDue("2026-10-20".to_owned()))
+        .unwrap();
+    f.outbox.drain().await.unwrap();
+    assert_eq!(f.graph.flag_due(&f.ids[0]).as_deref(), Some("2026-10-20"));
+
+    f.db.queue_edit("b", one, &MessageEdit::FlagDue(String::new()))
+        .unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+
+    assert_eq!(f.graph.flag_due(&f.ids[0]), None);
+    assert_eq!(f.graph.flag(&f.ids[0]).as_deref(), Some("flagged"));
+}
+
+#[tokio::test]
+async fn a_flags_day_is_sent_as_that_day_where_its_writer_is() {
+    let f = fixture().await;
+    let one = &f.ids[..1];
+    let client = || {
+        Arc::new(
+            GraphClient::new(
+                f.graph.base_url(),
+                Arc::new(Token("token.Mail.ReadWrite")),
+                RetryPolicy::impatient(),
+            )
+            .unwrap(),
+        )
+    };
+    f.db.queue_edit("a", one, &MessageEdit::Flag("flagged".to_owned()))
+        .unwrap();
+    f.db.queue_edit("a", one, &MessageEdit::FlagDue("2026-10-20".to_owned()))
+        .unwrap();
+
+    // Ten hours ahead of UTC all year: the day begins the evening before.
+    let brisbane = Outbox::new(client(), f.db.clone()).in_zone("Australia/Brisbane");
+    brisbane.drain().await.unwrap();
+    assert_eq!(
+        f.graph.flag_due_at(&f.ids[0]).as_deref(),
+        Some("2026-10-19T14:00:00Z")
+    );
+
+    // Four hours behind in October: it begins in the small hours.
+    f.db.queue_edit("b", one, &MessageEdit::FlagDue("2026-10-21".to_owned()))
+        .unwrap();
+    let new_york = Outbox::new(client(), f.db.clone()).in_zone("America/New_York");
+    new_york.drain().await.unwrap();
+    assert_eq!(
+        f.graph.flag_due_at(&f.ids[0]).as_deref(),
+        Some("2026-10-21T04:00:00Z")
+    );
+}
+
+#[tokio::test]
+async fn a_draft_thrown_away_while_its_copy_is_being_made_leaves_no_copy_behind() {
+    let f = fixture().await;
+    let drafts = f.graph.folder_id("drafts");
+    let in_drafts = || {
+        f.graph
+            .messages()
+            .values()
+            .filter(|(folder, _, _)| *folder == drafts)
+            .count()
+    };
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    // The request that makes the server's copy is on its way when the
+    // draft is thrown away here.
+    let held = f.graph.hold("POST /v1.0/me/messages");
+
+    let (drained, ()) = tokio::join!(f.outbox.drain(), async {
+        held.reached().await;
+        assert!(f.db.discard_draft(&draft.id).unwrap());
+        held.release();
+    });
+    assert_eq!(drained.unwrap().saved, 0);
+    f.outbox.drain().await.unwrap();
+
+    assert_eq!(in_drafts(), 0, "a copy nobody has was left in Drafts");
+    let deleted = f.graph.folder_id("deleteditems");
+    assert_eq!(
+        f.graph
+            .messages()
+            .values()
+            .filter(|(folder, _, _)| *folder == deleted)
+            .count(),
+        1
+    );
+    assert!(f.db.draft_discards().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_large_file_taken_off_a_draft_is_taken_off_the_servers_copy_by_its_id() {
+    let f = fixture().await;
+    let draft = f.db.create_draft("new", None, &to_nobody()).unwrap();
+    let big: Vec<u8> = (0..3 * 1024 * 1024 + 5).map(|n| (n % 251) as u8).collect();
+    let file =
+        f.db.attach_to_draft(&draft.id, "survey.zip", "application/zip", &big)
+            .unwrap()
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().refused, 1);
+    // The answer to the last piece said which attachment it had become.
+    let server_id = f.db.draft(&draft.id).unwrap().unwrap().server_id.unwrap();
+    assert_eq!(
+        f.db.draft_files(&draft.id).unwrap()[0].attachment_id,
+        Some(f.graph.attached(&server_id)[0].id.clone())
+    );
+
+    assert!(f.db.detach_from_draft(&draft.id, file.id).unwrap());
+    f.db.edit_draft(&draft.id, &to("jo@example.test")).unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+
+    assert!(f.graph.sent()[0].attachments.is_empty());
+}

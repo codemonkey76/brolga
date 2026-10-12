@@ -33,6 +33,9 @@ pub struct FakeMessage {
     pub flag: String,
     /// The day a flag is due, `YYYY-MM-DD`.
     pub flag_due: Option<String>,
+    /// The moment a flag is due as a request last set it, in UTC:
+    /// `2026-10-19T14:00:00Z`.
+    pub flag_due_at: Option<String>,
     /// The number of the last thing done with it, where anything has been:
     /// 102 a reply, 103 a reply to all, 104 forwarding it ([MS-OXOMSG]).
     pub last_verb: Option<u32>,
@@ -65,6 +68,9 @@ pub struct FakeMeeting {
 
 #[derive(Clone, Debug)]
 pub struct FakeAttachment {
+    /// Its id on the message, which it keeps when another is taken off. One
+    /// attached as a message is built is numbered by its place, from nought.
+    pub id: String,
     pub name: String,
     pub content_type: String,
     pub content: Vec<u8>,
@@ -88,6 +94,7 @@ impl FakeMessage {
             conversation: None,
             flag: "notFlagged".to_owned(),
             flag_due: None,
+            flag_due_at: None,
             last_verb: None,
             last_verb_at: None,
             is_draft: false,
@@ -108,6 +115,7 @@ impl FakeMessage {
     /// Attach a file.
     pub fn attach(mut self, name: &str, content_type: &str, content: &[u8]) -> Self {
         self.attachments.push(FakeAttachment {
+            id: format!("attachment-{}", self.attachments.len()),
             name: name.to_owned(),
             content_type: content_type.to_owned(),
             content: content.to_vec(),
@@ -129,6 +137,7 @@ impl FakeMessage {
         content: &[u8],
     ) -> Self {
         self.attachments.push(FakeAttachment {
+            id: format!("attachment-{}", self.attachments.len()),
             name: name.to_owned(),
             content_type: content_type.to_owned(),
             content: content.to_vec(),
@@ -142,6 +151,7 @@ impl FakeMessage {
     /// Attach a link to a file kept elsewhere, which has no contents.
     pub fn attach_link(mut self, name: &str) -> Self {
         self.attachments.push(FakeAttachment {
+            id: format!("attachment-{}", self.attachments.len()),
             name: name.to_owned(),
             content_type: "application/octet-stream".to_owned(),
             content: Vec::new(),
@@ -586,11 +596,10 @@ impl Mailbox {
             .message
             .attachments
             .iter()
-            .enumerate()
-            .map(|(at, a)| {
+            .map(|a| {
                 let mut value = json!({
                     "@odata.type": format!("#microsoft.graph.{}Attachment", a.kind),
-                    "id": format!("attachment-{at}"),
+                    "id": a.id,
                     "name": a.name,
                     "contentType": a.content_type,
                     "size": a.content.len(),
@@ -610,20 +619,34 @@ impl Mailbox {
 
     /// One attachment as Graph gives it when asked for by id: whole.
     pub fn attachment_json(&self, message: &str, attachment: &str) -> Option<Value> {
-        let at: usize = attachment.strip_prefix("attachment-")?.parse().ok()?;
+        self.attachments(message, true)?["value"]
+            .as_array()?
+            .iter()
+            .find(|each| each["id"] == attachment)
+            .cloned()
+    }
 
-        self.attachments(message, true)?["value"].get(at).cloned()
+    /// Take an attachment off a message. False if it has no such attachment.
+    pub fn remove_attachment(&mut self, message: &str, attachment: &str) -> bool {
+        if self.attachment(message, attachment).is_none() {
+            return false;
+        }
+        self.edit(message, |m| {
+            m.attachments.retain(|each| each.id != attachment);
+            m.has_attachments = m.attachments.iter().any(|each| !each.inline);
+        });
+
+        true
     }
 
     /// One attachment: its kind, content type and contents.
     pub fn attachment(&self, message: &str, attachment: &str) -> Option<FakeAttachment> {
-        let at: usize = attachment.strip_prefix("attachment-")?.parse().ok()?;
-
         self.messages
             .get(message)?
             .message
             .attachments
-            .get(at)
+            .iter()
+            .find(|each| each.id == attachment)
             .cloned()
     }
 
