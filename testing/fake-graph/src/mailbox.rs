@@ -50,6 +50,8 @@ pub struct FakeMessage {
     pub cc: Vec<(String, String)>,
     pub bcc: Vec<(String, String)>,
     pub attachments: Vec<FakeAttachment>,
+    /// Extended properties it was made with: `(id, value)`.
+    pub properties: Vec<(String, String)>,
 }
 
 /// A message about a meeting.
@@ -104,6 +106,7 @@ impl FakeMessage {
             cc: Vec::new(),
             bcc: Vec::new(),
             attachments: Vec::new(),
+            properties: Vec::new(),
         }
     }
 
@@ -540,6 +543,27 @@ impl Mailbox {
             .collect();
         ids.sort();
         ids.truncate(top);
+
+        ids
+    }
+
+    /// The messages of a folder that have an extended property of this id
+    /// and value, by their ids.
+    pub fn message_ids_with(&self, folder: &str, property: &str, value: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .messages
+            .iter()
+            .filter(|(_, stored)| stored.folder == folder)
+            .filter(|(_, stored)| {
+                stored
+                    .message
+                    .properties
+                    .iter()
+                    .any(|(id, held)| id == property && held.eq_ignore_ascii_case(value))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
 
         ids
     }
