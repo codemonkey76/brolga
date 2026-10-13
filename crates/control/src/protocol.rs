@@ -24,6 +24,11 @@ pub enum Call {
         #[serde(default = "empty_object")]
         args: Value,
     },
+    /// Asks what answers to show that it is the client of the user who is
+    /// calling, where the channel's own place does not show it.
+    Prove {
+        challenge: String,
+    },
 }
 
 fn empty_object() -> Value {

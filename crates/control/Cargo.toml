@@ -9,11 +9,17 @@ license.workspace = true
 
 [dependencies]
 brolga-commands.workspace = true
+getrandom.workspace = true
 interprocess.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+# For the pipe's access list, which the system reads as wide characters.
+[target.'cfg(windows)'.dependencies]
+widestring = "1"
 
 [lints]
 workspace = true

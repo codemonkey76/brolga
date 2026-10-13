@@ -120,6 +120,14 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | MS-OXOMSG, Email Object Protocol: PidTagLastVerbExecuted | https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-oxomsg/87a8b6b8-59a4-4859-9dcd-8b0f36e3d729 | What was last done with a message, property 0x1081: 102 a reply to its sender, 103 a reply to all, 104 forwarding it |
 | OpenID Connect Core 1.0 | https://openid.net/specs/openid-connect-core-1_0.html | Section 3.1.3.7: an ID token received straight from the token endpoint over TLS need not have its signature checked |
 
+## Windows (Microsoft Learn)
+
+| Document | URL | Used for |
+|---|---|---|
+| Named Pipe Security and Access Rights | https://learn.microsoft.com/windows/win32/ipc/named-pipe-security-and-access-rights | What a named pipe allows by default (read access to Everyone), and that its security descriptor governs both ends, in `crates/control` |
+| Security Descriptor String Format | https://learn.microsoft.com/windows/win32/secauthz/security-descriptor-string-format | The form of the control pipe's access list, and `P` for a list that inherits nothing |
+| SID Strings | https://learn.microsoft.com/windows/win32/secauthz/sid-strings | `OW`, the owner rights identifier, which the pipe's one entry allows |
+
 ## Tauri
 
 | Document | URL | Used for |

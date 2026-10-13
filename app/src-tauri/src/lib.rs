@@ -385,7 +385,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // done first, before any data is opened or there is a window to show.
     let endpoint = default_endpoint()?;
     let server = match tauri::async_runtime::block_on(Server::bind(&endpoint)) {
-        Ok(server) => server,
+        Ok(server) => Some(server),
+        // The channel's name is held by something that is not this user's
+        // Brolga, as another user of a shared computer can arrange. Nothing
+        // is sent to it. Brolga runs without the channel, and says so.
+        Err(ServerError::Taken) => None,
         // The copy already running is brought forward, and given the link.
         Err(ServerError::AlreadyRunning) => {
             return tauri::async_runtime::block_on(async {
@@ -476,7 +480,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !(background && staying.on_close()) {
                 bring_forward(app.handle());
             }
-            tauri::async_runtime::spawn(server.run(control));
+            match server {
+                Some(server) => {
+                    tauri::async_runtime::spawn(server.run(control));
+                }
+                None => {
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Brolga's command line and agents are switched off")
+                        .body(
+                            "Another program on this computer is using the name Brolga listens \
+                             on, so the command line and agents cannot reach Brolga. Mail, \
+                             calendar and contacts work as usual.",
+                        )
+                        .show();
+                }
+            }
             if link.is_some() {
                 tauri::async_runtime::spawn(async move {
                     let _ = opening
