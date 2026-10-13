@@ -428,9 +428,11 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const inFolder = (id: unknown) => mail.filter((m) => m.folder_id === id);
         const pinned = new Set<unknown>(core.pinned ?? []);
         const trusted = new Set<string | null>();
+        /** Where folders have been moved to since: id to the id of what each is now in. */
+        const moved = new Map<string, string>();
         const folder = (id: string, name: string, well_known: string | null, parent_id = "root", depth = 0) => ({
             id,
-            parent_id,
+            parent_id: moved.get(id) ?? parent_id,
             name,
             well_known,
             favourite: pinned.has(id),
@@ -478,7 +480,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.folders.list": async (args) => {
                 // A shared mailbox's folders are its own: none has the id of one of the account's.
                 const own = String(args.account_id).includes("~") ? "shared-" : "";
-                const answer = {
+                const listed = {
                     account_id: args.account_id,
                     folders: [
                         folder(`${own}inbox`, "Inbox", "inbox"),
@@ -493,9 +495,21 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                         folder(`${own}website`, "Website", null, `${own}projects`, 1),
                     ],
                 };
+                // As the core gives them: a folder is followed by what is inside it, each a step deeper.
+                type Listed = (typeof listed.folders)[number];
+                const under = (parent: string | null, depth: number): Listed[] =>
+                    listed.folders
+                        .filter((each) => (listed.folders.some((other) => other.id === each.parent_id) ? each.parent_id : null) === parent)
+                        .flatMap((each) => [{ ...each, depth }, ...under(each.id, depth + 1)]);
+                const answer = { ...listed, folders: under(null, 0) };
                 // A mailbox that is slow to say what folders it has: the answer waits until the test lets it go.
                 if (slow === args.account_id) await new Promise<void>((go) => waiting.push(go));
                 return answer;
+            },
+            "mail.folders.move": (args) => {
+                const top = args.destination_id === "msgfolderroot";
+                moved.set(String(args.folder_id), top ? "root" : String(args.destination_id));
+                return { account_id: args.account_id, folder_id: args.folder_id, parent_id: top ? null : args.destination_id, moved: true };
             },
             "mail.folders.set_favourite": (args) => {
                 if (args.favourite) pinned.add(args.folder_id);

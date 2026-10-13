@@ -74,6 +74,8 @@ struct Inner {
     mailbox: mailbox::Mailbox,
     /// How many moves have been made.
     moves: u32,
+    /// How many times a folder has been moved.
+    folder_moves: u32,
     /// Every message sent, as it was when it went, oldest first.
     sent: Vec<FakeMessage>,
     drafts_created: u32,
@@ -240,6 +242,10 @@ impl FakeGraph {
             )
             .route("/v1.0/me/mailFolders/delta", get(folders_delta))
             .route("/v1.0/me/mailFolders/{folder}", get(folder))
+            .route(
+                "/v1.0/me/mailFolders/{folder}/move",
+                axum::routing::post(move_folder),
+            )
             .route(
                 "/v1.0/me/mailFolders/{folder}/messages/delta",
                 get(messages_delta),
@@ -748,6 +754,11 @@ impl FakeGraph {
     /// How many moves the server has made.
     pub fn moves(&self) -> u32 {
         lock(&self.shared).moves
+    }
+
+    /// How many times the server has moved a folder.
+    pub fn folder_moves(&self) -> u32 {
+        lock(&self.shared).folder_moves
     }
 
     /// From now on refuse, for good, every change to this message.
@@ -2107,6 +2118,36 @@ async fn folder(State(shared): State<Shared>, Path(folder): Path<String>) -> Res
             "itemNotFound",
             "There is no such folder.",
         ),
+    }
+}
+
+/// "mailFolder: move" (SOURCES.md): answered with 200 and the folder.
+async fn move_folder(
+    State(shared): State<Shared>,
+    Path(folder): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    if inner.mailbox.folder(&folder).is_none() {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such folder.",
+        );
+    }
+    let destination = body["destinationId"].as_str().unwrap_or_default();
+    if !inner.mailbox.move_folder(&folder, destination) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "fakeGraphRefused",
+            "The folder cannot be moved there.",
+        );
+    }
+    inner.folder_moves += 1;
+
+    match inner.mailbox.folder(&folder) {
+        Some(folder) => axum::Json(folder).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

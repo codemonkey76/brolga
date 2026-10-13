@@ -333,6 +333,40 @@ impl Mailbox {
         }
     }
 
+    /// "mailFolder: move" (SOURCES.md): a folder goes into another, named
+    /// by its id or a well-known name, with all it holds; `msgfolderroot`
+    /// is the top of the mailbox. False where it cannot be: there is no
+    /// such place, or the place is the folder itself or within it.
+    pub fn move_folder(&mut self, id: &str, to: &str) -> bool {
+        let to = if to.eq_ignore_ascii_case("msgfolderroot") {
+            self.root.clone()
+        } else {
+            match self.folder_id(to) {
+                Some(found) => found,
+                None => return false,
+            }
+        };
+        let mut above = Some(to.clone());
+        while let Some(each) = above {
+            if each == id {
+                return false;
+            }
+            above = self.folders.get(&each).map(|folder| folder.parent.clone());
+        }
+        let Some(folder) = self.folders.get_mut(id) else {
+            return false;
+        };
+        folder.parent = to;
+        let seq = self.tick();
+        self.folder_log.push(Change {
+            seq,
+            id: id.to_owned(),
+            removed: false,
+        });
+
+        true
+    }
+
     pub fn remove_folder(&mut self, id: &str) {
         if self.folders.remove(id).is_some() {
             self.messages.retain(|_, stored| stored.folder != id);

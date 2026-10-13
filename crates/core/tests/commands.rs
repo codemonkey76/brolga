@@ -136,6 +136,8 @@ async fn every_command_is_described_and_its_examples_run() {
         graph.add_message(&graph.folder_id("drafts"), elsewhere),
         "message-000009"
     );
+    // A folder of one's own making, for `mail.folders.move`.
+    assert_eq!(graph.add_folder("Projects", None), "folder-000010");
     let registry = core_with_mail(&identity, Some(&graph), Some(CLIENT_ID)).registry();
     // The mail examples need an account with mail in it, which no example
     // can arrange for itself.

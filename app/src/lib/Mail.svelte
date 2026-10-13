@@ -2,9 +2,10 @@
     import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash, X } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { type Asked, chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, SEARCH_MOST, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, SEARCH_MOST, canHold, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveFolder, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
+    import MoveFolder from "./MoveFolder.svelte";
     import ReadingPane from "./ReadingPane.svelte";
     import Toolbar from "./Toolbar.svelte";
     import { type Answer, type Proposed, respond } from "./calendar";
@@ -688,6 +689,69 @@
         }
     }
 
+    /** A folder of one's own making, in a mailbox that is at Microsoft 365, can be put inside another. */
+    const movable = (each: Folder) => !each.well_known && !account?.archive;
+
+    /** The folder being dragged, and the one it is over that could take it. */
+    let dragging = $state<Folder | null>(null);
+    let over = $state<string | null>(null);
+    /** The folder to be moved, once dropped or picked from its menu: into where it was dropped, or to where is then chosen. */
+    let moving = $state<{ folder: Folder; into: Folder | null; busy: boolean; problem: string | null } | null>(null);
+    /** The menu for a folder, where it was asked for. */
+    let menu = $state<{ folder: Folder; x: number; y: number } | null>(null);
+
+    function dragStart(event: DragEvent, each: Folder) {
+        if (!movable(each) || !event.dataTransfer) return event.preventDefault();
+        event.dataTransfer.effectAllowed = "move";
+        // WebKit starts no drag that carries nothing.
+        event.dataTransfer.setData("text/plain", each.name);
+        dragging = each;
+    }
+
+    function dragOver(event: DragEvent, each: Folder) {
+        if (!dragging || !canHold(folders, dragging, each)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        over = each.id;
+    }
+
+    function dragLeave(event: DragEvent, each: Folder) {
+        const to = event.relatedTarget;
+        if (over === each.id && !(to instanceof Node && (event.currentTarget as Node).contains(to))) over = null;
+    }
+
+    /** Dropped on a folder that can take it: nothing moves until it is agreed to. */
+    function drop(event: DragEvent, each: Folder) {
+        const folder = dragging;
+        dragging = over = null;
+        if (!folder || !canHold(folders, folder, each)) return;
+        event.preventDefault();
+        moving = { folder, into: each, busy: false, problem: null };
+    }
+
+    function showMenu(event: MouseEvent, each: Folder) {
+        event.preventDefault();
+        // Asked for with the keyboard, it opens by the folder and not at a pointer that is somewhere else.
+        const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+        const pointed = event.clientX > 0 || event.clientY > 0;
+        menu = { folder: each, x: pointed ? event.clientX : box.left + 24, y: pointed ? event.clientY : box.bottom };
+    }
+
+    async function moveFolderTo(destination: string) {
+        if (!accountId || !moving || moving.busy) return;
+        const { folder } = moving;
+        moving = { ...moving, busy: true, problem: null };
+        try {
+            await moveFolder(accountId, folder.id, destination);
+            moving = null;
+            // What it went into is opened, to show it there.
+            if (collapsed.includes(destination)) toggle(destination);
+            await relist();
+        } catch (failure) {
+            if (moving) moving = { ...moving, busy: false, problem: say(failure) };
+        }
+    }
+
     /**
      * The other mailboxes that go with the one shown: its account, and those
      * shared with it. Each has its folders under this one's, closed up as
@@ -1109,6 +1173,11 @@
     });
 
     function keydown(event: KeyboardEvent) {
+        if (menu && event.key === "Escape") {
+            event.preventDefault();
+            menu = null;
+            return;
+        }
         // Another screen is shown, or a question or the palette over the window has the keys, not the mail behind it.
         if (!shown || inDialog(event)) return;
         if (event.key === "F9") {
@@ -1215,7 +1284,7 @@
     });
 </script>
 
-<svelte:window onkeydown={keydown} />
+<svelte:window onkeydown={keydown} onclick={() => (menu = null)} onblur={() => (menu = null)} />
 
 <div class="mailview" hidden={!shown}>
 <Toolbar
@@ -1275,7 +1344,18 @@
 
         {#snippet row(each: Folder, parent: boolean, open: boolean, indent: number)}
             {@const Shape = FOLDER_ICONS[each.well_known ?? ""] ?? FolderIcon}
-            <li style:padding-left="{indent * 0.9}rem">
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <li
+                style:padding-left="{indent * 0.9}rem"
+                class:into={over === each.id}
+                draggable={movable(each)}
+                ondragstart={(event) => dragStart(event, each)}
+                ondragover={(event) => dragOver(event, each)}
+                ondragleave={(event) => dragLeave(event, each)}
+                ondrop={(event) => drop(event, each)}
+                ondragend={() => (dragging = over = null)}
+                oncontextmenu={(event) => showMenu(event, each)}
+            >
                 {#if parent}
                     <button type="button" class="twist" aria-expanded={open} aria-label="{open ? 'Collapse' : 'Expand'} {each.name}" onclick={() => toggle(each.id)}>
                         {open ? "▾" : "▸"}
@@ -1341,6 +1421,27 @@
             {/if}
         {/each}
     </nav>
+
+    {#if menu}
+        {@const each = menu.folder}
+        <ul class="menu" role="menu" aria-label="Folder {each.name}" style:left="{menu.x}px" style:top="{menu.y}px">
+            <li role="none">
+                <button
+                    type="button"
+                    role="menuitem"
+                    disabled={!movable(each)}
+                    title={movable(each) ? undefined : `${each.name} stays where it is`}
+                    onclick={() => (moving = { folder: each, into: null, busy: false, problem: null })}
+                    {@attach (node) => node.focus()}
+                >
+                    Move to…
+                </button>
+            </li>
+        </ul>
+    {/if}
+    {#if moving}
+        <MoveFolder folder={moving.folder} {folders} into={moving.into} busy={moving.busy} problem={moving.problem} onMove={moveFolderTo} onCancel={() => (moving = null)} />
+    {/if}
 
     <div class="list">
         <div class="bar">
@@ -1647,6 +1748,39 @@
     li:hover .pin,
     .pin:focus-visible {
         opacity: 1;
+    }
+
+    /* Where a folder being dragged would go if it were let go here. */
+    li.into {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+        border-radius: 0.3rem;
+    }
+
+    .menu {
+        position: fixed;
+        z-index: 40;
+        min-width: 10rem;
+        margin: 0;
+        padding: 0.3rem;
+        list-style: none;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        box-shadow: 0 6px 18px color-mix(in srgb, CanvasText 18%, transparent);
+    }
+
+    .menu button {
+        width: 100%;
+        border: 0;
+        background: none;
+        padding: 0.3rem 0.5rem;
+        text-align: left;
+    }
+
+    .menu button:hover:not(:disabled),
+    .menu button:focus-visible {
+        background: var(--raised);
     }
 
     .name {

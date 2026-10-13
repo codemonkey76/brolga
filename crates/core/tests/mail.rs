@@ -170,6 +170,119 @@ async fn a_folder_can_be_pinned_and_unpinned() {
     assert!(refused.is_err());
 }
 
+/// The folders as `(name, depth)`, in the order they are listed.
+async fn tree(f: &Fixture) -> Vec<(String, u64)> {
+    f.run("mail.folders.list", json!({})).await["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|each| each["well_known"].is_null())
+        .map(|each| {
+            (
+                each["name"].as_str().unwrap().to_owned(),
+                each["depth"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_folder_is_moved_into_another_with_what_is_inside_it() {
+    let f = Fixture::signed_in().await;
+    let clients = f.graph.add_folder("Clients", None);
+    let projects = f.graph.add_folder("Projects", None);
+    let harbour = f.graph.add_folder("Harbour", Some(&projects));
+    f.graph.add_message(
+        &harbour,
+        message("Piling", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    f.sync().await;
+
+    let moved = f
+        .run(
+            "mail.folders.move",
+            json!({ "folder_id": projects, "destination_id": clients }),
+        )
+        .await;
+
+    assert_eq!(moved["moved"], true);
+    assert_eq!(moved["parent_id"], json!(clients));
+    assert_eq!(f.graph.folders()[&projects].1, clients);
+    let under = [
+        ("Clients".to_owned(), 0),
+        ("Projects".to_owned(), 1),
+        ("Harbour".to_owned(), 2),
+    ];
+    assert_eq!(tree(&f).await, under);
+    // The server says the same when next it is asked, and the mail is still there.
+    f.sync().await;
+    assert_eq!(tree(&f).await, under);
+    let inside = f
+        .run("mail.messages.list", json!({ "folder_id": harbour }))
+        .await;
+    assert_eq!(inside["messages"][0]["subject"], "Piling");
+
+    // Asked again, there is nothing to do, and the server is not asked.
+    let again = f
+        .run(
+            "mail.folders.move",
+            json!({ "folder_id": projects, "destination_id": clients }),
+        )
+        .await;
+    assert_eq!(again["moved"], false);
+    assert_eq!(f.graph.folder_moves(), 1);
+
+    // And back to the top of the mailbox, or into a standard folder.
+    let top = f
+        .run(
+            "mail.folders.move",
+            json!({ "folder_id": projects, "destination_id": "msgfolderroot" }),
+        )
+        .await;
+    assert_eq!(top["parent_id"], Value::Null);
+    assert_eq!(tree(&f).await[1], ("Projects".to_owned(), 0));
+    let filed = f
+        .run(
+            "mail.folders.move",
+            json!({ "folder_id": clients, "destination_id": "inbox" }),
+        )
+        .await;
+    assert_eq!(filed["parent_id"], json!(f.inbox));
+}
+
+#[tokio::test]
+async fn a_folder_is_not_moved_where_it_cannot_go() {
+    let f = Fixture::signed_in().await;
+    let projects = f.graph.add_folder("Projects", None);
+    let harbour = f.graph.add_folder("Harbour", Some(&projects));
+    f.sync().await;
+
+    let refused = |folder: String, destination: String| {
+        let registry = f.registry.clone();
+        async move {
+            registry
+                .execute(
+                    "mail.folders.move",
+                    json!({ "folder_id": folder, "destination_id": destination }),
+                )
+                .await
+                .is_err()
+        }
+    };
+
+    // Into itself, into a folder inside it, to nowhere; nor a folder that is not there, nor the inbox.
+    assert!(refused(projects.clone(), projects.clone()).await);
+    assert!(refused(projects.clone(), harbour.clone()).await);
+    assert!(refused(projects.clone(), "no-such-folder".to_owned()).await);
+    assert!(refused("no-such-folder".to_owned(), projects.clone()).await);
+    assert!(refused(f.inbox.clone(), projects.clone()).await);
+    assert_eq!(f.graph.folder_moves(), 0);
+    assert_eq!(
+        tree(&f).await,
+        [("Projects".to_owned(), 0), ("Harbour".to_owned(), 1)]
+    );
+}
+
 #[tokio::test]
 async fn a_folder_can_be_read_as_conversations() {
     let f = Fixture::signed_in().await;

@@ -130,6 +130,29 @@ export const listFolders = async (account_id: string) =>
 export const setFavourite = (account_id: string, folder_id: string, favourite: boolean) =>
     execute<{ favourite: boolean }>("mail.folders.set_favourite", { account_id, folder_id, favourite });
 
+/** Graph's name for the top of a mailbox, where the inbox and its peers are. */
+export const TOP = "msgfolderroot";
+
+/** Put a folder inside another, named by its id, or at the top of the mailbox. Everything in it goes with it. */
+export const moveFolder = (account_id: string, folder_id: string, destination_id: string) =>
+    execute<{ parent_id: string | null; moved: boolean }>("mail.folders.move", { account_id, folder_id, destination_id });
+
+/**
+ * Whether a folder may be put inside another: not one of the folders every
+ * mailbox has, not into itself or a folder inside it, and not where it is
+ * already. `all` is the mailbox's folders in tree order.
+ */
+export function canHold(all: Folder[], moving: Folder, into: Folder): boolean {
+    if (moving.well_known || into.id === moving.id || into.id === moving.parent_id) return false;
+    const at = all.findIndex((each) => each.id === moving.id);
+    if (at < 0) return false;
+    // In tree order, what is inside a folder follows it, deeper than it is.
+    for (let next = at + 1; next < all.length && all[next].depth > moving.depth; next += 1) {
+        if (all[next].id === into.id) return false;
+    }
+    return true;
+}
+
 export type Sort = "newest" | "oldest" | "sender" | "subject";
 
 /** How a folder is laid out in the list. */

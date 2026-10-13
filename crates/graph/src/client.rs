@@ -815,6 +815,29 @@ impl GraphClient {
         Ok(())
     }
 
+    /// Move a folder, with everything in it, into another folder, named by
+    /// its id or by a well-known name; `msgfolderroot` is the top of the
+    /// mailbox ("mailFolder: move", SOURCES.md). Gives back the folder as it
+    /// is once moved.
+    ///
+    /// Not safe to repeat blindly, as a message's move is not: a request
+    /// that gets no answer is not sent again here.
+    pub async fn move_folder(
+        &self,
+        folder_id: &str,
+        destination: &str,
+    ) -> Result<MailFolder, GraphError> {
+        let folder_id = seg(folder_id)?;
+        let url = format!("{}/me/mailFolders/{folder_id}/move", self.base);
+        let body = serde_json::json!({ "destinationId": destination });
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&body), false)
+                .await?,
+        )
+    }
+
     /// Create a draft from a message object: subject, body and recipients
     /// ("Create message", SOURCES.md). Gives back the draft as created.
     ///

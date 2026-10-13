@@ -993,6 +993,18 @@ impl AccountDb {
         Ok(changed > 0)
     }
 
+    /// Put a folder inside another, or at the top of the mailbox with no
+    /// parent named. What is in it goes with it. Gives back whether there
+    /// is such a folder.
+    pub fn set_folder_parent(&self, id: &str, parent: Option<&str>) -> Result<bool, StoreError> {
+        let changed = self.connection().execute(
+            "UPDATE folders SET parent_id = ?2 WHERE id = ?1",
+            params![id, parent],
+        )?;
+
+        Ok(changed > 0)
+    }
+
     /// A window of a folder's messages, newest first.
     pub fn messages(
         &self,
@@ -1753,6 +1765,36 @@ mod tests {
         db.apply_folders(&[], &["projects".to_owned()], "next", Round::Finished)
             .unwrap();
         assert!(db.folders().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_folder_put_inside_another_is_listed_under_it_with_what_it_holds() {
+        let db = with_folders(&[
+            folder("clients", "root"),
+            folder("projects", "root"),
+            folder("harbour", "projects"),
+        ]);
+
+        assert!(db.set_folder_parent("projects", Some("clients")).unwrap());
+        assert!(!db.set_folder_parent("no-such-folder", None).unwrap());
+        assert_eq!(
+            shape(&db),
+            [
+                ("clients".to_owned(), 0),
+                ("projects".to_owned(), 1),
+                ("harbour".to_owned(), 2)
+            ]
+        );
+
+        assert!(db.set_folder_parent("harbour", None).unwrap());
+        assert_eq!(
+            shape(&db),
+            [
+                ("clients".to_owned(), 0),
+                ("projects".to_owned(), 1),
+                ("harbour".to_owned(), 0)
+            ]
+        );
     }
 
     fn mail(

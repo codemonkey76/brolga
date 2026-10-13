@@ -1,5 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
-import { bulk, inbox, lunch, notified, ran, robin, sam, sent, told, withCore } from "./core";
+import { bulk, inbox, lunch, notified, ran, refuse, robin, sam, sent, told, withCore } from "./core";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -390,6 +390,92 @@ test("a pinned folder is kept at the top, and can be unpinned", async ({ page })
     await favourites.getByRole("button", { name: "Unpin Archive" }).click();
     await expect(favourites.getByRole("listitem")).toHaveCount(1);
     expect((await ran(page)).filter((r) => r.command === "mail.folders.set_favourite")).toHaveLength(2);
+});
+
+/** A folder's line in the tree, which is what is dragged and dropped on. */
+const line = (page: Page, name: string) => tree(page).getByRole("listitem").filter({ has: page.getByRole("button", { name: new RegExp(`^${name}`) }) });
+const moves = async (page: Page) => (await ran(page)).filter((r) => r.command === "mail.folders.move").map((r) => r.args);
+
+test("a folder dropped on another is moved into it once that is agreed to", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    const asking = page.getByRole("dialog", { name: "Move Website into Archive?" });
+
+    await line(page, "Website").dragTo(line(page, "Archive"));
+    await expect(asking).toBeVisible();
+    await asking.getByRole("button", { name: "Cancel" }).click();
+    await expect(asking).toHaveCount(0);
+    expect(await moves(page)).toHaveLength(0);
+
+    await line(page, "Website").dragTo(line(page, "Archive"));
+    await asking.getByRole("button", { name: "Move" }).click();
+
+    await expect(asking).toHaveCount(0);
+    expect(await moves(page)).toEqual([{ account_id: robin.id, folder_id: "website", destination_id: "archive" }]);
+    // It is listed inside the folder it went into.
+    await expect(tree(page).getByRole("listitem")).toHaveText([/Inbox/, /Drafts/, /Sent Items/, /Deleted Items/, /Archive/, /Website/, /Junk Email/, /Projects/, /Harbour upgrade/, /Surveys/]);
+});
+
+test("a folder is not dropped where it cannot go", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+
+    // Into a folder inside it, where it is already, or a standard folder anywhere.
+    await line(page, "Projects").dragTo(line(page, "Surveys"));
+    await line(page, "Surveys").dragTo(line(page, "Harbour upgrade"));
+    await line(page, "Inbox").dragTo(line(page, "Projects"));
+
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(await moves(page)).toHaveLength(0);
+});
+
+test("a folder's menu moves it to a folder chosen from the tree", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+
+    await folder(page, "Harbour upgrade").click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Move to…" }).click();
+    const choosing = page.getByRole("dialog", { name: "Move Harbour upgrade to" });
+
+    // Not into itself, what is inside it, or where it is.
+    await expect(choosing.getByRole("radio", { name: "Harbour upgrade" })).toBeDisabled();
+    await expect(choosing.getByRole("radio", { name: "Surveys" })).toBeDisabled();
+    await expect(choosing.getByRole("radio", { name: "Projects" })).toBeDisabled();
+    await expect(choosing.getByRole("button", { name: "Move" })).toBeDisabled();
+
+    await choosing.getByRole("radio", { name: "Top of the mailbox" }).check();
+    await choosing.getByRole("button", { name: "Move" }).click();
+    await expect(choosing).toHaveCount(0);
+
+    await folder(page, "Harbour upgrade").click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Move to…" }).click();
+    await choosing.getByRole("radio", { name: "Inbox" }).check();
+    await choosing.getByRole("button", { name: "Move" }).click();
+    await expect(choosing).toHaveCount(0);
+
+    expect(await moves(page)).toEqual([
+        { account_id: robin.id, folder_id: "harbour", destination_id: "msgfolderroot" },
+        { account_id: robin.id, folder_id: "harbour", destination_id: "inbox" },
+    ]);
+});
+
+test("a standard folder's menu does not offer to move it, and Escape puts a menu away", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+
+    await folder(page, "Inbox").click({ button: "right" });
+    await expect(page.getByRole("menuitem", { name: "Move to…" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+});
+
+test("a folder that could not be moved says why and stays where it was", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await refuse(page, "mail.folders.move");
+
+    await line(page, "Website").dragTo(line(page, "Archive"));
+    const asking = page.getByRole("dialog", { name: "Move Website into Archive?" });
+    await asking.getByRole("button", { name: "Move" }).click();
+
+    await expect(asking.getByRole("alert")).toHaveText("Microsoft 365 could not be reached.");
+    await asking.getByRole("button", { name: "Cancel" }).click();
+    await expect(tree(page).getByRole("listitem").nth(9)).toHaveText(/Website/);
 });
 
 test("as conversations, a thread is one line and opens with all its messages", async ({ page }) => {

@@ -79,6 +79,14 @@ Changes you make offline, and messages you send, wait in the outbox and go
 when the connection is back. If Microsoft 365 refuses one, Brolga says which
 and why, and nothing is lost: an unsent message stays in Drafts.
 
+## Moving a folder
+
+Drag a folder of your own onto another folder to put it inside, with
+everything in it; you are asked before anything moves. Or right-click the
+folder, choose **Move to…** and pick where it goes, the top of the mailbox
+included. Inbox, Sent Items and the other standard folders stay where they
+are. The move is made in Microsoft 365, so it needs a connection.
+
 ## Shared mailboxes and calendars
 
 Microsoft 365 does not list the mailboxes you have been given access to, so

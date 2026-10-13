@@ -106,6 +106,17 @@ struct Favourite {
 }
 
 #[derive(Deserialize)]
+struct MoveFolder {
+    account_id: Option<String>,
+    folder_id: String,
+    destination_id: String,
+}
+
+/// Graph's name for the top of a mailbox: the folder the inbox and its
+/// peers are in ("mailFolder resource type", SOURCES.md).
+const TOP: &str = "msgfolderroot";
+
+#[derive(Deserialize)]
 struct Messages {
     account_id: Option<String>,
     folder_id: String,
@@ -368,6 +379,106 @@ async fn set_favourite(context: Context, args: Favourite) -> Result<Value, Comma
     Ok(
         json!({ "account_id": account.id, "folder_id": args.folder_id, "favourite": args.favourite }),
     )
+}
+
+/// Put a folder inside another, or at the top of the mailbox. It is done at
+/// Microsoft 365 first and here once that has answered: a folder is not
+/// shown where the mailbox does not have it.
+async fn move_folder(context: Context, args: MoveFolder) -> Result<Value, CommandError> {
+    let account = context
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = context.open(&account).await.map_err(failed)?;
+    if mailbox.archive {
+        return Err(failed(
+            "An archive is kept as it was read in: its folders stay where they are.",
+        ));
+    }
+    let folders = mailbox.db.folders().map_err(failed)?;
+    let moving = folders
+        .iter()
+        .find(|each| each.id == args.folder_id)
+        .ok_or_else(|| {
+            failed(format!(
+                "There is no folder `{}` in this account.",
+                args.folder_id
+            ))
+        })?;
+    if moving.well_known.is_some() {
+        return Err(failed(format!(
+            "{} is one of the folders every mailbox has, and stays where it is.",
+            moving.name
+        )));
+    }
+    let destination = if args.destination_id.eq_ignore_ascii_case(TOP) {
+        None
+    } else {
+        let found = folders
+            .iter()
+            .find(|each| {
+                each.id == args.destination_id
+                    || each.well_known.as_deref() == Some(args.destination_id.as_str())
+            })
+            .ok_or_else(|| {
+                failed(format!(
+                    "There is no folder `{}` in this account.",
+                    args.destination_id
+                ))
+            })?;
+        Some(found)
+    };
+
+    // A folder cannot go into itself, nor into a folder that is inside it.
+    // The parents are followed no further than there are folders, so a loop
+    // of them cannot hang this.
+    let mut above = destination;
+    for _ in 0..folders.len() {
+        let Some(each) = above else { break };
+        if each.id == moving.id {
+            return Err(failed(format!(
+                "{} cannot be moved into itself or into a folder inside it.",
+                moving.name
+            )));
+        }
+        above = each
+            .parent_id
+            .as_deref()
+            .and_then(|parent| folders.iter().find(|other| other.id == parent));
+    }
+
+    // A parent that is not one of the folders listed is the top of the mailbox.
+    let listed = |id: &str| folders.iter().any(|each| each.id == id);
+    let now = moving.parent_id.as_deref().filter(|&id| listed(id));
+    let wanted = destination.map(|each| each.id.as_str());
+    if now == wanted {
+        return Ok(json!({
+            "account_id": account.id, "folder_id": moving.id, "parent_id": now, "moved": false
+        }));
+    }
+
+    let moved = mailbox
+        .graph
+        .move_folder(&moving.id, wanted.unwrap_or(TOP))
+        .await
+        .map_err(|error| {
+            if error.is_transient() {
+                failed(format!(
+                    "Microsoft 365 could not be reached, so {} may not have been moved. Folders are moved there, and only while it can be reached; the next sync shows where it is.",
+                    moving.name
+                ))
+            } else {
+                failed(error)
+            }
+        })?;
+    let parent = moved.parent_folder_id.as_deref().or(wanted);
+    mailbox
+        .db
+        .set_folder_parent(&moving.id, parent)
+        .map_err(failed)?;
+
+    Ok(json!({
+        "account_id": account.id, "folder_id": moving.id, "parent_id": parent.filter(|&id| listed(id)), "moved": true
+    }))
 }
 
 async fn messages(context: Context, args: Messages) -> Result<Value, CommandError> {
@@ -1196,6 +1307,43 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             examples: vec![json!({ "folder_id": "inbox", "favourite": true })],
         },
         handler(&context, set_favourite),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.folders.move".to_owned(),
+            title: "Move a folder".to_owned(),
+            description: "Put a folder inside another folder, with every message and folder in it. `folder_id` is the folder's id from mail.folders.list. \
+                          `destination_id` is the id of the folder to put it in, or a standard folder's well-known name such as inbox, or `msgfolderroot` for the top of the mailbox. \
+                          The standard folders themselves stay where they are, and a folder cannot go into itself or into a folder inside it. \
+                          The move is made at Microsoft 365, so it needs a connection; moving the folder back undoes it. `moved` is false when it was already there."
+                .to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "folder_id": { "type": "string" },
+                    "destination_id": { "type": "string", "description": "A folder's id, a well-known name such as inbox, or msgfolderroot for the top of the mailbox." }
+                },
+                "required": ["folder_id", "destination_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": { "type": "string" },
+                    "folder_id": { "type": "string" },
+                    "parent_id": { "type": ["string", "null"], "description": "The folder it is in now, or null at the top of the mailbox." },
+                    "moved": { "type": "boolean" }
+                },
+                "required": ["account_id", "folder_id", "parent_id", "moved"]
+            }),
+            examples: vec![json!({ "folder_id": "folder-000010", "destination_id": "inbox" })],
+        },
+        handler(&context, move_folder),
     )?;
 
     registry.register(
