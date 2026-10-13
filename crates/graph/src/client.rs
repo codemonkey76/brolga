@@ -68,6 +68,13 @@ struct ErrorDetail {
     message: String,
 }
 
+/// The extended property a new draft is marked by, so that one whose
+/// making was never heard of can be found again: a string, named in a
+/// property set of Brolga's own ("Outlook extended properties overview",
+/// SOURCES.md, for the form of the id). It is given in the request that
+/// makes the draft ("Create single-value extended property", SOURCES.md).
+pub const DRAFT_MARK: &str = "String {4431b77f-55c6-4e5f-9693-e9ccc2a3f0fb} Name BrolgaDraft";
+
 impl GraphClient {
     pub fn new(
         base: impl Into<String>,
@@ -925,6 +932,8 @@ impl GraphClient {
     /// ("Create message", SOURCES.md). Gives back the draft as created.
     ///
     /// Not safe to repeat blindly: a second request makes a second draft.
+    /// A draft made with a mark of the caller's choosing ([`DRAFT_MARK`])
+    /// can be looked for first, with [`Self::drafts_marked`].
     pub async fn create_draft(&self, message: &serde_json::Value) -> Result<Message, GraphError> {
         let url = format!("{}/me/messages", self.base);
 
@@ -933,6 +942,38 @@ impl GraphClient {
                 .send(reqwest::Method::POST, &url, None, Some(message), false)
                 .await?,
         )
+    }
+
+    /// The drafts in the mailbox's Drafts folder that were made with this
+    /// mark ([`DRAFT_MARK`]), by their ids ("Get
+    /// singleValueLegacyExtendedProperty", SOURCES.md: messages are listed
+    /// by a filter on an extended property's id and value).
+    pub async fn drafts_marked(&self, mark: &str) -> Result<Vec<String>, GraphError> {
+        // In a filter a quote is written twice.
+        let mark = mark.replace('\'', "''");
+        let filter = format!(
+            "singleValueExtendedProperties/Any(ep: ep/id eq '{DRAFT_MARK}' and ep/value eq '{mark}')"
+        );
+        let url = Url::parse_with_params(
+            &format!("{}/me/mailFolders/drafts/messages", self.base),
+            [
+                ("$filter", filter.as_str()),
+                ("$select", "id"),
+                ("$top", "10"),
+            ],
+        )
+        .map_err(|e| GraphError::Decode(e.to_string()))?;
+        let page: serde_json::Value = decode(&self.get(url.as_str(), None).await?)?;
+
+        Ok(page["value"]
+            .as_array()
+            .map(|found| {
+                found
+                    .iter()
+                    .filter_map(|each| each["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     /// Create a draft that answers or forwards a message: `createReply`,

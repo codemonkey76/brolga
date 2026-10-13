@@ -31,4 +31,23 @@ impl GraphError {
     pub fn is_transient(&self) -> bool {
         matches!(self, Self::Network(_) | Self::Busy { .. })
     }
+
+    /// True when the request was certainly not carried out: it never
+    /// reached Microsoft 365, or was turned away there before anything was
+    /// done. A request that fails any other way may have been carried out
+    /// all the same, and one that must happen only once is not to be made
+    /// again on the strength of the failure.
+    pub fn not_carried_out(&self) -> bool {
+        match self {
+            // No connection was made, so nothing was sent along one.
+            Self::Network(error) => error.is_connect(),
+            // Throttled ("Microsoft Graph throttling guidance", SOURCES.md):
+            // the request fails and is to be made again. Any other busy
+            // answer is a failure on the server's side, which says nothing
+            // of how far the request got.
+            Self::Busy { status } => *status == 429,
+            Self::Unauthorized { .. } | Self::Refused { .. } | Self::Token(_) => true,
+            Self::SyncStateGone | Self::Decode(_) => false,
+        }
+    }
 }

@@ -14,7 +14,7 @@ mod mail;
 mod retry;
 
 pub use calendar::{Attendee, Calendar, Event, Location, OnlineMeeting, ResponseStatus};
-pub use client::{GraphClient, TokenSource};
+pub use client::{DRAFT_MARK, GraphClient, TokenSource};
 pub use delta::{DeltaItem, DeltaPage, Next};
 pub use error::GraphError;
 pub use mail::{

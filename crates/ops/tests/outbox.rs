@@ -22,6 +22,7 @@ struct Fixture {
     graph: FakeGraph,
     db: Arc<AccountDb>,
     outbox: Outbox,
+    client: Arc<GraphClient>,
     /// Two messages, known to the server and to this computer, both unread.
     ids: Vec<String>,
 }
@@ -62,7 +63,8 @@ async fn fixture_with(token: &'static str) -> Fixture {
     );
 
     Fixture {
-        outbox: Outbox::new(client, db.clone()),
+        outbox: Outbox::new(client.clone(), db.clone()),
+        client,
         graph,
         db,
         ids,
@@ -366,6 +368,124 @@ async fn a_message_is_not_sent_twice_when_the_answer_to_sending_is_lost() {
 }
 
 #[tokio::test]
+async fn a_send_that_may_have_been_carried_out_is_watched_and_then_handed_back_not_made_again() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    // The draft is made and filled in, and then the server falls over as
+    // it is asked to send: an answer that does not say how far it got.
+    f.graph.fail_after(2, [Fault::Unavailable]);
+
+    let first = f.outbox.drain().await.unwrap();
+    assert_eq!((first.sent, first.waiting, first.refused), (0, 1, 0));
+    f.graph.clear_faults();
+
+    // Still a draft a moment later. It may be about to go, so it is not
+    // sent again; it is watched.
+    let watching = f.outbox.drain().await.unwrap();
+    assert_eq!(
+        (watching.sent, watching.waiting, watching.refused),
+        (0, 1, 0)
+    );
+    let held = f.db.draft(&draft.id).unwrap().unwrap();
+    assert_eq!(held.state, "queued");
+    assert!(held.error.unwrap().contains("checking"));
+    assert!(f.graph.sent().is_empty());
+
+    // Still a draft when the watch is over. Its writer is given it back.
+    let done_watching =
+        Outbox::new(f.client.clone(), f.db.clone()).confirming_within(std::time::Duration::ZERO);
+    let handed_back = done_watching.drain().await.unwrap();
+    assert_eq!(
+        (handed_back.sent, handed_back.waiting, handed_back.refused),
+        (0, 0, 1)
+    );
+    let back = f.db.draft(&draft.id).unwrap().unwrap();
+    assert_eq!(back.state, "failed");
+    assert!(back.error.unwrap().contains("Check Sent Items"));
+    assert!(f.graph.sent().is_empty(), "it was sent unasked");
+
+    // Sent again by its writer, it goes, once, as the draft it was.
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.sent().len(), 1);
+    assert_eq!(f.graph.drafts_created(), 1);
+}
+
+#[tokio::test]
+async fn a_send_that_was_accepted_late_is_known_for_sent_while_it_is_watched() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    f.graph.lose_next_send_answer();
+
+    assert_eq!(f.outbox.drain().await.unwrap().waiting, 1);
+    // The watch being over makes no difference to one that has gone.
+    let later =
+        Outbox::new(f.client.clone(), f.db.clone()).confirming_within(std::time::Duration::ZERO);
+    assert_eq!(later.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.sent().len(), 1);
+    assert!(f.db.drafts().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_send_turned_away_as_too_busy_is_made_again_unasked() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    // Throttled for as long as the request is tried: turned away before
+    // anything was done, which is certain.
+    f.graph.fail_after(
+        2,
+        std::iter::repeat_n(
+            Fault::Throttled {
+                retry_after_secs: 0,
+            },
+            6,
+        ),
+    );
+
+    let first = f.outbox.drain().await.unwrap();
+    assert_eq!((first.sent, first.waiting), (0, 1));
+    f.graph.clear_faults();
+
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.sent().len(), 1);
+}
+
+#[tokio::test]
+async fn a_new_draft_whose_making_was_never_heard_of_is_found_and_not_made_twice() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.queue_draft(&draft.id).unwrap();
+    f.graph.lose_next_draft_answer();
+
+    let first = f.outbox.drain().await.unwrap();
+    assert_eq!((first.sent, first.waiting), (0, 1));
+    assert_eq!(f.graph.drafts_created(), 1);
+
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    assert_eq!(f.graph.drafts_created(), 1, "a second draft was made");
+    assert_eq!(f.graph.sent().len(), 1);
+    // Nothing is left behind in the mailbox's drafts.
+    let drafts = f.graph.folder_id("drafts");
+    assert!(
+        !f.graph
+            .messages()
+            .values()
+            .any(|(folder, _, _)| *folder == drafts)
+    );
+}
+
+#[tokio::test]
 async fn sending_carries_on_from_wherever_it_was_stopped() {
     let f = fixture().await;
     let draft =
@@ -373,9 +493,9 @@ async fn sending_carries_on_from_wherever_it_was_stopped() {
             .unwrap();
     f.db.queue_draft(&draft.id).unwrap();
 
-    // The server falls over at each step in turn: creating the draft,
-    // filling it in, sending it. Each time the outbox is run again.
-    for outage in [0, 1, 2] {
+    // The server falls over at each step before the sending: creating the
+    // draft, filling it in. Each time the outbox is run again.
+    for outage in [0, 1] {
         f.graph
             .fail_after(outage, std::iter::repeat_n(Fault::Unavailable, 12));
         let mut passes = 0;

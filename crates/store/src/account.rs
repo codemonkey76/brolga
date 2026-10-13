@@ -380,6 +380,17 @@ const STEPS: &[&str] = &[
     -- draft, and whoever changes it is told so first.
     ALTER TABLE drafts ADD COLUMN web_pictures INTEGER NOT NULL DEFAULT 0;
 ",
+    "
+    -- When the request to send a draft went out, in seconds since 1970: a
+    -- draft that is still one on the server long after may be handed back
+    -- to its writer, and is never sent again unasked.
+    ALTER TABLE drafts ADD COLUMN send_tried_at INTEGER;
+
+    -- What a new draft's copy on the server is marked with, chosen before
+    -- the copy is asked for, so that one made by a request whose answer
+    -- never came can be found again and not made twice.
+    ALTER TABLE drafts ADD COLUMN create_marker TEXT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

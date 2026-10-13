@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use brolga_graph::{Attachment, GraphClient, GraphError};
+use brolga_graph::{Attachment, GraphClient, GraphError, Message};
 use brolga_store::{AccountDb, Draft, Op, StoreError};
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -17,10 +17,22 @@ use tokio::sync::Mutex;
 /// Below this a file is attached in one request; from it up, in pieces.
 const SMALL_FILE: usize = 3 * 1024 * 1024;
 
-/// Said of a message that may have been sent, where the server no longer
-/// has it to ask about.
+/// Said of a message that may have been sent: the request to send it
+/// failed in a way that does not say, and the server either no longer has
+/// the message to ask about or still shows it as a draft long after.
 const UNCONFIRMED: &str =
     "It could not be confirmed that this was sent. Check Sent Items before sending again.";
+
+/// Said of a message while it is being waited on to leave the drafts.
+const CONFIRMING: &str = "Microsoft 365 did not say whether this was sent. Brolga is checking.";
+
+/// How long a draft is watched after a request to send it that may have
+/// been carried out. "message: send" (SOURCES.md) answers that a send is
+/// accepted, not that it is done, and says nothing of how long a draft
+/// stays one after that. Within this long, one that leaves the drafts was
+/// sent. One still there after it is handed back to its writer, never sent
+/// again unasked.
+const CONFIRM_WITHIN: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// What became of the queue in one pass over it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -41,9 +53,14 @@ enum Sending {
     Sent,
     /// Its writer took it back while it was in hand. Nothing was sent.
     TakenBack,
-    /// A request to send it went out once, and the server no longer has
-    /// the message to say whether it went.
+    /// A request to send it went out once and may have been carried out,
+    /// and the server cannot say: it no longer has the message, or still
+    /// shows it as a draft long after.
     Unconfirmed,
+    /// A request to send it went out not long ago and may have been
+    /// carried out. It is still a draft on the server, and is looked at
+    /// again at the next pass.
+    Confirming,
 }
 
 /// Sends one account's queued changes.
@@ -54,6 +71,9 @@ pub struct Outbox {
     draining: Mutex<()>,
     /// Windows' name for the zone a day with no time is a day of.
     zone: &'static str,
+    /// How long a draft is watched after a request to send it that may
+    /// have been carried out.
+    confirm_within: std::time::Duration,
 }
 
 impl Outbox {
@@ -69,7 +89,15 @@ impl Outbox {
             graph,
             draining: Mutex::new(()),
             zone,
+            confirm_within: CONFIRM_WITHIN,
         }
+    }
+
+    /// The same outbox, watching for this long a draft whose sending could
+    /// not be confirmed before it is handed back to its writer.
+    pub fn confirming_within(mut self, long: std::time::Duration) -> Self {
+        self.confirm_within = long;
+        self
     }
 
     /// The same outbox for a person in another time zone, named as the
@@ -174,6 +202,10 @@ impl Outbox {
                     self.db.draft_refused(&draft.id, UNCONFIRMED)?;
                     drained.refused += 1;
                 }
+                Ok(Sending::Confirming) => {
+                    self.db.draft_waits(&draft.id, CONFIRMING)?;
+                    drained.waiting += 1;
+                }
                 Err(error) if will_pass(&error) => {
                     self.db.draft_waits(&draft.id, &error.to_string())?;
                     drained.waiting += 1;
@@ -193,9 +225,12 @@ impl Outbox {
     /// It is made a draft on the server, given its words and recipients,
     /// and then sent. Each step is written down before the next, so this can
     /// be stopped anywhere and run again. The one step that cannot simply
-    /// be run again is the sending itself: where a request to send may have
-    /// reached the server, the draft is looked at first, and if it is no
-    /// longer a draft there it has been sent and is not sent again.
+    /// be run again is the sending itself. A request to send that
+    /// certainly was not carried out is made again. One that may have been
+    /// is never made again from here: the draft is looked at, and if it is
+    /// no longer a draft on the server it has been sent. If it is still one
+    /// after a while, nothing documented says whether it is about to go,
+    /// so it is handed back to its writer to look and decide.
     ///
     /// The draft in hand is the draft as it was when this began. Its writer
     /// may take it back at any moment before the request to send goes out,
@@ -204,13 +239,23 @@ impl Outbox {
         if draft.send_tried
             && let Some(server_id) = &draft.server_id
         {
-            match self.graph.is_draft(server_id).await? {
-                Some(false) => return Ok(Sending::Sent),
-                // Still a draft: the request never arrived, and is made again.
-                Some(true) => {}
+            return Ok(match self.graph.is_draft(server_id).await? {
+                Some(false) => Sending::Sent,
+                // Still a draft. The request may be waiting its turn there.
+                Some(true) => {
+                    let ago = self.db.draft_send_tried_ago(&draft.id).map_err(kept)?;
+                    let recent = ago.is_some_and(|ago| {
+                        u64::try_from(ago).is_ok_and(|ago| ago < self.confirm_within.as_secs())
+                    });
+                    if recent {
+                        Sending::Confirming
+                    } else {
+                        Sending::Unconfirmed
+                    }
+                }
                 // Gone, sent or not. Only the message itself could have said.
-                None => return Ok(Sending::Unconfirmed),
-            }
+                None => Sending::Unconfirmed,
+            });
         }
 
         let server_id = match self.put_on_server(draft).await {
@@ -241,7 +286,15 @@ impl Outbox {
         {
             return Ok(Sending::TakenBack);
         }
-        self.graph.send_draft(&server_id).await?;
+        if let Err(error) = self.graph.send_draft(&server_id).await {
+            // Turned away before anything was done: it has not been sent,
+            // and may be sent at the next pass. Any other failure leaves
+            // it marked as tried, to be looked at and not sent again.
+            if error.not_carried_out() {
+                self.db.draft_send_not_made(&draft.id).map_err(kept)?;
+            }
+            return Err(error);
+        }
 
         Ok(Sending::Sent)
     }
@@ -268,7 +321,7 @@ impl Outbox {
                             .create_draft_from(source, "createForward")
                             .await?
                     }
-                    _ => self.graph.create_draft(&json!({})).await?,
+                    _ => self.new_draft(draft).await?,
                 };
                 // What the server put in the draft is the original, quoted
                 // as mail programs expect. The words written go above it.
@@ -304,6 +357,53 @@ impl Outbox {
         self.graph.update_message(&server_id, &content).await?;
 
         Ok(Some(server_id))
+    }
+
+    /// Make the server's copy of a new message, once.
+    ///
+    /// Making a draft is not safe to ask for twice, so the copy is marked
+    /// with something chosen and written down before it is asked for. If
+    /// the answer never came, the mark is looked for at the next pass, and
+    /// the copy that was made is taken up where a second would have been
+    /// made beside it.
+    ///
+    /// An answer or a forward cannot be marked: `createReply` and its like
+    /// take nothing documented that would carry a mark ("message:
+    /// createReply", SOURCES.md), so a copy of one of those whose making
+    /// was never heard of stays in the mailbox's drafts, and a second is
+    /// made. Nothing tells it from a draft the person began elsewhere, and
+    /// it is not thrown away on a guess.
+    async fn new_draft(&self, draft: &Draft) -> Result<Message, GraphError> {
+        let mark = match self.db.draft_create_marker(&draft.id).map_err(kept)? {
+            Some(mark) => {
+                let mut made = self.graph.drafts_marked(&mark).await?.into_iter();
+                if let Some(id) = made.next() {
+                    // More than one of the same mark is more than was ever
+                    // asked for. They are this draft's all the same, and
+                    // one is enough.
+                    for spare in made {
+                        self.db.discard_on_server(&spare).map_err(kept)?;
+                    }
+                    return self.graph.draft(&id).await;
+                }
+                mark
+            }
+            None => {
+                let mut bytes = [0_u8; 16];
+                getrandom::fill(&mut bytes).map_err(|e| GraphError::Decode(e.to_string()))?;
+                let mark: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                self.db
+                    .set_draft_create_marker(&draft.id, &mark)
+                    .map_err(kept)?;
+                mark
+            }
+        };
+
+        self.graph
+            .create_draft(&json!({
+                "singleValueExtendedProperties": [{ "id": brolga_graph::DRAFT_MARK, "value": mark }]
+            }))
+            .await
     }
 
     /// Keep the server's Drafts folder level with what is being written

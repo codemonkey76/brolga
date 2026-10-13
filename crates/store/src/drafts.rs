@@ -702,11 +702,65 @@ impl AccountDb {
     /// changed since: the send was taken back meanwhile, and must not go.
     pub fn draft_send_tried(&self, id: &str, rev: i64) -> Result<bool, StoreError> {
         let still = self.connection().execute(
-            "UPDATE drafts SET send_tried = 1 WHERE id = ?1 AND state = 'queued' AND rev = ?2",
+            "UPDATE drafts SET send_tried = 1, send_tried_at = unixepoch()
+             WHERE id = ?1 AND state = 'queued' AND rev = ?2",
             params![id, rev],
         )?;
 
         Ok(still > 0)
+    }
+
+    /// The request to send did not reach the server, or was turned away
+    /// before anything was done with it. It may be made again.
+    pub fn draft_send_not_made(&self, id: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE drafts SET send_tried = 0, send_tried_at = NULL WHERE id = ?1",
+            [id],
+        )?;
+
+        Ok(())
+    }
+
+    /// How many seconds ago the request to send a draft went out. Nothing
+    /// if none has, or if when was not written down: then it is not known
+    /// to be recent.
+    pub fn draft_send_tried_ago(&self, id: &str) -> Result<Option<i64>, StoreError> {
+        let ago: Option<Option<i64>> = self
+            .connection()
+            .query_row(
+                "SELECT unixepoch() - send_tried_at FROM drafts WHERE id = ?1 AND send_tried = 1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(ago.flatten())
+    }
+
+    /// What a draft's copy on the server was to be marked with, if one has
+    /// been asked for and is not yet known of here.
+    pub fn draft_create_marker(&self, id: &str) -> Result<Option<String>, StoreError> {
+        let marker: Option<Option<String>> = self
+            .connection()
+            .query_row(
+                "SELECT create_marker FROM drafts WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(marker.flatten())
+    }
+
+    /// Note what a draft's copy on the server is about to be marked with,
+    /// before it is asked for.
+    pub fn set_draft_create_marker(&self, id: &str, marker: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE drafts SET create_marker = ?2 WHERE id = ?1",
+            params![id, marker],
+        )?;
+
+        Ok(())
     }
 
     /// It could not be sent this time. It stays queued.
@@ -763,7 +817,8 @@ impl AccountDb {
 /// attached there first, and what was still to be taken off it.
 fn unlink(transaction: &rusqlite::Transaction<'_>, id: &str) -> Result<(), StoreError> {
     transaction.execute(
-        "UPDATE drafts SET server_id = NULL, quoted = NULL, server_rev = -1, send_tried = 0, attachments_before = NULL
+        "UPDATE drafts SET server_id = NULL, quoted = NULL, server_rev = -1, send_tried = 0, send_tried_at = NULL,
+                create_marker = NULL, attachments_before = NULL
          WHERE id = ?1",
         [id],
     )?;

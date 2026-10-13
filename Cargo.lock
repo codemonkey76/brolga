@@ -702,6 +702,7 @@ dependencies = [
  "brolga-mail",
  "brolga-store",
  "futures",
+ "getrandom 0.4.3",
  "jiff",
  "serde_json",
  "tokio",

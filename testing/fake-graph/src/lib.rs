@@ -81,6 +81,8 @@ struct Inner {
     /// Every message sent, as it was when it went, oldest first.
     sent: Vec<FakeMessage>,
     drafts_created: u32,
+    /// Make the next draft and then answer as if it had failed.
+    lose_next_draft_answer: bool,
     /// Send the next draft and then answer as if it had failed.
     lose_next_send_answer: bool,
     /// Attach the next file and then answer as if it had failed.
@@ -753,6 +755,11 @@ impl FakeGraph {
             .stored(message)
             .map(|m| m.attachments)
             .unwrap_or_default()
+    }
+
+    /// The next draft is made, but the answer to the request is an error.
+    pub fn lose_next_draft_answer(&self) {
+        lock(&self.shared).lose_next_draft_answer = true;
     }
 
     /// The next draft is sent, but the answer to the request is an error.
@@ -2177,12 +2184,36 @@ async fn folder_messages(
         .get("$top")
         .and_then(|top| top.parse().ok())
         .unwrap_or(10);
-    let value: Vec<Value> = inner
-        .mailbox
-        .message_ids(&id, top)
-        .into_iter()
-        .map(|id| json!({ "id": id }))
-        .collect();
+    // "Get singleValueLegacyExtendedProperty": the messages that have an
+    // extended property of a given id and value, asked for in these words.
+    let marked = query.get("$filter").map(|filter| {
+        let between = |before: &str| {
+            filter
+                .split_once(before)
+                .and_then(|(_, after)| after.split_once('\''))
+                .map(|(found, _)| found.to_owned())
+        };
+        match (
+            filter.starts_with("singleValueExtendedProperties/Any(ep: "),
+            between("ep/id eq '"),
+            between("ep/value eq '"),
+        ) {
+            (true, Some(property), Some(value)) => Some((property, value)),
+            _ => None,
+        }
+    });
+    let ids = match marked {
+        None => inner.mailbox.message_ids(&id, top),
+        Some(Some((property, value))) => inner.mailbox.message_ids_with(&id, &property, &value),
+        Some(None) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "BadRequest",
+                "This filter is not one the fake server knows.",
+            );
+        }
+    };
+    let value: Vec<Value> = ids.into_iter().map(|id| json!({ "id": id })).collect();
 
     axum::Json(json!({ "value": value })).into_response()
 }
@@ -2629,6 +2660,10 @@ fn created(inner: &mut Inner, draft: FakeMessage) -> Response {
     let drafts = inner.mailbox.folder_id("drafts").unwrap_or_default();
     let id = inner.mailbox.add_message(&drafts, draft);
     inner.drafts_created += 1;
+    if std::mem::take(&mut inner.lose_next_draft_answer) {
+        // Made, and the caller never hears of it.
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
 
     match inner.mailbox.message(&id) {
         Some(message) => (StatusCode::CREATED, axum::Json(message)).into_response(),
@@ -2662,6 +2697,22 @@ async fn create_draft(
     draft.to = people(&message["toRecipients"]);
     draft.cc = people(&message["ccRecipients"]);
     draft.bcc = people(&message["bccRecipients"]);
+    // "Create single-value extended property": given with the message it
+    // is to be a property of.
+    draft.properties = message["singleValueExtendedProperties"]
+        .as_array()
+        .map(|given| {
+            given
+                .iter()
+                .filter_map(|each| {
+                    Some((
+                        each["id"].as_str()?.to_owned(),
+                        each["value"].as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     created(&mut lock(&shared), draft)
 }
