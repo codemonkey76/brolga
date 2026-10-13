@@ -192,6 +192,13 @@ impl Outbox {
                     if let (Some(done), Some(source)) = (done, &draft.source_id) {
                         self.db.mark_last_action(source, done)?;
                     }
+                    // It has left the drafts on the server, and leaves them
+                    // here with it, not at the next sync: a message that
+                    // has gone is not still shown as one being written. The
+                    // copy in Sent Items comes with the sync, as it did.
+                    if let Some(server_id) = self.db.draft(&draft.id)?.and_then(|d| d.server_id) {
+                        self.db.forget_message(&server_id)?;
+                    }
                     self.db.draft_sent(&draft.id)?;
                     drained.sent += 1;
                 }

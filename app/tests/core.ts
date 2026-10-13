@@ -958,6 +958,9 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 } else {
                     drafts.splice(drafts.indexOf(found), 1);
                     sent.push(found);
+                    // Once it has gone, the core no longer has it among the mailbox's drafts.
+                    const copy = mail.findIndex((each) => each.id === found.server_id);
+                    if (copy >= 0) mail.splice(copy, 1);
                 }
                 return { queued: true };
             },
