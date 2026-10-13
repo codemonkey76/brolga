@@ -278,6 +278,10 @@ export const attachContent = async (account_id: string, draft_id: string, name: 
 export const readFile = async (account_id: string, draft_id: string, file_id: number) =>
     (await execute<{ file: DraftFile & { content_base64: string } }>("mail.drafts.files.get", { account_id, draft_id, file_id })).file;
 
+/** The pictures within a draft that are with the mailbox's copy of it and not here: those of a draft begun in another mail program. */
+export const draftPictures = async (account_id: string, draft_id: string) =>
+    (await execute<{ pictures: { content_id: string; content_type: string; content_base64: string }[] }>("mail.drafts.pictures", { account_id, draft_id })).pictures;
+
 export const attachFile = async (account_id: string, draft_id: string, path: string) =>
     (await execute<{ file: DraftFile }>("mail.drafts.files.add", { account_id, draft_id, path })).file;
 

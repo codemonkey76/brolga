@@ -931,6 +931,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { draft: taken };
             },
             "app.outbox.flush": () => ({ sent: 0, waiting: 0, refused: 0, drafts_saved: 0 }),
+            // A picture a draft begun elsewhere shows, kept with the mailbox's copy of it: a red dot.
+            "mail.drafts.pictures": (args) => ({
+                pictures: draft(args.draft_id)?.server_id
+                    ? [{ content_id: "logo", content_type: "image/png", content_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==" }]
+                    : [],
+            }),
             "mail.drafts.list": () => ({ drafts }),
             "mail.drafts.discard": (args) => {
                 const at = drafts.findIndex((each) => each.id === args.draft_id);

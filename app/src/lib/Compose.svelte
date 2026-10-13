@@ -4,7 +4,8 @@
     import { chooseFiles, say } from "./commands";
     import { isAddress, lineOf, peopleOn } from "./people-line";
     import Recipients from "./Recipients.svelte";
-    import { type Draft, type DraftFile, type Person, attachContent, attachFile, base64Of, discardDraft, editDraft, readFile, removeFile, sendDraft, size } from "./mail";
+    import { type Draft, type DraftFile, type Person, attachContent, attachFile, base64Of, discardDraft, draftPictures, editDraft, readFile, removeFile, sendDraft, size } from "./mail";
+    import { asWritten, recolourKeeping } from "./darken";
 
     interface Props {
         accountId: string;
@@ -62,6 +63,10 @@
             editor.dataset.filled = start.id;
             editor.innerHTML = body;
             showPictures(editor);
+            // What it quotes was written for a white page. On a dark desktop
+            // its colours are moved to be read, here only: `written` puts
+            // them back, so it is sent as it was written.
+            if (window.matchMedia("(prefers-color-scheme: dark)").matches) recolourKeeping(editor);
         }
     });
 
@@ -71,22 +76,38 @@
      * show, and keeps its name beside it to be written back by.
      */
     function showPictures(within: HTMLElement) {
+        const elsewhere: HTMLImageElement[] = [];
         for (const image of within.querySelectorAll<HTMLImageElement>('img[src^="cid:"]')) {
             const name = image.getAttribute("src")?.slice(4) ?? "";
             const file = files.find((each) => each.content_id === name);
             image.dataset.cid = name;
             image.removeAttribute("src");
-            if (!file) continue;
+            if (!file) {
+                elsewhere.push(image);
+                continue;
+            }
             readFile(accountId, start.id, file.id)
                 .then((got) => (image.src = `data:${got.content_type};base64,${got.content_base64}`))
                 .catch(() => {});
         }
+        // A draft begun in another mail program keeps its pictures with the
+        // mailbox's copy of it, such as those of a message it quotes.
+        if (elsewhere.length === 0) return;
+        draftPictures(accountId, start.id)
+            .then((pictures) => {
+                for (const image of elsewhere) {
+                    const got = pictures.find((each) => each.content_id.toLowerCase() === image.dataset.cid?.toLowerCase());
+                    if (got) image.src = `data:${got.content_type};base64,${got.content_base64}`;
+                }
+            })
+            .catch(() => {});
     }
 
     /** The editor's contents as they are kept: each picture by its name again, not by its contents. */
     function written(): string {
         if (!editor) return body;
         const copy = editor.cloneNode(true) as HTMLElement;
+        asWritten(copy);
         for (const image of copy.querySelectorAll<HTMLImageElement>("img")) {
             const name = image.dataset.cid;
             // A picture that is not one of the draft's own is not sent.

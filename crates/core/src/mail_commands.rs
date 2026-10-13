@@ -809,7 +809,10 @@ pub(crate) const PICTURE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gi
 /// The pictures within a message's body: from this computer if they have
 /// been fetched before, otherwise from Graph, and then kept. If they cannot
 /// be had now there are none, and they are asked for again next time.
-async fn inline_images(mailbox: &crate::mailboxes::Mailbox, message_id: &str) -> Vec<InlineImage> {
+pub(crate) async fn inline_images(
+    mailbox: &crate::mailboxes::Mailbox,
+    message_id: &str,
+) -> Vec<InlineImage> {
     if let Ok(Some(kept)) = mailbox.db.inline_images(message_id) {
         return kept;
     }

@@ -829,6 +829,35 @@ async fn open_draft(mailboxes: Arc<Mailboxes>, args: OpenDraft) -> Result<Value,
     Ok(json!({ "draft": shown(&mailbox, &draft) }))
 }
 
+/// The pictures within a draft that are on the server's copy of it and
+/// are not files of the draft here: those of a draft begun in another mail
+/// program, such as the pictures in a message it quotes. They are sent
+/// with it either way; this is for showing them while it is written.
+async fn pictures(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
+    let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let draft = mailbox
+        .db
+        .draft(&args.draft_id)
+        .map_err(failed)?
+        .ok_or_else(|| failed(format!("There is no draft `{}`.", args.draft_id)))?;
+    let Some(server_id) = &draft.server_id else {
+        return Ok(json!({ "pictures": [] }));
+    };
+    let pictures: Vec<Value> = crate::mail_commands::inline_images(&mailbox, server_id)
+        .await
+        .iter()
+        .map(|each| {
+            json!({
+                "content_id": each.content_id,
+                "content_type": each.content_type,
+                "content_base64": each.data,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "pictures": pictures }))
+}
+
 async fn send(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
     let draft = mailbox
@@ -1250,6 +1279,42 @@ pub(crate) fn register(
             examples: vec![json!({ "draft_id": "draft-1" })],
         },
         handler(&mailboxes, get),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.drafts.pictures".to_owned(),
+            title: "Read a draft's pictures from the mailbox".to_owned(),
+            description: "The pictures shown within a draft's body that are kept with the mailbox's copy of it and not on this computer: \
+                          those of a draft begun in another mail program, such as the pictures in a message it quotes. Each is what the body calls \
+                          `cid:CONTENT_ID`. They are sent with the draft whether or not they are read here. None for a draft that is only on this computer, \
+                          or when Microsoft 365 is out of reach. PNG, JPEG, GIF and WebP only."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: one_args(),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pictures": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content_id": { "type": "string" },
+                                "content_type": { "type": "string" },
+                                "content_base64": { "type": "string" }
+                            },
+                            "required": ["content_id", "content_type", "content_base64"]
+                        }
+                    }
+                },
+                "required": ["pictures"]
+            }),
+            examples: vec![json!({ "draft_id": "draft-1" })],
+        },
+        handler(&mailboxes, pictures),
     )?;
 
     registry.register(

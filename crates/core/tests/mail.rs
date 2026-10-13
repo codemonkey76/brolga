@@ -1717,7 +1717,8 @@ async fn a_draft_is_kept_in_the_mailbox_while_it_is_written_and_leaves_it_when_d
 async fn a_draft_written_in_another_mail_program_is_taken_up_changed_and_sent() {
     let f = Fixture::signed_in().await;
     let mut elsewhere = message("From Outlook", "Robin Example", "2026-10-02T09:00:00Z")
-        .body("<p style=\"color:red\">Dear <b>Jo</b>,</p><script>evil()</script>");
+        .body("<p style=\"color:red\">Dear <b>Jo</b>,</p><script>evil()</script><img src=\"cid:logo\">")
+        .attach_inline("logo.png", "image/png", "logo", &[1, 2, 3]);
     elsewhere.is_draft = true;
     elsewhere.to = vec![("Jo".to_owned(), "jo@example.test".to_owned())];
     elsewhere.bcc = vec![("Al".to_owned(), "al@example.test".to_owned())];
@@ -1727,6 +1728,13 @@ async fn a_draft_written_in_another_mail_program_is_taken_up_changed_and_sent() 
     let draft = f.run("mail.drafts.open", json!({ "message_id": id })).await["draft"].clone();
 
     assert_eq!(draft["subject"], "From Outlook");
+    // A picture it shows is with the mailbox's copy, and can be read to be shown here.
+    assert!(draft["files"].as_array().unwrap().is_empty());
+    assert_eq!(
+        f.run("mail.drafts.pictures", json!({ "draft_id": draft["id"] }))
+            .await["pictures"],
+        json!([{ "content_id": "logo", "content_type": "image/png", "content_base64": "AQID" }])
+    );
     assert_eq!(draft["to"][0]["address"], "jo@example.test");
     assert_eq!(draft["bcc"][0]["address"], "al@example.test");
     assert_eq!(draft["format"], "html");

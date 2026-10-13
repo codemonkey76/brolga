@@ -1274,6 +1274,54 @@ test("a draft in the Drafts folder opens to be carried on with, and is saved to 
     await expect(page.getByRole("list", { name: "Being written" }).getByRole("button")).toHaveCount(1);
 });
 
+test("a draft begun elsewhere is readable on a dark desktop and shows its pictures, and is kept as it was written", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    await withCore(page, {
+        accounts: [robin],
+        mail: [
+            ...inbox,
+            {
+                id: "d1",
+                folder_id: "drafts",
+                is_draft: true,
+                subject: "RE: Started in Outlook",
+                preview: "Thanks,",
+                from: { name: "Robin Example", address: "robin@example.test" },
+                received_at: "2026-10-09T02:00:00Z",
+                is_read: true,
+                has_attachments: false,
+                body: '<p>Thanks,</p><p style="color:#000000"><b>From:</b> Jo</p><font color="#000000">Hi Robin</font><img src="cid:logo">',
+            },
+        ],
+    });
+    await folder(page, "Drafts").click();
+    await messages(page).getByRole("option").first().click();
+    const words = page.getByRole("form", { name: "New message" }).getByRole("textbox", { name: "Message" });
+    const lightness = (of: string) =>
+        words.locator(of).evaluate((node) => {
+            const [r, g, b] = getComputedStyle(node).color.match(/[\d.]+/g)!.map(Number);
+            return (r + g + b) / 3;
+        });
+
+    // Black words on a dark page are made light, and the picture is shown.
+    expect(await lightness("p[style]")).toBeGreaterThan(180);
+    expect(await lightness("font")).toBeGreaterThan(180);
+    await expect(words.locator("img")).toHaveAttribute("src", /^data:image\/png;base64,/);
+
+    // What is kept, to be sent, is in the colours it was written in, with the picture by its name.
+    await words.click();
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.type("Hello. ");
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await ran(page)).some((r) => r.command === "mail.drafts.edit" && typeof r.args.body === "string")).toBe(true);
+    const kept = (await ran(page)).filter((r) => r.command === "mail.drafts.edit" && typeof r.args.body === "string").at(-1)!.args.body as string;
+    expect(kept).toContain("Hello.");
+    expect(kept).toContain('style="color:#000000"');
+    expect(kept).toContain('<font color="#000000">');
+    expect(kept).toContain('src="cid:logo"');
+    expect(kept).not.toMatch(/data-written|data-shown|hsla|data:image/);
+});
+
 test("a flag can be given a day to follow up by, changed and taken off", async ({ page }) => {
     // A Friday afternoon in Brisbane.
     await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));

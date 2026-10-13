@@ -65,6 +65,17 @@ export function suited(token: string, as: Role): string {
     return `hsla(${Math.round(h)},${Math.round(s * 100)}%,${Math.round(l * 100)}%,${alpha})`;
 }
 
+/**
+ * One colour moved to suit a dark page, for an attribute: `bgcolor`, or the
+ * `color` of a `<font>`. Those are read by older rules that know a name or
+ * six hex digits and make something else of `hsla(…)`, so it is given as hex.
+ */
+export function suitedAttribute(token: string, as: Role): string {
+    const now = suited(token, as);
+    const colour = now === token ? null : parsed(now);
+    return colour ? `#${colour.slice(0, 3).map((part) => Math.round(part).toString(16).padStart(2, "0")).join("")}` : token;
+}
+
 const COLOUR = /#[0-9a-f]{3,8}\b|(?:rgb|hsl)a?\([^)]*\)|[a-z]+/gi;
 
 /** A list of declarations (`color:#111;background:#fff`), recoloured. */
@@ -87,6 +98,42 @@ export const sheet = (css: string) => css.replace(/\{([^{}]*)\}/g, (_, inside: s
 /** Recolour everything a message's own HTML says about colour, in place. */
 export function recolour(body: HTMLElement) {
     for (const element of body.querySelectorAll<HTMLElement>("[style]")) element.setAttribute("style", declarations(element.getAttribute("style") ?? ""));
-    for (const element of body.querySelectorAll("[bgcolor]")) element.setAttribute("bgcolor", suited(element.getAttribute("bgcolor") ?? "", "ground"));
-    for (const element of body.querySelectorAll("font[color]")) element.setAttribute("color", suited(element.getAttribute("color") ?? "", "words"));
+    for (const element of body.querySelectorAll("[bgcolor]")) element.setAttribute("bgcolor", suitedAttribute(element.getAttribute("bgcolor") ?? "", "ground"));
+    for (const element of body.querySelectorAll("font[color]")) element.setAttribute("color", suitedAttribute(element.getAttribute("color") ?? "", "words"));
+}
+
+const KEPT = ["style", "bgcolor", "color"] as const;
+/** What an attribute comes to as the browser holds it, which is what it is compared by after the editor has been at it. */
+const held = (element: HTMLElement, name: string) => (name === "style" ? element.style.cssText : (element.getAttribute(name) ?? ""));
+
+/**
+ * Recolour a message that is being written, for the eye only: beside each
+ * colour that is moved is kept what it was, for `asWritten` to put back.
+ * What is sent must be in the colours it was written in, since whoever
+ * reads it most likely reads it on a white page.
+ */
+export function recolourKeeping(body: HTMLElement) {
+    for (const element of body.querySelectorAll<HTMLElement>("[style], [bgcolor], font[color]")) {
+        for (const name of KEPT) {
+            const was = element.getAttribute(name);
+            if (was === null || (name === "color" && element.tagName !== "FONT")) continue;
+            const now = name === "style" ? declarations(was) : suitedAttribute(was, name === "bgcolor" ? "ground" : "words");
+            if (now === was) continue;
+            element.setAttribute(name, now);
+            element.setAttribute(`data-written-${name}`, was);
+            element.setAttribute(`data-shown-${name}`, held(element, name));
+        }
+    }
+}
+
+/** Undo `recolourKeeping`, in place: each colour as it was written, unless it has been changed since, and nothing left of what was kept beside it. */
+export function asWritten(body: HTMLElement) {
+    for (const element of body.querySelectorAll<HTMLElement>("[data-written-style], [data-written-bgcolor], [data-written-color]")) {
+        for (const name of KEPT) {
+            const was = element.getAttribute(`data-written-${name}`);
+            if (was !== null && held(element, name) === element.getAttribute(`data-shown-${name}`)) element.setAttribute(name, was);
+            element.removeAttribute(`data-written-${name}`);
+            element.removeAttribute(`data-shown-${name}`);
+        }
+    }
 }
