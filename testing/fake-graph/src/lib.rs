@@ -76,6 +76,8 @@ struct Inner {
     moves: u32,
     /// How many times a folder has been moved.
     folder_moves: u32,
+    /// The folder tree's delta has nothing to say of what changes from now on.
+    silent_folders: bool,
     /// Every message sent, as it was when it went, oldest first.
     sent: Vec<FakeMessage>,
     drafts_created: u32,
@@ -761,6 +763,13 @@ impl FakeGraph {
     /// How many moves the server has made.
     pub fn moves(&self) -> u32 {
         lock(&self.shared).moves
+    }
+
+    /// From now on the folder tree's delta says nothing has changed,
+    /// whatever has. A real mailbox was seen to leave out a deleted folder
+    /// and a folder's new counts.
+    pub fn say_nothing_of_folders(&self) {
+        lock(&self.shared).silent_folders = true;
     }
 
     /// How many times the server has moved a folder.
@@ -2081,6 +2090,13 @@ async fn folders_delta(
 ) -> Response {
     let inner = lock(&shared);
     let link = format!("{}/me/mailFolders/delta", inner.base);
+    if let (true, Some(token)) = (inner.silent_folders, query.get("$deltatoken")) {
+        return axum::Json(serde_json::json!({
+            "value": [],
+            "@odata.deltaLink": format!("{link}?$deltatoken={token}"),
+        }))
+        .into_response();
+    }
 
     delta_answer(
         inner

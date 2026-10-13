@@ -1005,6 +1005,28 @@ impl AccountDb {
         Ok(changed > 0)
     }
 
+    /// Forget a folder the server has been seen to delete, and what was
+    /// held of it here, without waiting for a sync to say it is gone.
+    pub fn forget_folder(&self, id: &str) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        remove_folder(&transaction, id)?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    /// Set how many messages a folder holds, and how many unread, as the
+    /// server gave them.
+    pub fn set_folder_counts(&self, id: &str, unread: i64, total: i64) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE folders SET unread = ?2, total = ?3 WHERE id = ?1",
+            params![id, unread, total],
+        )?;
+
+        Ok(())
+    }
+
     /// A window of a folder's messages, newest first.
     pub fn messages(
         &self,

@@ -715,6 +715,30 @@
         over = each.id;
     }
 
+    /** The folder list, and how far it moves each frame while a folder is held near its top or foot. */
+    let list = $state<HTMLElement | null>(null);
+    let drift = 0;
+    let drifting = 0;
+    /** How near an edge, in pixels, a dragged folder starts the list scrolling. */
+    const EDGE = 48;
+
+    /** A long list scrolls under a folder dragged to its edge, faster the nearer the edge, so a folder out of sight can be dropped on. */
+    function dragNear(event: DragEvent) {
+        if (!dragging || !list) return;
+        const box = list.getBoundingClientRect();
+        const above = box.top + EDGE - event.clientY;
+        const below = event.clientY - (box.bottom - EDGE);
+        drift = above > 0 ? -Math.min(above, EDGE) / 4 : below > 0 ? Math.min(below, EDGE) / 4 : 0;
+        if (drift && !drifting) drifting = requestAnimationFrame(scrollOn);
+    }
+
+    function scrollOn() {
+        drifting = 0;
+        if (!dragging || !drift || !list) return;
+        list.scrollTop += drift;
+        drifting = requestAnimationFrame(scrollOn);
+    }
+
     function dragLeave(event: DragEvent, each: Folder) {
         const to = event.relatedTarget;
         if (over === each.id && !(to instanceof Node && (event.currentTarget as Node).contains(to))) over = null;
@@ -1311,7 +1335,14 @@
     onSync={sync}
 />
 <div class="mail" class:bottom={view.pane === "bottom"}>
-    <nav class="folders" aria-label="Folders">
+    <nav
+        class="folders"
+        aria-label="Folders"
+        bind:this={list}
+        ondragover={dragNear}
+        ondragleave={(event) => event.relatedTarget instanceof Node && list?.contains(event.relatedTarget) ? null : (drift = 0)}
+        ondrop={() => (drift = 0)}
+    >
         {#if accounts.length > 1}
             <select aria-label="Account" value={accountId} onchange={(event) => chooseAccount(event.currentTarget.value)}>
                 {#each accounts as each (each.id)}
@@ -1770,7 +1801,7 @@
         background: var(--surface);
         border: 1px solid var(--line);
         border-radius: 0.4rem;
-        box-shadow: 0 6px 18px color-mix(in srgb, CanvasText 18%, transparent);
+        box-shadow: 0 6px 18px color-mix(in srgb, black 25%, transparent);
     }
 
     .menu button {

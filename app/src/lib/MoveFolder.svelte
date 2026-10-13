@@ -84,7 +84,7 @@
         z-index: 50;
         display: grid;
         place-items: center;
-        background: color-mix(in srgb, CanvasText 35%, transparent);
+        background: color-mix(in srgb, black 45%, transparent);
     }
 
     .ask {
@@ -95,7 +95,7 @@
         background: var(--surface);
         border: 1px solid var(--line);
         border-radius: 0.6rem;
-        box-shadow: 0 12px 40px color-mix(in srgb, CanvasText 30%, transparent);
+        box-shadow: 0 12px 40px color-mix(in srgb, black 30%, transparent);
     }
 
     form {

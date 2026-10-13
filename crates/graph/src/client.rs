@@ -888,6 +888,23 @@ impl GraphClient {
         }
     }
 
+    /// A folder as it is now, with its counts ("Get mailFolder", SOURCES.md),
+    /// or none where there is no such folder. The folder tree's delta is not
+    /// quick to say that a count has changed, so this asks outright.
+    pub async fn mail_folder(&self, folder_id: &str) -> Result<Option<MailFolder>, GraphError> {
+        let folder_id = seg(folder_id)?;
+        let url = format!(
+            "{}/me/mailFolders/{folder_id}?$select={FOLDER_SELECT}",
+            self.base
+        );
+
+        match self.get(&url, None).await {
+            Ok(body) => Ok(Some(decode(&body)?)),
+            Err(GraphError::Refused { status: 404, .. }) => Ok(None),
+            Err(other) => Err(other),
+        }
+    }
+
     /// Delete a folder ("Delete mailFolder", SOURCES.md), and with it
     /// whatever it holds: the caller sees that it holds nothing. One
     /// already gone is as good as deleted.

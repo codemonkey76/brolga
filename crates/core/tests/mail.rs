@@ -282,6 +282,9 @@ async fn a_folder_moved_where_its_name_is_taken_is_merged_only_when_asked() {
     }
     f.sync().await;
     let all = f.graph.messages().len();
+    // A real mailbox's folder sync was slow to say what a merge had done,
+    // so the merge is not to lean on it.
+    f.graph.say_nothing_of_folders();
 
     // Not unasked: nothing is moved, and the server is not troubled.
     let refused = f
@@ -337,6 +340,18 @@ async fn a_folder_moved_where_its_name_is_taken_is_merged_only_when_asked() {
         .run("mail.messages.list", json!({ "folder_id": kept_london }))
         .await;
     assert_eq!(listed["total"], 3);
+    let counted = f.run("mail.folders.list", json!({})).await;
+    let total = |id: &str| {
+        counted["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|each| each["id"] == id)
+            .unwrap()["total"]
+            .clone()
+    };
+    assert_eq!(total(&kept), 120);
+    assert_eq!(total(&kept_london), 3);
 }
 
 #[tokio::test]

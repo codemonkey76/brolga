@@ -652,12 +652,31 @@ async fn merge_folders(
                 .await
                 .map_err(|error| not_moved(error, name(from), ALSO))?,
             // Something is in it that is not a message, or came while this ran.
-            Some(_) => merged.kept.push(name(from).to_owned()),
+            Some(_) => {
+                merged.kept.push(name(from).to_owned());
+                continue;
+            }
             None => {}
         }
+        // It is gone there, so it is gone here. The folder tree's sync is
+        // not waited on to say so: on a real mailbox it said that the
+        // outermost folder was gone and nothing of the one inside it.
+        mailbox.db.forget_folder(from).map_err(failed)?;
     }
     if turn.is_some() {
         let _ = mailbox.sync.sync_folders().await;
+    }
+    // Nor does that sync say that a folder now holds more than it did, so
+    // each folder that was added to is asked for its counts.
+    for (_, into) in &emptied {
+        if let Ok(Some(folder)) = mailbox.graph.mail_folder(into).await
+            && let (Some(unread), Some(total)) = (folder.unread_item_count, folder.total_item_count)
+        {
+            mailbox
+                .db
+                .set_folder_counts(into, unread, total)
+                .map_err(failed)?;
+        }
     }
 
     Ok(merged)

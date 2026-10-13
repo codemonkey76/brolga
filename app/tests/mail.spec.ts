@@ -415,6 +415,33 @@ test("a folder dropped on another is moved into it once that is agreed to", asyn
     await expect(tree(page).getByRole("listitem")).toHaveText([/Inbox/, /Drafts/, /Sent Items/, /Deleted Items/, /Archive/, /Website/, /Junk Email/, /Projects/, /Harbour upgrade/, /Surveys/]);
 });
 
+test("a long folder list scrolls under a folder dragged to its edge", async ({ page }) => {
+    const many = Array.from({ length: 60 }, (_, n) => ({ id: `extra-${n}`, name: `Extra ${String(n).padStart(2, "0")}` }));
+    await withCore(page, { accounts: [robin], mail: inbox, moreFolders: many });
+    const list = page.getByRole("navigation", { name: "Folders" });
+    const scrolled = () => list.evaluate((node) => node.scrollTop);
+    const box = (await list.boundingBox())!;
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    const held = (clientY: number) => list.dispatchEvent("dragover", { dataTransfer, clientX: box.x + 20, clientY });
+
+    // Nothing is being dragged: the list stays where it is.
+    await held(box.y + box.height - 4);
+    await page.waitForTimeout(100);
+    expect(await scrolled()).toBe(0);
+
+    await line(page, "Website").dispatchEvent("dragstart", { dataTransfer });
+    await held(box.y + box.height - 4);
+    await expect.poll(scrolled).toBeGreaterThan(100);
+
+    // In the middle it stops, and at the top it goes back.
+    await held(box.y + box.height / 2);
+    const rested = await scrolled();
+    await page.waitForTimeout(100);
+    expect(await scrolled()).toBe(rested);
+    await held(box.y + 4);
+    await expect.poll(scrolled).toBe(0);
+});
+
 test("a folder is not dropped where it cannot go", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
 
