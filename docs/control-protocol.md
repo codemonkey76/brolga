@@ -31,9 +31,43 @@ show a question whole and answer it (`app.confirmations.list`,
 `app.confirmations.get`, `app.confirmations.answer`) run only from Brolga's
 window, and are refused here with `window_only`.
 
-**Not yet restricted on Windows.** The pipe is created with Windows' default
-permissions, which have not been checked against the "current user only"
-requirement. Treat the Windows channel as unfinished until it is.
+## Windows
+
+A pipe's name is in a namespace every user of the computer shares, so the
+pipe is kept to you in two ways.
+
+**Only its owner may open it.** Brolga makes the pipe with an access list
+that allows its owner and nobody else. Another user of the computer cannot
+connect to your Brolga. If you run Brolga as administrator, its pipe belongs
+to the Administrators group, and a caller that is not also run as
+administrator cannot open it.
+
+**A caller checks that what answers is your Brolga.** Another user can still
+make a pipe of that name before Brolga does, and answer on it. So when
+Brolga starts it writes a key, 32 random bytes as 64 hex digits, to
+`%LOCALAPPDATA%\Brolga\brolga-control-<user name>.key`, which only you can
+read, and removes it when it closes. Before sending anything else, a caller
+reads the key and asks for proof:
+
+```json
+{"id": 1, "method": "prove", "params": {"challenge": "<32 random bytes, as 64 hex digits>"}}
+{"id": 1, "result": {"proof": "<64 hex digits>"}}
+```
+
+The proof is the SHA-256, in hex, of these bytes one after another: the
+ASCII text `brolga control channel proof` and a line feed, the 32 bytes of
+the key, and the 32 bytes of the challenge. A caller works it out for itself
+and compares. If there is no key file, your Brolga is not running. If the
+proof is wrong or refused, what answers is not your Brolga: hang up and send
+it nothing. `brolga-cli` does this, and so should any tool of yours.
+
+A challenge that is not 64 hex digits is refused with `no_proof`, as is
+`prove` on Linux and macOS, where the socket's directory does this job.
+
+If the name is already taken when Brolga starts, by something that cannot
+give the proof, Brolga starts without the channel and tells you so. The
+command line and agents cannot reach it until the other program is gone and
+Brolga is started again.
 
 ## The protocol
 
@@ -63,6 +97,7 @@ An answer has either a `result` or an `error`:
 | `unknown_command` | No command has that id. |
 | `invalid_arguments` | The arguments do not fit the command's schema. The command did not run. |
 | `failed` | The command ran and failed. |
+| `no_proof` | `prove` was asked with a challenge of the wrong length, or where the channel has no proof to give. |
 | `window_only` | The command is the person's own to run, in Brolga's window. It did not run. |
 | `invalid_result` | The command gave back something its own schema does not allow. This is a bug in Brolga. |
 

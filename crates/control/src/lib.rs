@@ -6,6 +6,7 @@
 
 mod client;
 mod endpoint;
+mod proof;
 mod protocol;
 mod server;
 

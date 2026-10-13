@@ -352,6 +352,11 @@ async fn backend(app_only: bool) -> Result<Where, Failure> {
 
     match Client::connect(&endpoint).await {
         Ok(client) => Ok(Where::App(client)),
+        // Something answers that is not this user's app. Said as it is,
+        // not as the app being closed.
+        Err(refused) if app_only && refused.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(Failure(FAILED, refused.to_string()))
+        }
         Err(_) if app_only => Err(Failure(
             FAILED,
             "the app is not running, so there is nothing to connect to".to_owned(),

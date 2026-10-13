@@ -21,6 +21,28 @@ impl Endpoint {
             Self::Pipe(name) => name.as_str().to_ns_name::<GenericNamespaced>(),
         }
     }
+
+    /// The file the client listening here keeps its key in, where a caller
+    /// must be shown that what answers is that client (see `proof`).
+    ///
+    /// A socket file needs none: the directory it is in is its user's own.
+    /// A pipe's name is anyone's to take, so its key is kept in the user's
+    /// own application data, which other users of the machine cannot read.
+    pub(crate) fn key_file(&self) -> io::Result<Option<PathBuf>> {
+        match self {
+            Self::Path(_) => Ok(None),
+            Self::Pipe(name) => std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|data| Some(data.join("Brolga").join(format!("{name}.key"))))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "LOCALAPPDATA is not set, so there is nowhere to keep the control channel's key",
+                    )
+                }),
+        }
+    }
 }
 
 /// The endpoint a client started by this user listens on.
