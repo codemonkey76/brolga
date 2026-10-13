@@ -1714,6 +1714,53 @@ async fn a_draft_is_kept_in_the_mailbox_while_it_is_written_and_leaves_it_when_d
 }
 
 #[tokio::test]
+async fn a_draft_that_has_been_sent_is_gone_from_the_drafts_here_before_any_sync() {
+    let f = Fixture::signed_in().await;
+    let drafts = f.graph.folder_id("drafts");
+    let listed = || async {
+        f.run("mail.messages.list", json!({ "folder_id": drafts }))
+            .await["messages"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Plan", "body": "First thoughts." }),
+        )
+        .await["draft"]
+        .clone();
+    // Kept in the mailbox, and synced down: it is in Drafts here as a message.
+    f.run("app.outbox.flush", json!({})).await;
+    f.sync().await;
+    assert_eq!(listed().await, 1);
+
+    f.run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    // Waited for, with no sync to bring word of it.
+    for _ in 0..500 {
+        if f.graph.sent().len() == 1 && listed().await == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(f.graph.sent().len(), 1);
+    assert_eq!(listed().await, 0, "the sent draft is still shown in Drafts");
+    // The copy in Sent Items comes with the next sync, as before.
+    f.sync().await;
+    let in_sent = f
+        .run(
+            "mail.messages.list",
+            json!({ "folder_id": f.graph.folder_id("sentitems") }),
+        )
+        .await;
+    assert_eq!(in_sent["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(listed().await, 0);
+}
+
+#[tokio::test]
 async fn a_draft_written_in_another_mail_program_is_taken_up_changed_and_sent() {
     let f = Fixture::signed_in().await;
     let mut elsewhere = message("From Outlook", "Robin Example", "2026-10-02T09:00:00Z")

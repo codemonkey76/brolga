@@ -1322,6 +1322,38 @@ test("a draft begun elsewhere is readable on a dark desktop and shows its pictur
     expect(kept).not.toMatch(/data-written|data-shown|hsla|data:image/);
 });
 
+test("a draft sent from the Drafts folder is gone from it once it has been sent, with no sync", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: [
+            ...inbox,
+            {
+                id: "d1",
+                folder_id: "drafts",
+                is_draft: true,
+                subject: "Started in Outlook",
+                preview: "Dear Jo,",
+                from: { name: "Robin Example", address: "robin@example.test" },
+                received_at: "2026-10-09T02:00:00Z",
+                is_read: true,
+                has_attachments: false,
+                body: "<p>Dear <b>Jo</b>,</p>",
+            },
+        ],
+    });
+    await folder(page, "Drafts").click();
+    await expect(messages(page).getByRole("option")).toHaveCount(1);
+    await messages(page).getByRole("option").first().click();
+    const syncs = (await ran(page)).filter((r) => r.command === "mail.sync").length;
+
+    const form = page.getByRole("form", { name: "New message" });
+    await form.getByRole("button", { name: "Send" }).click();
+
+    await expect(form).toHaveCount(0);
+    await expect(messages(page).getByRole("option")).toHaveCount(0);
+    expect((await ran(page)).filter((r) => r.command === "mail.sync")).toHaveLength(syncs);
+});
+
 test("a flag can be given a day to follow up by, changed and taken off", async ({ page }) => {
     // A Friday afternoon in Brisbane.
     await page.clock.setFixedTime(new Date("2026-10-09T06:00:00Z"));

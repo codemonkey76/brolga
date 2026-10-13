@@ -244,15 +244,31 @@
         })();
     });
 
+    /**
+     * Sending happens in the background. The drafts are looked at again
+     * until this one has gone, or come back unsent, and then the list is
+     * drawn again: a draft that has gone is no longer in Drafts.
+     */
+    async function afterSending(id: string) {
+        const of = accountId;
+        for (const wait of [1_500, 3_000, 6_000, 12_000]) {
+            await new Promise((resolve) => setTimeout(resolve, wait));
+            if (accountId !== of) return;
+            await loadDrafts();
+            if (!drafts.some((each) => each.id === id && each.state === "queued")) break;
+        }
+        if (accountId === of) await refresh();
+    }
+
     async function doneWriting(how: "sent" | "discarded" | "closed") {
+        const written = writing?.id;
         writing = null;
         // A line chosen while this was being written is opened now that there is somewhere to show it.
         const waiting = rows.find((row) => row?.id === selectedId);
         if (waiting && !waiting.is_draft && !many && readingId !== waiting.id) void open(waiting);
         if (how === "sent") tell("Sending. It will be in Sent Items once it has gone.");
         await loadDrafts();
-        // Sending happens in the background: look again shortly for it having gone, or come back.
-        if (how === "sent") setTimeout(loadDrafts, 1_500);
+        if (how === "sent" && written) void afterSending(written);
         // A draft put aside is saved to the mailbox now, so that other mail
         // programs have it; then the list is drawn again, for Drafts may have changed.
         if (accountId && how !== "sent") {
