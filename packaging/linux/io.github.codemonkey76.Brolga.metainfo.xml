@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.12" date="2026-10-13">
+      <description>
+        <p>A folder can be moved into another: drag it there and agree to it, or right-click it and choose Move to.</p>
+      </description>
+    </release>
     <release version="0.1.11" date="2026-10-13">
       <description>
         <p>Many fixes from a review of the whole program: keys and actions reach the message they are meant for, a message cannot be sent by mistake or without its files, one folder that fails no longer holds up the rest, and an agent's request to send shows exactly what would go.</p>
