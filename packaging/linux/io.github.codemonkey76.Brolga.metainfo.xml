@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.15" date="2026-10-13">
+      <description>
+        <p>A draft begun in another mail program, such as a reply with the original quoted, can be read on a dark desktop and shows its pictures while it is written. It is still sent in the colours it was written in.</p>
+      </description>
+    </release>
     <release version="0.1.14" date="2026-10-13">
       <description>
         <p>After a merge the folder list is right at once, with no emptied folder left behind and the new counts shown. A long folder list scrolls under a folder dragged to its top or foot. The move dialog and folder menu no longer glow in a dark theme. An invitation that repeats at an interval of thousands of years no longer stops the app.</p>
