@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.14" date="2026-10-13">
+      <description>
+        <p>After a merge the folder list is right at once, with no emptied folder left behind and the new counts shown. A long folder list scrolls under a folder dragged to its top or foot. The move dialog and folder menu no longer glow in a dark theme.</p>
+      </description>
+    </release>
     <release version="0.1.13" date="2026-10-13">
       <description>
         <p>A folder moved to where a folder of the same name already is can be merged into it: its messages and folders go across, and it is removed once empty.</p>
