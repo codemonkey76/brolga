@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type Folder, TOP, canHold } from "./mail";
+    import { type Folder, TOP, canHold, namesake } from "./mail";
 
     interface Props {
         /** The folder to be moved. */
@@ -12,8 +12,8 @@
         busy?: boolean;
         /** Why it could not be made. */
         problem?: string | null;
-        /** Move it into the folder with this id, or to the top of the mailbox. */
-        onMove: (destination: string) => void;
+        /** Move it into the folder with this id, or to the top of the mailbox: merged with a folder of its name there, where that was agreed to. */
+        onMove: (destination: string, merge: boolean) => void;
         onCancel: () => void;
     }
 
@@ -23,6 +23,9 @@
     let chosen = $state<string | null>(null);
     const atTop = $derived(!folders.some((each) => each.id === folder.parent_id));
     const destination = $derived(into?.id ?? chosen);
+    /** A folder of the same name already where it would go. The two cannot both be there, so they are made one. */
+    const twin = $derived(destination ? namesake(folders, folder, destination) : null);
+    const where = $derived(folders.find((each) => each.id === destination)?.name ?? "The top of the mailbox");
 
     function keydown(event: KeyboardEvent) {
         if (event.key === "Escape") {
@@ -39,8 +42,10 @@
 
 <div class="veil">
     <div class="ask" role="dialog" aria-modal="true" aria-labelledby="move-folder-title" tabindex="-1" onkeydown={keydown} use:first>
-        <form onsubmit={(event) => (event.preventDefault(), destination && onMove(destination))}>
-            {#if into}
+        <form onsubmit={(event) => (event.preventDefault(), destination && onMove(destination, twin !== null))}>
+            {#if into && twin}
+                <h2 id="move-folder-title">Merge {folder.name} into the {twin.name} in {into.name}?</h2>
+            {:else if into}
                 <h2 id="move-folder-title">Move {folder.name} into {into.name}?</h2>
                 <p class="muted">Everything in {folder.name} goes with it.</p>
             {:else}
@@ -56,11 +61,17 @@
                     {/each}
                 </ul>
             {/if}
+            {#if twin}
+                <p class="merge">
+                    {where} already has a folder called {twin.name}, so the two are made one. Every message and folder in this {folder.name} is moved into that one, folders of the same name
+                    inside them are merged in the same way, and the emptied folder is removed. This cannot be undone, and can take a few minutes for a big folder.
+                </p>
+            {/if}
             {#if problem}<p class="caution" role="alert">{problem}</p>{/if}
 
             <div class="buttons">
                 <button type="button" onclick={onCancel}>Cancel</button>
-                <button type="submit" class="primary" disabled={busy || !destination}>{busy ? "Moving…" : "Move"}</button>
+                <button type="submit" class="primary" disabled={busy || !destination}>{twin ? (busy ? "Merging…" : "Merge") : busy ? "Moving…" : "Move"}</button>
             </div>
         </form>
     </div>

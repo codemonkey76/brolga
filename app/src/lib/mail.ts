@@ -133,9 +133,32 @@ export const setFavourite = (account_id: string, folder_id: string, favourite: b
 /** Graph's name for the top of a mailbox, where the inbox and its peers are. */
 export const TOP = "msgfolderroot";
 
-/** Put a folder inside another, named by its id, or at the top of the mailbox. Everything in it goes with it. */
-export const moveFolder = (account_id: string, folder_id: string, destination_id: string) =>
-    execute<{ parent_id: string | null; moved: boolean }>("mail.folders.move", { account_id, folder_id, destination_id });
+/** What moving a folder did. After a merge, `kept` names folders that still held something and were left. */
+export interface FolderMoved {
+    parent_id: string | null;
+    moved: boolean;
+    merged: boolean;
+    kept?: string[];
+}
+
+/**
+ * Put a folder inside another, named by its id, or at the top of the mailbox.
+ * Everything in it goes with it. Where a folder of its name is there already
+ * it is refused, unless `merge` is asked for: then what is in it is put into
+ * that one, and it is removed once empty.
+ */
+export const moveFolder = (account_id: string, folder_id: string, destination_id: string, merge = false) =>
+    execute<FolderMoved>("mail.folders.move", { account_id, folder_id, destination_id, ...(merge ? { merge } : {}) });
+
+/**
+ * The folder already in a place that has the name of one that would be moved
+ * there, capitals aside. `destination` is a folder's id, or `TOP`.
+ */
+export function namesake(all: Folder[], moving: Folder, destination: string): Folder | null {
+    const within = (each: Folder) => (all.some((other) => other.id === each.parent_id) ? each.parent_id : TOP);
+    const name = moving.name.trim().toLowerCase();
+    return all.find((each) => each.id !== moving.id && within(each) === destination && each.name.trim().toLowerCase() === name) ?? null;
+}
 
 /**
  * Whether a folder may be put inside another: not one of the folders every

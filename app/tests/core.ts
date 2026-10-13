@@ -233,6 +233,8 @@ export interface FakeCore {
     savePath?: string;
     /** Folders already pinned as favourites. */
     pinned?: string[];
+    /** Folders beside the usual ones, each at the top of the mailbox unless it names what it is in. */
+    moreFolders?: { id: string; name: string; parent?: string }[];
     /** True when Brolga has no app registration of its own, as now. */
     needsClientId?: boolean;
     /** The account a sign-in adds, or the words it fails with. */
@@ -430,6 +432,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         const trusted = new Set<string | null>();
         /** Where folders have been moved to since: id to the id of what each is now in. */
         const moved = new Map<string, string>();
+        /** Folders merged into another, and so gone. */
+        const merged = new Set<string>();
         const folder = (id: string, name: string, well_known: string | null, parent_id = "root", depth = 0) => ({
             id,
             parent_id: moved.get(id) ?? parent_id,
@@ -493,7 +497,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                         folder(`${own}harbour`, "Harbour upgrade", null, `${own}projects`, 1),
                         folder(`${own}surveys`, "Surveys", null, `${own}harbour`, 2),
                         folder(`${own}website`, "Website", null, `${own}projects`, 1),
-                    ],
+                        ...(own ? [] : (core.moreFolders ?? []).map((each) => folder(each.id, each.name, null, each.parent))),
+                    ].filter((each) => !merged.has(each.id)),
                 };
                 // As the core gives them: a folder is followed by what is inside it, each a step deeper.
                 type Listed = (typeof listed.folders)[number];
@@ -508,8 +513,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             },
             "mail.folders.move": (args) => {
                 const top = args.destination_id === "msgfolderroot";
+                if (args.merge) {
+                    merged.add(String(args.folder_id));
+                    return { account_id: args.account_id, folder_id: args.folder_id, parent_id: top ? null : args.destination_id, moved: true, merged: true, kept: [] };
+                }
                 moved.set(String(args.folder_id), top ? "root" : String(args.destination_id));
-                return { account_id: args.account_id, folder_id: args.folder_id, parent_id: top ? null : args.destination_id, moved: true };
+                return { account_id: args.account_id, folder_id: args.folder_id, parent_id: top ? null : args.destination_id, moved: true, merged: false };
             },
             "mail.folders.set_favourite": (args) => {
                 if (args.favourite) pinned.add(args.folder_id);

@@ -241,7 +241,14 @@ impl FakeGraph {
                 get(automatic_replies),
             )
             .route("/v1.0/me/mailFolders/delta", get(folders_delta))
-            .route("/v1.0/me/mailFolders/{folder}", get(folder))
+            .route(
+                "/v1.0/me/mailFolders/{folder}",
+                get(folder).delete(delete_folder),
+            )
+            .route(
+                "/v1.0/me/mailFolders/{folder}/messages",
+                get(folder_messages),
+            )
             .route(
                 "/v1.0/me/mailFolders/{folder}/move",
                 axum::routing::post(move_folder),
@@ -2119,6 +2126,49 @@ async fn folder(State(shared): State<Shared>, Path(folder): Path<String>) -> Res
             "There is no such folder.",
         ),
     }
+}
+
+/// "Delete mailFolder" (SOURCES.md): 204, and what was in it goes too.
+async fn delete_folder(State(shared): State<Shared>, Path(folder): Path<String>) -> Response {
+    let mut inner = lock(&shared);
+    let Some(id) = inner.mailbox.folder_id(&folder) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such folder.",
+        );
+    };
+    inner.mailbox.remove_folder(&id);
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// "List messages" (SOURCES.md), for ids alone, a page of them.
+async fn folder_messages(
+    State(shared): State<Shared>,
+    Path(folder): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let inner = lock(&shared);
+    let Some(id) = inner.mailbox.folder_id(&folder) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such folder.",
+        );
+    };
+    let top = query
+        .get("$top")
+        .and_then(|top| top.parse().ok())
+        .unwrap_or(10);
+    let value: Vec<Value> = inner
+        .mailbox
+        .message_ids(&id, top)
+        .into_iter()
+        .map(|id| json!({ "id": id }))
+        .collect();
+
+    axum::Json(json!({ "value": value })).into_response()
 }
 
 /// "mailFolder: move" (SOURCES.md): answered with 200 and the folder.

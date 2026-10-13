@@ -87,6 +87,13 @@ folder, choose **Move to…** and pick where it goes, the top of the mailbox
 included. Inbox, Sent Items and the other standard folders stay where they
 are. The move is made in Microsoft 365, so it needs a connection.
 
+Two folders of one name cannot be in the same place. Move a folder to where
+its name is already taken and you are asked whether to merge them instead:
+its messages go into the folder that is there, its folders go across too
+(merged the same way where their names clash), and it is removed once it is
+empty. Nothing is deleted but an emptied folder. A merge cannot be undone in
+one step; if it stops part way, nothing is lost, and merging again carries on.
+
 ## Shared mailboxes and calendars
 
 Microsoft 365 does not list the mailboxes you have been given access to, so

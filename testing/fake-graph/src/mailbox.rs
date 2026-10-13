@@ -353,6 +353,19 @@ impl Mailbox {
             }
             above = self.folders.get(&each).map(|folder| folder.parent.clone());
         }
+        // Two folders of one name are not kept in one place.
+        let Some(name) = self
+            .folders
+            .get(id)
+            .map(|folder| folder.name.to_lowercase())
+        else {
+            return false;
+        };
+        if self.folders.iter().any(|(other, folder)| {
+            other != id && folder.parent == to && folder.name.to_lowercase() == name
+        }) {
+            return false;
+        }
         let Some(folder) = self.folders.get_mut(id) else {
             return false;
         };
@@ -514,6 +527,21 @@ impl Mailbox {
 
     pub fn expire_delta_tokens(&mut self) {
         self.epoch += 1;
+    }
+
+    /// "List messages" (SOURCES.md), asked for ids alone: those of the
+    /// messages in a folder, `top` at most, in the order of their ids.
+    pub fn message_ids(&self, folder: &str, top: usize) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .messages
+            .iter()
+            .filter(|(_, stored)| stored.folder == folder)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids.truncate(top);
+
+        ids
     }
 
     /// Every message as it truly is: id to (folder, subject, read).

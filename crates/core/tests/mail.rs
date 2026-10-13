@@ -251,6 +251,95 @@ async fn a_folder_is_moved_into_another_with_what_is_inside_it() {
 }
 
 #[tokio::test]
+async fn a_folder_moved_where_its_name_is_taken_is_merged_only_when_asked() {
+    let f = Fixture::signed_in().await;
+    // In the inbox: Clients, holding London and Zed.
+    let kept = f.graph.add_folder("Clients", Some(&f.inbox));
+    let kept_london = f.graph.add_folder("London", Some(&kept));
+    f.graph.add_folder("Zed", Some(&kept));
+    f.graph.add_message(
+        &kept_london,
+        message("Lease", "Sam Taylor", "2026-10-01T09:00:00Z"),
+    );
+    // At the top: another Clients, holding London and Acme, and mail of its own.
+    let loose = f.graph.add_folder("clients", None);
+    let loose_london = f.graph.add_folder("London", Some(&loose));
+    let acme = f.graph.add_folder("Acme", Some(&loose));
+    for n in 0..2 {
+        f.graph.add_message(
+            &loose_london,
+            message(&format!("Rent {n}"), "Sam Taylor", "2026-10-02T09:00:00Z"),
+        );
+    }
+    f.graph
+        .add_message(&acme, message("Quote", "Alex Chen", "2026-10-03T09:00:00Z"));
+    // More than one page of them.
+    for n in 0..120 {
+        f.graph.add_message(
+            &loose,
+            message(&format!("Note {n}"), "Alex Chen", "2026-10-04T09:00:00Z"),
+        );
+    }
+    f.sync().await;
+    let all = f.graph.messages().len();
+
+    // Not unasked: nothing is moved, and the server is not troubled.
+    let refused = f
+        .registry
+        .execute(
+            "mail.folders.move",
+            json!({ "folder_id": loose, "destination_id": "inbox" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("already has a folder called Clients"),
+        "{refused}"
+    );
+    assert_eq!(f.graph.folder_moves(), 0);
+    assert_eq!(f.graph.messages().len(), all);
+
+    let merged = f
+        .run(
+            "mail.folders.move",
+            json!({ "folder_id": loose, "destination_id": "inbox", "merge": true }),
+        )
+        .await;
+
+    assert_eq!(merged["merged"], true);
+    assert_eq!(merged["into"], json!(kept));
+    assert_eq!(merged["messages"], 122);
+    assert_eq!(merged["folders"], 1);
+    assert_eq!(merged["kept"], json!([]));
+    // On the server not a message is lost, and each is where it should be.
+    let now = f.graph.messages();
+    assert_eq!(now.len(), all);
+    let held = |folder: &str| now.values().filter(|(at, _, _)| at == folder).count();
+    assert_eq!(held(&kept), 120);
+    assert_eq!(held(&kept_london), 3);
+    assert_eq!(held(&acme), 1);
+    let folders = f.graph.folders();
+    assert_eq!(folders[&acme].1, kept);
+    assert!(!folders.contains_key(&loose));
+    assert!(!folders.contains_key(&loose_london));
+    // And here the same is shown, without another sync being asked for.
+    assert_eq!(
+        tree(&f).await,
+        [
+            ("Clients".to_owned(), 1),
+            ("Acme".to_owned(), 2),
+            ("London".to_owned(), 2),
+            ("Zed".to_owned(), 2),
+        ]
+    );
+    let listed = f
+        .run("mail.messages.list", json!({ "folder_id": kept_london }))
+        .await;
+    assert_eq!(listed["total"], 3);
+}
+
+#[tokio::test]
 async fn a_folder_is_not_moved_where_it_cannot_go() {
     let f = Fixture::signed_in().await;
     let projects = f.graph.add_folder("Projects", None);

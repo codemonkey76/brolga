@@ -456,6 +456,27 @@ test("a folder's menu moves it to a folder chosen from the tree", async ({ page 
     ]);
 });
 
+test("a folder moved where its name is taken is merged into the one there, once that is agreed to", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox, moreFolders: [{ id: "site", name: "website" }, { id: "plans", name: "Plans" }] });
+
+    await line(page, "website").dragTo(line(page, "Projects"));
+    const asking = page.getByRole("dialog", { name: "Merge website into the Website in Projects?" });
+    await expect(asking).toContainText("Projects already has a folder called Website");
+    await asking.getByRole("button", { name: "Merge" }).click();
+    await expect(asking).toHaveCount(0);
+
+    expect(await moves(page)).toEqual([{ account_id: robin.id, folder_id: "site", destination_id: "projects", merge: true }]);
+    await expect(line(page, "website")).toHaveCount(0);
+
+    // Chosen from the menu, it is said as soon as such a place is picked; elsewhere it is a plain move.
+    await folder(page, "Surveys").click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Move to…" }).click();
+    const choosing = page.getByRole("dialog", { name: "Move Surveys to" });
+    await choosing.getByRole("radio", { name: "Plans" }).check();
+    await expect(choosing.getByRole("button", { name: "Move" })).toBeEnabled();
+    await expect(choosing.getByRole("button", { name: "Merge" })).toHaveCount(0);
+});
+
 test("a standard folder's menu does not offer to move it, and Escape puts a menu away", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
 

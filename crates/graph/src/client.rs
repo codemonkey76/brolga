@@ -838,6 +838,72 @@ impl GraphClient {
         )
     }
 
+    /// The ids of some of the messages in a folder, a hundred at most
+    /// ("List messages", SOURCES.md). It changes nothing. Asked again once
+    /// those have been moved out, it gives the next of them, until none.
+    pub async fn folder_message_ids(&self, folder_id: &str) -> Result<Vec<String>, GraphError> {
+        let folder_id = seg(folder_id)?;
+        let url = format!(
+            "{}/me/mailFolders/{folder_id}/messages?$select=id&$top=100",
+            self.base
+        );
+        let page: serde_json::Value = decode(&self.get(&url, Some(100)).await?)?;
+
+        Ok(page["value"]
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter_map(|each| each["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// How many items a folder holds and how many folders are inside it, as
+    /// `(items, folders)`, the hidden ones counted too ("mailFolder resource
+    /// type", SOURCES.md). Nothing if there is no such folder.
+    pub async fn folder_counts(&self, folder_id: &str) -> Result<Option<(i64, i64)>, GraphError> {
+        let folder_id = seg(folder_id)?;
+        let url = format!(
+            "{}/me/mailFolders/{folder_id}?$select=totalItemCount,childFolderCount",
+            self.base
+        );
+
+        match self.get(&url, None).await {
+            Ok(body) => {
+                let folder: serde_json::Value = decode(&body)?;
+                // A count that is not given is not taken for none.
+                match (
+                    folder["totalItemCount"].as_i64(),
+                    folder["childFolderCount"].as_i64(),
+                ) {
+                    (Some(items), Some(folders)) => Ok(Some((items, folders))),
+                    _ => Err(GraphError::Decode(
+                        "a folder came without its counts".to_owned(),
+                    )),
+                }
+            }
+            Err(GraphError::Refused { status: 404, .. }) => Ok(None),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Delete a folder ("Delete mailFolder", SOURCES.md), and with it
+    /// whatever it holds: the caller sees that it holds nothing. One
+    /// already gone is as good as deleted.
+    pub async fn delete_folder(&self, folder_id: &str) -> Result<(), GraphError> {
+        let folder_id = seg(folder_id)?;
+        let url = format!("{}/me/mailFolders/{folder_id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
     /// Create a draft from a message object: subject, body and recipients
     /// ("Create message", SOURCES.md). Gives back the draft as created.
     ///

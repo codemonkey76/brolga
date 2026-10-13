@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use brolga_commands::{CommandError, CommandKind, CommandSpec, Handler, Registry, RegistryError};
 use brolga_mail::{RemoteContent, html_to_text, sanitise_html, text_to_html};
-use brolga_store::{AttachmentRow, Body, InlineImage, MessageRow, Order};
+use brolga_store::{AttachmentRow, Body, Folder, InlineImage, MessageRow, Order};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -110,6 +110,8 @@ struct MoveFolder {
     account_id: Option<String>,
     folder_id: String,
     destination_id: String,
+    #[serde(default)]
+    merge: bool,
 }
 
 /// Graph's name for the top of a mailbox: the folder the inbox and its
@@ -446,13 +448,35 @@ async fn move_folder(context: Context, args: MoveFolder) -> Result<Value, Comman
             .and_then(|parent| folders.iter().find(|other| other.id == parent));
     }
 
-    // A parent that is not one of the folders listed is the top of the mailbox.
-    let listed = |id: &str| folders.iter().any(|each| each.id == id);
-    let now = moving.parent_id.as_deref().filter(|&id| listed(id));
+    let now = parent_in(&folders, moving);
     let wanted = destination.map(|each| each.id.as_str());
     if now == wanted {
         return Ok(json!({
-            "account_id": account.id, "folder_id": moving.id, "parent_id": now, "moved": false
+            "account_id": account.id, "folder_id": moving.id, "parent_id": now, "moved": false, "merged": false
+        }));
+    }
+
+    // Two folders of one name are not kept in one place: Microsoft 365
+    // does not make the move, and gives no reason. So it is not asked to.
+    let twin = folders.iter().find(|each| {
+        each.id != moving.id
+            && parent_in(&folders, each) == wanted
+            && same_name(&each.name, &moving.name)
+    });
+    if let Some(twin) = twin {
+        if !args.merge {
+            return Err(failed(format!(
+                "{} already has a folder called {}. Ask again with `merge` to put everything in this one into that one.",
+                destination.map_or("The top of the mailbox", |each| each.name.as_str()),
+                twin.name
+            )));
+        }
+        let merged = merge_folders(&mailbox, &moving.id, &twin.id).await?;
+
+        return Ok(json!({
+            "account_id": account.id, "folder_id": moving.id, "parent_id": wanted, "moved": true,
+            "merged": true, "into": twin.id, "messages": merged.messages, "folders": merged.folders,
+            "kept": merged.kept
         }));
     }
 
@@ -460,16 +484,7 @@ async fn move_folder(context: Context, args: MoveFolder) -> Result<Value, Comman
         .graph
         .move_folder(&moving.id, wanted.unwrap_or(TOP))
         .await
-        .map_err(|error| {
-            if error.is_transient() {
-                failed(format!(
-                    "Microsoft 365 could not be reached, so {} may not have been moved. Folders are moved there, and only while it can be reached; the next sync shows where it is.",
-                    moving.name
-                ))
-            } else {
-                failed(error)
-            }
-        })?;
+        .map_err(|error| not_moved(error, &moving.name, ""))?;
     let parent = moved.parent_folder_id.as_deref().or(wanted);
     mailbox
         .db
@@ -477,8 +492,175 @@ async fn move_folder(context: Context, args: MoveFolder) -> Result<Value, Comman
         .map_err(failed)?;
 
     Ok(json!({
-        "account_id": account.id, "folder_id": moving.id, "parent_id": parent.filter(|&id| listed(id)), "moved": true
+        "account_id": account.id, "folder_id": moving.id, "moved": true, "merged": false,
+        "parent_id": parent.filter(|&id| folders.iter().any(|each| each.id == id))
     }))
+}
+
+/// The folder a folder is in, where that is one of those listed. A parent
+/// that is not is the top of the mailbox.
+fn parent_in<'a>(folders: &[Folder], folder: &'a Folder) -> Option<&'a str> {
+    folder
+        .parent_id
+        .as_deref()
+        .filter(|&id| folders.iter().any(|each| each.id == id))
+}
+
+/// Whether two folders have the same name as a mailbox sees it, which is
+/// without regard to capitals.
+fn same_name(one: &str, other: &str) -> bool {
+    one.trim().to_lowercase() == other.trim().to_lowercase()
+}
+
+/// Why a folder was not moved, or may not have been. A move that fails on
+/// the server's side leaves no word of whether it was made.
+fn not_moved(error: brolga_graph::GraphError, name: &str, also: &str) -> CommandError {
+    use brolga_graph::GraphError;
+
+    match error {
+        GraphError::Network(_) => failed(format!(
+            "Microsoft 365 could not be reached, so {name} may not have been moved.{also} The next sync shows where things are."
+        )),
+        GraphError::Busy { status } => failed(format!(
+            "Microsoft 365 did not move {name}: it answered with an error of its own ({status}).{also} The next sync shows where things are."
+        )),
+        other => failed(format!("{other}{also}")),
+    }
+}
+
+/// What a merge did.
+struct Merged {
+    /// Messages moved across.
+    messages: u64,
+    /// Folders moved across whole, having no namesake where they went.
+    folders: u64,
+    /// Folders that were to be emptied and removed, and still hold something.
+    kept: Vec<String>,
+}
+
+/// Put everything in one folder into another: its messages, and its folders,
+/// each of which goes across whole unless a folder of its name is already
+/// there, when the two are merged in the same way. A folder is removed once
+/// Microsoft 365 says it holds nothing at all, and not otherwise.
+///
+/// Nothing is deleted but an empty folder, so a merge that stops part way
+/// has lost nothing, and asked for again carries on from where it stopped.
+async fn merge_folders(
+    mailbox: &crate::mailboxes::Mailbox,
+    from: &str,
+    into: &str,
+) -> Result<Merged, CommandError> {
+    const ALSO: &str =
+        " Some of it may already have been merged; merging again carries on from there.";
+    // No sync runs across this: it would see the mail half way.
+    let _one_at_a_time = mailbox.syncing.lock().await;
+    let turn = mailbox.sync_turn().ok().flatten();
+    // The folders as they are now, not as they were when last looked at.
+    if turn.is_some() {
+        mailbox.sync.sync_folders().await.map_err(failed)?;
+    }
+    let folders = mailbox.db.folders().map_err(failed)?;
+    let name = |id: &str| {
+        folders
+            .iter()
+            .find(|each| each.id == id)
+            .map_or("the folder", |each| each.name.as_str())
+    };
+    let inside = |id: &str| -> Vec<&Folder> {
+        folders
+            .iter()
+            .filter(|each| each.parent_id.as_deref() == Some(id))
+            .collect()
+    };
+    if [from, into]
+        .iter()
+        .any(|id| !folders.iter().any(|each| each.id == *id))
+    {
+        return Err(failed(
+            "The folders have changed since they were listed. Look again and ask again.",
+        ));
+    }
+
+    let mut merged = Merged {
+        messages: 0,
+        folders: 0,
+        kept: Vec::new(),
+    };
+    // Each pair is a folder to empty and the folder to empty it into. A
+    // folder is always met before the folders inside it.
+    let mut pairs = vec![(from.to_owned(), into.to_owned())];
+    let mut emptied: Vec<(String, String)> = Vec::new();
+    while let Some((from, into)) = pairs.pop() {
+        for child in inside(&from) {
+            let twin = inside(&into)
+                .into_iter()
+                .find(|each| same_name(&each.name, &child.name));
+            match twin {
+                Some(twin) => pairs.push((child.id.clone(), twin.id.clone())),
+                None => {
+                    mailbox
+                        .graph
+                        .move_folder(&child.id, &into)
+                        .await
+                        .map_err(|error| not_moved(error, &child.name, ALSO))?;
+                    mailbox
+                        .db
+                        .set_folder_parent(&child.id, Some(&into))
+                        .map_err(failed)?;
+                    merged.folders += 1;
+                }
+            }
+        }
+        // The messages, a page at a time, asked for afresh each time: what
+        // has been moved is no longer there to be listed.
+        loop {
+            let ids = mailbox
+                .graph
+                .folder_message_ids(&from)
+                .await
+                .map_err(|error| not_moved(error, name(&from), ALSO))?;
+            if ids.is_empty() {
+                break;
+            }
+            let moves = ids.iter().map(|id| mailbox.graph.move_message(id, &into));
+            for moved in futures::future::join_all(moves).await {
+                moved.map_err(|error| not_moved(error, name(&from), ALSO))?;
+                merged.messages += 1;
+            }
+        }
+        emptied.push((from, into));
+    }
+
+    // What came across is shown where it now is before the folders it left
+    // are forgotten, so that nothing read in already is fetched again.
+    if turn.is_some() {
+        for (_, into) in &emptied {
+            let _ = mailbox.sync.sync_messages(into).await;
+        }
+    }
+    // The innermost first: a folder is empty only once those inside it are gone.
+    for (from, _) in emptied.iter().rev() {
+        match mailbox
+            .graph
+            .folder_counts(from)
+            .await
+            .map_err(|error| not_moved(error, name(from), ALSO))?
+        {
+            Some((0, 0)) => mailbox
+                .graph
+                .delete_folder(from)
+                .await
+                .map_err(|error| not_moved(error, name(from), ALSO))?,
+            // Something is in it that is not a message, or came while this ran.
+            Some(_) => merged.kept.push(name(from).to_owned()),
+            None => {}
+        }
+    }
+    if turn.is_some() {
+        let _ = mailbox.sync.sync_folders().await;
+    }
+
+    Ok(merged)
 }
 
 async fn messages(context: Context, args: Messages) -> Result<Value, CommandError> {
@@ -1316,7 +1498,11 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             description: "Put a folder inside another folder, with every message and folder in it. `folder_id` is the folder's id from mail.folders.list. \
                           `destination_id` is the id of the folder to put it in, or a standard folder's well-known name such as inbox, or `msgfolderroot` for the top of the mailbox. \
                           The standard folders themselves stay where they are, and a folder cannot go into itself or into a folder inside it. \
-                          The move is made at Microsoft 365, so it needs a connection; moving the folder back undoes it. `moved` is false when it was already there."
+                          The move is made at Microsoft 365, so it needs a connection; moving the folder back undoes it. `moved` is false when it was already there. \
+                          Where the destination already has a folder of the same name the move is refused, unless `merge` is true: then every message in this folder is moved into that one, \
+                          its folders go across too (merged in the same way where their names are also there already), and each emptied folder is deleted once Microsoft 365 says it holds nothing. \
+                          A merge cannot be undone in one step and can take minutes for a big folder; one that stops part way has lost nothing, and asked for again carries on. \
+                          `kept` names folders that still held something and were left."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: false,
@@ -1326,7 +1512,8 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                 "properties": {
                     "account_id": account_id_property(),
                     "folder_id": { "type": "string" },
-                    "destination_id": { "type": "string", "description": "A folder's id, a well-known name such as inbox, or msgfolderroot for the top of the mailbox." }
+                    "destination_id": { "type": "string", "description": "A folder's id, a well-known name such as inbox, or msgfolderroot for the top of the mailbox." },
+                    "merge": { "type": "boolean", "description": "Merge into a folder of the same name that is already there, instead of refusing." }
                 },
                 "required": ["folder_id", "destination_id"],
                 "additionalProperties": false
@@ -1337,9 +1524,14 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                     "account_id": { "type": "string" },
                     "folder_id": { "type": "string" },
                     "parent_id": { "type": ["string", "null"], "description": "The folder it is in now, or null at the top of the mailbox." },
-                    "moved": { "type": "boolean" }
+                    "moved": { "type": "boolean" },
+                    "merged": { "type": "boolean" },
+                    "into": { "type": "string", "description": "After a merge, the folder that now holds everything." },
+                    "messages": { "type": "integer", "description": "After a merge, how many messages were moved across." },
+                    "folders": { "type": "integer", "description": "After a merge, how many folders were moved across whole." },
+                    "kept": { "type": "array", "items": { "type": "string" }, "description": "After a merge, folders that still held something and were not deleted." }
                 },
-                "required": ["account_id", "folder_id", "parent_id", "moved"]
+                "required": ["account_id", "folder_id", "parent_id", "moved", "merged"]
             }),
             examples: vec![json!({ "folder_id": "folder-000010", "destination_id": "inbox" })],
         },

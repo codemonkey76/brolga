@@ -737,16 +737,19 @@
         menu = { folder: each, x: pointed ? event.clientX : box.left + 24, y: pointed ? event.clientY : box.bottom };
     }
 
-    async function moveFolderTo(destination: string) {
+    async function moveFolderTo(destination: string, merge: boolean) {
         if (!accountId || !moving || moving.busy) return;
         const { folder } = moving;
         moving = { ...moving, busy: true, problem: null };
         try {
-            await moveFolder(accountId, folder.id, destination);
+            const done = await moveFolder(accountId, folder.id, destination, merge);
             moving = null;
             // What it went into is opened, to show it there.
             if (collapsed.includes(destination)) toggle(destination);
-            await relist();
+            // After a merge the folder shown may be one that is gone, or one that has gained mail.
+            await loadFolders();
+            if (done.merged) await refresh();
+            if (done.kept?.length) problem = `Not everything could be moved out of ${done.kept.join(", ")}, so ${done.kept.length > 1 ? "they were" : "it was"} left where ${done.kept.length > 1 ? "they were" : "it was"}.`;
         } catch (failure) {
             if (moving) moving = { ...moving, busy: false, problem: say(failure) };
         }
