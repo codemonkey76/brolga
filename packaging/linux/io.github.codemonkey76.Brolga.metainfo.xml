@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.13" date="2026-10-13">
+      <description>
+        <p>A folder moved to where a folder of the same name already is can be merged into it: its messages and folders go across, and it is removed once empty.</p>
+      </description>
+    </release>
     <release version="0.1.12" date="2026-10-13">
       <description>
         <p>A folder can be moved into another: drag it there and agree to it, or right-click it and choose Move to.</p>
