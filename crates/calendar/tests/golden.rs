@@ -702,3 +702,35 @@ fn occurrences_come_in_order_with_none_twice_whatever_the_pattern() {
         }
     }
 }
+
+#[test]
+fn a_series_that_steps_past_the_last_year_there_is_ends_and_does_not_panic() {
+    // Found by the fuzzer: every 9991 years from 2020 is the year 12011.
+    for (kind, extra) in [
+        (
+            "relativeYearly",
+            r#""daysOfWeek":["friday"],"index":"last","month":10"#,
+        ),
+        ("absoluteYearly", r#""dayOfMonth":29,"month":2"#),
+    ] {
+        let recurrence: serde_json::Value = serde_json::from_str(&format!(
+            r#"{{"pattern":{{"type":"{kind}","interval":9991,{extra}}},"range":{{"type":"noEnd","startDate":"2020-02-29"}}}}"#
+        ))
+        .unwrap();
+        let s = Series::from_graph(
+            date(2020, 2, 29).at(0, 0, 0, 0),
+            date(2020, 3, 1).at(0, 0, 0, 0),
+            "America/New_York",
+            &recurrence,
+        )
+        .unwrap();
+
+        let found = occurrences(
+            &s,
+            "2020-01-01T00:00:00Z".parse().unwrap(),
+            "2032-01-01T00:00:00Z".parse().unwrap(),
+            500,
+        );
+        assert_eq!(found.map(|found| found.len()).ok(), Some(1), "{kind}");
+    }
+}

@@ -220,7 +220,12 @@ pub fn occurrences(
 
     let mut found = Vec::new();
     for (count, day) in days(series).enumerate() {
-        let day = day?;
+        // The days come in order, so one past the last date there is comes
+        // after any time asked about: the series has run out, not failed.
+        let day = match day {
+            Err(RecurrenceError::OutOfRange) => break,
+            day => day?,
+        };
         if count >= MOST {
             break;
         }
@@ -433,7 +438,11 @@ fn month_of(from: Date, months: i64) -> Result<(i16, i8), RecurrenceError> {
 }
 
 fn year_of(from: Date, years: i64) -> Result<i16, RecurrenceError> {
-    i16::try_from(i64::from(from.year()) + years).map_err(|_| RecurrenceError::OutOfRange)
+    // A year can be counted that there is no date in: the last is 9999.
+    i16::try_from(i64::from(from.year()) + years)
+        .ok()
+        .filter(|year| Date::new(*year, 1, 1).is_ok())
+        .ok_or(RecurrenceError::OutOfRange)
 }
 
 /// A day of a month, or the month's last day where it has no such day: the
