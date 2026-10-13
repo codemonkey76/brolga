@@ -374,6 +374,12 @@ const STEPS: &[&str] = &[
         attempts INTEGER NOT NULL DEFAULT 0
     ) STRICT;
 ",
+    "
+    -- How many pictures kept on the web a draft written in another mail
+    -- program had when it was taken up here. They are not brought into the
+    -- draft, and whoever changes it is told so first.
+    ALTER TABLE drafts ADD COLUMN web_pictures INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

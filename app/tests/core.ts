@@ -49,6 +49,8 @@ export interface FakeMail {
     body: string;
     /** How many remote pictures the core left out of `body`. */
     blocked?: number;
+    /** For a draft: the pictures within its body that the core brings with it when it is opened. */
+    pictures?: { id: number; name: string; content_type: string; size: number; content_id: string; content_base64: string }[];
     /** The body once the pictures have been asked for. */
     bodyWithPictures?: string;
     /** The message's own style sheet, as the core would hand it over: already made safe. */
@@ -925,7 +927,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     state: "editing",
                     error: null,
                     on_server: true,
-                    files: [],
+                    files: [...(m.pictures ?? [])],
+                    web_pictures_left_out: m.blocked ?? 0,
                 };
                 drafts.unshift(taken);
                 return { draft: taken };

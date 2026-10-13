@@ -291,6 +291,7 @@ fn shown(mailbox: &Mailbox, draft: &Draft) -> Value {
         "updated_at": draft.updated_at,
         "on_server": draft.server_id.is_some(),
         "files": files,
+        "web_pictures_left_out": mailbox.db.draft_web_pictures(&draft.id).unwrap_or(0),
     })
 }
 
@@ -773,6 +774,82 @@ async fn discard(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandE
     Ok(json!({ "discarded": discarded }))
 }
 
+/// The name a body's picture refers to an attached one by, where it is one
+/// that can be looked for in the body as it is written, letter for letter:
+/// `cid:` and plain characters, none of which HTML writes another way.
+fn plain_picture_name(address: &str) -> Option<&str> {
+    address.strip_prefix("cid:").filter(|name| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_graphic() && !matches!(c, '&' | '<' | '>' | '"' | '\''))
+    })
+}
+
+/// Make the draft's own the pictures within a body written in another mail
+/// program, which the server's copy carries as inline attachments ("Get
+/// attachment", SOURCES.md): each is kept here under the name the body
+/// calls it by and its id on that copy, so it is shown as it is written
+/// around, and goes with the message as it came.
+///
+/// The limits are those for the pictures of mail that is read. One left
+/// out, or that cannot be fetched now, stays on the server's copy and in
+/// the body as it was; it is only not shown.
+async fn take_up_pictures(mailbox: &Mailbox, server_id: &str, draft: &Draft) {
+    use crate::mail_commands::{MAX_INLINE_BYTES, MAX_INLINE_IMAGES};
+    use base64::Engine;
+
+    let sources = brolga_mail::image_sources(&draft.body);
+    let mut wanted: Vec<&str> = sources
+        .iter()
+        .filter_map(|source| plain_picture_name(&source.address))
+        .collect();
+    if wanted.is_empty() {
+        return;
+    }
+    let Ok(attached) = mailbox.graph.attachments(server_id).await else {
+        return;
+    };
+
+    for each in attached
+        .iter()
+        .filter(|a| a.is_inline == Some(true) && a.kind() == "file")
+        .filter(|a| a.size.is_some_and(|size| size <= MAX_INLINE_BYTES))
+        .take(MAX_INLINE_IMAGES)
+    {
+        let Ok(whole) = mailbox.graph.file_attachment(server_id, &each.id).await else {
+            continue;
+        };
+        let (Some(content_id), Some(content)) = (whole.content_id, whole.content_bytes) else {
+            continue;
+        };
+        let content_id = content_id.trim_matches(['<', '>']);
+        // By the body's own spelling of the name, which is what is looked
+        // for in the body when it is asked whether the picture is still in it.
+        let Some(at) = wanted
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(content_id))
+        else {
+            continue;
+        };
+        let Ok(data) = base64::engine::general_purpose::STANDARD.decode(content.trim()) else {
+            continue;
+        };
+        // By how it begins, not by what it is said to be.
+        let Some(kind) = picture_type(&data) else {
+            continue;
+        };
+        let name = crate::saving::safe_name(each.name.as_deref().unwrap_or("picture"));
+        if mailbox
+            .db
+            .adopt_draft_picture(&draft.id, &name, kind, &data, wanted[at], &each.id)
+            .is_ok()
+        {
+            wanted.remove(at);
+        }
+    }
+}
+
 /// Carry on with a draft that is in the mailbox's Drafts folder: the one
 /// already here for it, or else a copy taken from the server now.
 async fn open_draft(mailboxes: Arc<Mailboxes>, args: OpenDraft) -> Result<Value, CommandError> {
@@ -806,9 +883,13 @@ async fn open_draft(mailboxes: Arc<Mailboxes>, args: OpenDraft) -> Result<Value,
     };
     // What was written elsewhere is cleaned like any other mail before it
     // is kept, and is formatted whatever it was written as.
+    let mut web_pictures = 0;
     let body = server.body.map(|body| {
         if body.content_type.eq_ignore_ascii_case("html") {
-            brolga_mail::sanitise_html(&body.content, brolga_mail::RemoteContent::Blocked).html
+            let clean =
+                brolga_mail::sanitise_html(&body.content, brolga_mail::RemoteContent::Blocked);
+            web_pictures = clean.blocked_remote;
+            clean.html
         } else {
             brolga_mail::text_to_paragraphs(&body.content)
         }
@@ -825,6 +906,13 @@ async fn open_draft(mailboxes: Arc<Mailboxes>, args: OpenDraft) -> Result<Value,
         .db
         .adopt_draft(&args.message_id, &content)
         .map_err(failed)?;
+    if web_pictures > 0 {
+        mailbox
+            .db
+            .set_draft_web_pictures(&draft.id, web_pictures)
+            .map_err(failed)?;
+    }
+    take_up_pictures(&mailbox, &args.message_id, &draft).await;
 
     Ok(json!({ "draft": shown(&mailbox, &draft) }))
 }
@@ -951,7 +1039,8 @@ fn draft_schema() -> Value {
             "error": { "type": ["string", "null"] },
             "updated_at": { "type": "integer", "description": "Seconds since 1970." },
             "on_server": { "type": "boolean", "description": "It has a copy in the mailbox's Drafts folder, so other mail programs show it." },
-            "files": { "type": "array", "items": file_schema(), "description": "The files attached, without their contents." }
+            "files": { "type": "array", "items": file_schema(), "description": "The files attached, without their contents." },
+            "web_pictures_left_out": { "type": "integer", "description": "On a draft written in another mail program: how many pictures kept on the web its body had. They are not in `body`, and are gone from the draft for good once it is changed here." }
         },
         "required": ["id", "kind", "to", "cc", "bcc", "subject", "body", "state"]
     })
@@ -1152,8 +1241,9 @@ pub(crate) fn register(
             id: "mail.drafts.open".to_owned(),
             title: "Carry on with a draft".to_owned(),
             description: "Take up a draft that is in the mailbox's Drafts folder, by its message id, to change or send it: the draft already here for it, \
-                          or a copy fetched now if it was written in another mail program. Formatting this client does not keep, such as fonts and colours, \
-                          is lost from a draft written elsewhere once it is changed here."
+                          or a copy fetched now if it was written in another mail program. Pictures within its body that are attached to it come with it, as files with a `content_id`. \
+                          Formatting this client does not keep, such as fonts and colours, and pictures kept on the web (`web_pictures_left_out` counts them) \
+                          are lost from a draft written elsewhere once it is changed here."
                 .to_owned(),
             kind: CommandKind::Action,
             consequential: false,

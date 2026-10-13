@@ -801,8 +801,8 @@ fn has_inline_images(html: &str) -> bool {
         .any(|source| content_id_of(&source.address).is_some())
 }
 /// The most pictures put into one message, and the largest of them.
-const MAX_INLINE_IMAGES: usize = 40;
-const MAX_INLINE_BYTES: i64 = 3 * 1024 * 1024;
+pub(crate) const MAX_INLINE_IMAGES: usize = 40;
+pub(crate) const MAX_INLINE_BYTES: i64 = 3 * 1024 * 1024;
 /// Plain picture types only. SVG is not one: it can carry scripts.
 pub(crate) const PICTURE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 

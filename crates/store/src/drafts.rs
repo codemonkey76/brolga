@@ -284,6 +284,62 @@ impl AccountDb {
         }))
     }
 
+    /// Count as a draft's own a picture within its body that the server's
+    /// copy already has, on a draft written in another mail program: by the
+    /// name the body refers to it by, and its id on that copy. It is not
+    /// sent there again, and taken out of the body here it is taken off
+    /// there, as a picture put in here would be.
+    pub fn adopt_draft_picture(
+        &self,
+        draft_id: &str,
+        name: &str,
+        content_type: &str,
+        data: &[u8],
+        content_id: &str,
+        attachment_id: &str,
+    ) -> Result<DraftFile, StoreError> {
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO draft_files (draft_id, name, content_type, size, data, upload_tried, uploaded, content_id, attachment_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, ?6, ?7)",
+            params![draft_id, name, content_type, data.len() as i64, data, content_id, attachment_id],
+        )?;
+
+        Ok(DraftFile {
+            id: connection.last_insert_rowid(),
+            name: name.to_owned(),
+            content_type: content_type.to_owned(),
+            size: data.len() as i64,
+            upload_tried: true,
+            uploaded: true,
+            content_id: Some(content_id.to_owned()),
+            attachment_id: Some(attachment_id.to_owned()),
+        })
+    }
+
+    /// How many pictures kept on the web were left out of a draft written
+    /// in another mail program when it was taken up here.
+    pub fn draft_web_pictures(&self, draft_id: &str) -> Result<u32, StoreError> {
+        Ok(self
+            .connection()
+            .query_row(
+                "SELECT web_pictures FROM drafts WHERE id = ?1",
+                [draft_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    pub fn set_draft_web_pictures(&self, draft_id: &str, count: u32) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE drafts SET web_pictures = ?2 WHERE id = ?1",
+            params![draft_id, count],
+        )?;
+
+        Ok(())
+    }
+
     /// One file of a draft, with its contents.
     pub fn draft_file(
         &self,

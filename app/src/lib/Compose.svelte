@@ -77,7 +77,8 @@
      */
     function showPictures(within: HTMLElement) {
         const elsewhere: HTMLImageElement[] = [];
-        for (const image of within.querySelectorAll<HTMLImageElement>('img[src^="cid:"]')) {
+        // However `cid:` is written: a draft from another mail program need not write it as this one does.
+        for (const image of within.querySelectorAll<HTMLImageElement>('img[src^="cid:" i]')) {
             const name = image.getAttribute("src")?.slice(4) ?? "";
             const file = files.find((each) => each.content_id === name);
             image.dataset.cid = name;
@@ -88,20 +89,26 @@
             }
             readFile(accountId, start.id, file.id)
                 .then((got) => (image.src = `data:${got.content_type};base64,${got.content_base64}`))
-                .catch(() => {});
+                .catch(() => (unshown += 1));
         }
-        // A draft begun in another mail program keeps its pictures with the
-        // mailbox's copy of it, such as those of a message it quotes.
+        // A draft begun in another mail program keeps with the mailbox's
+        // copy of it the pictures that were not brought here with it, such
+        // as one too large. One that cannot be had from there either is
+        // still part of the message: it is left a place, and said.
         if (elsewhere.length === 0) return;
         draftPictures(accountId, start.id)
+            .catch(() => [])
             .then((pictures) => {
                 for (const image of elsewhere) {
                     const got = pictures.find((each) => each.content_id.toLowerCase() === image.dataset.cid?.toLowerCase());
                     if (got) image.src = `data:${got.content_type};base64,${got.content_base64}`;
+                    else unshown += 1;
                 }
-            })
-            .catch(() => {});
+            });
     }
+
+    /** A picture written into the body itself, as a draft made elsewhere may carry one. */
+    const CARRIED = 'img[src^="data:image/" i]:not([data-cid])';
 
     /** The editor's contents as they are kept: each picture by its name again, not by its contents. */
     function written(): string {
@@ -110,11 +117,12 @@
         asWritten(copy);
         for (const image of copy.querySelectorAll<HTMLImageElement>("img")) {
             const name = image.dataset.cid;
-            // A picture that is not one of the draft's own is not sent.
-            if (!name) image.remove();
-            else {
+            if (name) {
                 image.setAttribute("src", `cid:${name}`);
                 image.removeAttribute("data-cid");
+            } else if (!image.matches(CARRIED)) {
+                // Neither one of the draft's own nor carried in its body: there is nothing of it to send.
+                image.remove();
             }
         }
         return copy.innerHTML;
@@ -122,6 +130,32 @@
 
     function edited() {
         if (editor) body = written();
+    }
+
+    /** Pictures that could not be made the draft's own, so that each is asked about once. */
+    const refused = new WeakSet<HTMLImageElement>();
+
+    /**
+     * A picture carried in the body is made a file of the draft, as one put
+     * in here is, since few mail programs show one that is not. It is done
+     * when the draft is first kept, not when it is opened, so that a draft
+     * only looked at is not written back. One that cannot be made a file
+     * stays in the body as it came.
+     */
+    async function takeInPictures() {
+        if (!editor) return;
+        for (const image of editor.querySelectorAll<HTMLImageElement>(CARRIED)) {
+            const carried = /^data:image\/([a-z]+);base64,(.*)$/is.exec(image.getAttribute("src") ?? "");
+            if (!carried || refused.has(image)) continue;
+            try {
+                const kept = await attachContent(accountId, start.id, `picture.${carried[1].toLowerCase()}`, carried[2], true);
+                files = [...files, kept];
+                if (kept.content_id) image.dataset.cid = kept.content_id;
+            } catch {
+                refused.add(image);
+            }
+        }
+        body = written();
     }
 
     let picker = $state<HTMLInputElement>();
@@ -244,6 +278,8 @@
     }
     let copies = $state(start.cc.length > 0 || start.bcc.length > 0);
     let files = $state<DraftFile[]>(start.files ?? []);
+    /** How many pictures within the message have a place in it and cannot be shown. */
+    let unshown = $state(0);
 
     /** Choose files with the system's dialog and attach each. One that cannot be attached is said, and the rest still are. */
     /** True while the file dialog is open, so a second click cannot open a second one. */
@@ -319,6 +355,7 @@
         if (kept === "kept") return true;
         kept = "keeping";
         try {
+            if (format === "html") await takeInPictures();
             await editDraft(accountId, start.id, { to: whole(to), cc: whole(cc), bcc: whole(bcc), subject, body, format });
             if (kept === "keeping") kept = "kept";
             problem = null;
@@ -429,6 +466,17 @@
 
     {#if problem}
         <p class="problem" role="alert">{problem}</p>
+    {/if}
+    {#if start.web_pictures_left_out}
+        <p class="muted unfinished" role="status">
+            This draft was written in another mail program, with {start.web_pictures_left_out === 1 ? "a picture" : `${start.web_pictures_left_out} pictures`} kept on the web.
+            {start.web_pictures_left_out === 1 ? "It is" : "They are"} not shown here, and {start.web_pictures_left_out === 1 ? "is" : "are"} taken out of the draft once it is changed here.
+        </p>
+    {/if}
+    {#if unshown > 0 && format === "html"}
+        <p class="muted unfinished" role="status">
+            {unshown === 1 ? "A picture in this draft cannot be shown here. It is" : `${unshown} pictures in this draft cannot be shown here. They are`} still part of the message, where the empty {unshown === 1 ? "box is" : "boxes are"}.
+        </p>
     {/if}
     {#if kept === "kept" && unfinished.length > 0}
         <p class="muted unfinished" role="status">`{unfinished[0]}` is not an email address yet, so it is not kept with the draft.</p>
@@ -661,6 +709,16 @@
     .words :global(img) {
         max-width: 100%;
         height: auto;
+    }
+
+    /* A picture with nothing to show yet, or at all, keeps a place that can be seen and written around. */
+    .words :global(img:not([src])) {
+        display: inline-block;
+        width: 6rem;
+        height: 4rem;
+        border: 1px dashed var(--line);
+        border-radius: 4px;
+        vertical-align: middle;
     }
 
     .unseen {

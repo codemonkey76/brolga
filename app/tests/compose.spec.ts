@@ -234,6 +234,58 @@ test("a picture deleted and brought back with undo is still sent", async ({ page
     expect(went.files.map((file) => file.content_id)).toEqual(["picture-1@brolga"]);
 });
 
+test("pictures in a draft written in another mail program are shown, kept through a change, and sent", async ({ page }) => {
+    await withCore(page, {
+        accounts: [robin],
+        mail: [
+            ...inbox,
+            {
+                id: "d1",
+                folder_id: "drafts",
+                is_draft: true,
+                subject: "Started in Outlook",
+                preview: "Dear Jo,",
+                from: { name: "Robin Example", address: "robin@example.test" },
+                received_at: "2026-10-09T02:00:00Z",
+                is_read: true,
+                has_attachments: false,
+                // One attached to the draft, one carried in the body, and two attached that the core did not bring.
+                body: `<p>Dear Jo,</p><img src="cid:logo@example"><img src="data:image/png;base64,${PIXEL}"><img src="CID:odd@example"><img src="cid:large@example">`,
+                pictures: [{ id: 1, name: "logo.png", content_type: "image/png", size: 68, content_id: "logo@example", content_base64: PIXEL }],
+                blocked: 2,
+            },
+        ],
+    });
+    await page.getByRole("list", { name: "Folders" }).getByRole("button", { name: /^Drafts/ }).click();
+    await messages(page).getByRole("option").first().click();
+    const form = page.getByRole("form", { name: "New message" });
+    const words = form.getByRole("textbox", { name: "Message" });
+
+    await expect(words.locator("img")).toHaveCount(4);
+    await expect(words.locator("img").first()).toHaveAttribute("src", `data:image/png;base64,${PIXEL}`);
+    await expect(form.getByText("with 2 pictures kept on the web")).toBeVisible();
+    await expect(form.getByText("2 pictures in this draft cannot be shown here")).toBeVisible();
+    // Only looked at, nothing of it is changed.
+    expect((await ran(page)).filter((r) => r.command === "mail.drafts.files.add" || r.command === "mail.drafts.edit")).toHaveLength(0);
+
+    await words.click();
+    await page.keyboard.press("Control+End");
+    await page.keyboard.type("See you Friday.");
+    await expect(form.getByText("Draft kept on this computer")).toBeVisible();
+
+    const kept = String((await edits(page)).at(-1)?.body);
+    expect(kept).toContain("See you Friday.");
+    for (const name of ["logo@example", "picture-2@brolga", "odd@example", "large@example"]) expect(kept).toContain(`src="cid:${name}"`);
+    // The one carried in the body is a file of the draft now, as one put in here is.
+    expect(kept).not.toContain("data:image");
+
+    await form.getByRole("button", { name: "Send" }).click();
+    await expect(form).toHaveCount(0);
+    const went = (await sent(page))[0] as { body: string; files: { content_id: string | null }[] };
+    expect(went.files.map((file) => file.content_id)).toEqual(["logo@example", "picture-2@brolga"]);
+    expect((await ran(page)).filter((r) => r.command === "mail.drafts.files.remove")).toHaveLength(0);
+});
+
 test("a file dialog that cannot be opened is said", async ({ page }) => {
     const form = await newMessage(page, { pickFails: "The file dialog could not be opened." });
 

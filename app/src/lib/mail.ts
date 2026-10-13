@@ -250,6 +250,8 @@ export interface Draft {
     state: "editing" | "queued" | "failed";
     error: string | null;
     files: DraftFile[];
+    /** On a draft written in another mail program: how many pictures kept on the web were left out of `body`. */
+    web_pictures_left_out?: number;
 }
 
 export interface DraftFile {

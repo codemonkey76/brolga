@@ -1778,6 +1778,147 @@ async fn a_draft_written_in_another_mail_program_is_taken_up_changed_and_sent() 
     );
 }
 
+/// A draft as another mail program leaves it: a picture within the body
+/// that is attached to it, one that is kept on the web, a drawing that is
+/// not a plain picture, and a file beside them.
+fn draft_with_pictures() -> brolga_fake_graph::FakeMessage {
+    let mut elsewhere = message("From Outlook", "Robin Example", "2026-10-02T09:00:00Z")
+        .body(
+            "<p>Dear Jo,</p><img src=\"cid:Logo@Example\"><img src=\"https://example.test/banner.png\">\
+             <img src=\"cid:drawing@example\">",
+        )
+        .attach_inline("logo.png", "image/png", "logo@example", PNG)
+        .attach_inline("drawing.svg", "image/svg+xml", "drawing@example", b"<svg/>")
+        .attach("plan.pdf", "application/pdf", b"%PDF");
+    elsewhere.is_draft = true;
+    elsewhere.to = vec![("Jo".to_owned(), "jo@example.test".to_owned())];
+
+    elsewhere
+}
+
+/// Enough of a PNG to be told as one by how it begins.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe rest of a picture";
+
+#[tokio::test]
+async fn pictures_in_a_draft_written_in_another_mail_program_are_kept_through_a_change_and_sent() {
+    use base64::Engine;
+
+    let f = Fixture::signed_in().await;
+    let id = f
+        .graph
+        .add_message(&f.graph.folder_id("drafts"), draft_with_pictures());
+    f.sync().await;
+
+    let draft = f.run("mail.drafts.open", json!({ "message_id": id })).await["draft"].clone();
+
+    // The attached picture is the draft's own now, under the name the body
+    // calls it by, and can be shown. The drawing is not a plain picture and
+    // is not; the body still names it, and the server still has it.
+    let files = draft["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0]["content_id"], "Logo@Example");
+    assert_eq!(files[0]["content_type"], "image/png");
+    let got = f
+        .run(
+            "mail.drafts.files.get",
+            json!({ "draft_id": draft["id"], "file_id": files[0]["id"] }),
+        )
+        .await;
+    assert_eq!(
+        got["file"]["content_base64"],
+        base64::engine::general_purpose::STANDARD.encode(PNG)
+    );
+    let body = draft["body"].as_str().unwrap();
+    assert!(
+        body.contains("cid:Logo@Example") && body.contains("cid:drawing@example"),
+        "{body}"
+    );
+    // The one on the web is not brought in, and that is said.
+    assert!(!body.contains("banner.png"), "{body}");
+    assert_eq!(draft["web_pictures_left_out"], 1);
+
+    // Untouched, nothing of it is written back or sent up again.
+    assert_eq!(
+        f.run("app.outbox.flush", json!({})).await["drafts_saved"],
+        0
+    );
+    assert_eq!(f.graph.attached(&id).len(), 3);
+    // Opened again it is the same draft, with the picture once, and still says so.
+    let again = f.run("mail.drafts.open", json!({ "message_id": id })).await["draft"].clone();
+    assert_eq!(again["id"], draft["id"]);
+    assert_eq!(again["files"].as_array().unwrap().len(), 1);
+    assert_eq!(again["web_pictures_left_out"], 1);
+
+    f.run(
+        "mail.drafts.edit",
+        json!({ "draft_id": draft["id"], "body": format!("<p>See you Friday.</p>{body}") }),
+    )
+    .await;
+    f.run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+
+    let sent = f.graph.sent();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].body_html.contains("See you Friday"));
+    assert!(sent[0].body_html.contains("cid:Logo@Example"));
+    // Each went once, as it was attached by the other program.
+    let mut went: Vec<(&str, &[u8])> = sent[0]
+        .attachments
+        .iter()
+        .map(|a| (a.name.as_str(), a.content.as_slice()))
+        .collect();
+    went.sort();
+    assert_eq!(
+        went,
+        [
+            ("drawing.svg", b"<svg/>".as_slice()),
+            ("logo.png", PNG),
+            ("plan.pdf", b"%PDF".as_slice())
+        ]
+    );
+    assert_eq!(f.graph.drafts_created(), 0);
+}
+
+#[tokio::test]
+async fn a_picture_taken_out_of_a_draft_written_elsewhere_does_not_go_with_it() {
+    let f = Fixture::signed_in().await;
+    let id = f
+        .graph
+        .add_message(&f.graph.folder_id("drafts"), draft_with_pictures());
+    f.sync().await;
+    let draft = f.run("mail.drafts.open", json!({ "message_id": id })).await["draft"].clone();
+
+    f.run(
+        "mail.drafts.edit",
+        json!({ "draft_id": draft["id"], "body": "<p>No pictures after all.</p>" }),
+    )
+    .await;
+    f.run(
+        "mail.drafts.files.remove",
+        json!({ "draft_id": draft["id"], "file_id": draft["files"][0]["id"] }),
+    )
+    .await;
+    f.run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+
+    let sent = f.graph.sent();
+    assert_eq!(sent.len(), 1);
+    // What was never the draft's own here is left as the other program attached it.
+    let mut went: Vec<&str> = sent[0]
+        .attachments
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    went.sort();
+    assert_eq!(went, ["drawing.svg", "plan.pdf"]);
+}
+
 #[tokio::test]
 async fn a_flag_can_be_given_a_day_changed_and_cleared_and_all_of_it_undone() {
     let f = Fixture::signed_in().await;
