@@ -17,7 +17,7 @@
 
 ## Getting started
 
-Open Brolga and choose **Sign in** on the Accounts screen. Your browser opens
+Open Brolga and choose **Sign in** under **Settings**, **Accounts**. Your browser opens
 on Microsoft's own sign-in page; Brolga never sees your password. If you are
 told "Need admin approval", your organisation limits which apps people can
 use: send your administrator [the administrators' guide](admins.md).
@@ -28,7 +28,7 @@ newest first, and you can read and write while it carries on.
 ## Finding your way
 
 The rail on the left switches between **Mail**, **Calendar**, **People**,
-**Accounts** and **Agents**. Press **Ctrl+K** anywhere for a list of
+**Settings** and **Agents**. Press **Ctrl+K** anywhere for a list of
 everything the window does, with its keys: type a few letters and press
 Enter.
 
@@ -97,7 +97,7 @@ one step; if it stops part way, nothing is lost, and merging again carries on.
 ## Shared mailboxes and calendars
 
 Microsoft 365 does not list the mailboxes you have been given access to, so
-add each by its address under your account on the Accounts screen. It then
+add each by its address under **Settings**, **Shared mailboxes**. It then
 sits beside your own mail, and you can send from it. The mailbox chosen at
 the top of the folder list has its folders first. The others follow under
 their own names: press a name to close that mailbox up, and a folder closed
@@ -118,14 +118,14 @@ A day declared at short notice is not there until a newer Brolga brings it.
 
 ## Old mail from Outlook
 
-**Import a PST file…** on the Accounts screen reads an Outlook data file into
+**Import a PST file…** under **Settings**, **Archives** reads an Outlook data file into
 an archive kept on this computer. The file itself is only read, never
 changed. The archive is read and searched like a mailbox, but nothing can be
 sent from it and it is not uploaded to Microsoft 365.
 
 ## Keeping Brolga running
 
-Under **This computer** on the Accounts screen:
+Under **Settings**, **Start-up and updates**:
 
 - **Keep running when the window is closed** leaves Brolga fetching mail and
   giving reminders, with an icon in the system tray to open it again or quit.
@@ -152,7 +152,7 @@ checks that it was made with Brolga's own key, puts it in and starts again.
 An AppImage, a Windows install and a Mac install update this way; a `.deb`
 or `.rpm` does where it can, and a Flatpak or a copy you built is pointed to
 the page to download from. Press the version to look now, and turn the
-looking off under **Accounts**, **This computer**.
+looking off under **Settings**, **Start-up and updates**.
 
 ## Opening email links
 

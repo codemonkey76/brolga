@@ -5,6 +5,13 @@ import { inbox, robin, week, withCore } from "./core";
 // Each screen is read the way a screen reader's rules would read it: every
 // control named, every picture described or hidden, words that can be told
 // from what is behind them. A rule broken anywhere fails the screen.
+/** One section of the settings, shown and ready. */
+async function setting(page: Page, name: string, region: string) {
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("button", { name, exact: true }).click();
+    await expect(page.getByRole("region", { name: region })).toBeVisible();
+}
+
 const faults = async (page: Page) => {
     const found = await new AxeBuilder({ page })
         .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
@@ -43,14 +50,13 @@ const screens: Record<string, (page: Page) => Promise<void>> = {
         await expect(page.getByRole("searchbox").first()).toBeVisible();
     },
     accounts: async (page) => {
-        await page.getByRole("button", { name: "Accounts" }).click();
+        await page.getByRole("button", { name: "Settings" }).click();
         await expect(page.getByRole("list", { name: "Accounts" })).toBeVisible();
     },
-    "an account's rules, categories and calendar sharing": async (page) => {
-        await page.getByRole("button", { name: "Accounts" }).click();
-        for (const each of ["Rules", "Categories", "Calendar sharing"]) await page.getByRole("button", { name: each, exact: true }).first().click();
-        await expect(page.getByRole("list", { name: "Accounts" })).toBeVisible();
-    },
+    "an account's rules": (page) => setting(page, "Rules", "Rules for robin@example.test"),
+    "an account's categories": (page) => setting(page, "Categories", "Categories for robin@example.test"),
+    "an account's calendar sharing": (page) => setting(page, "Calendar sharing", "Calendar sharing for robin@example.test"),
+    "what this computer does": (page) => setting(page, "Start-up and updates", "This computer"),
     "the palette": async (page) => {
         await page.keyboard.press("Control+k");
         await expect(page.getByRole("dialog", { name: "Commands" })).toBeVisible();
