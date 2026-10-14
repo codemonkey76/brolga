@@ -43,11 +43,18 @@ fn shown(setting: &Value) -> Value {
     let when = |key: &str| {
         let at = &setting[key];
         match at["dateTime"].as_str() {
-            Some(date_time) => json!({
-                // Graph writes seven places of seconds; nothing here needs them.
-                "date_time": date_time.split('.').next().unwrap_or(date_time),
-                "time_zone": at["timeZone"].as_str().unwrap_or("UTC"),
-            }),
+            Some(date_time) => {
+                let zone = at["timeZone"].as_str().unwrap_or("UTC");
+                json!({
+                    // Graph writes seven places of seconds; nothing here needs them.
+                    "date_time": date_time.split('.').next().unwrap_or(date_time),
+                    "time_zone": zone,
+                    // The moment itself, so that nothing that reads this
+                    // need know the zone by the name it came under, which
+                    // may be one only Windows uses.
+                    "at": brolga_calendar::utc(date_time, zone),
+                })
+            }
             None => Value::Null,
         }
     };
@@ -220,9 +227,10 @@ pub(crate) fn register(
                 "type": "object",
                 "properties": {
                     "date_time": { "type": "string", "description": "Without an offset, in `time_zone`." },
-                    "time_zone": { "type": "string", "description": "UTC when set by this client. Set elsewhere, it may be a Windows time zone name." }
+                    "time_zone": { "type": "string", "description": "UTC when set by this client. Set elsewhere, it may be a Windows time zone name." },
+                    "at": { "type": ["string", "null"], "description": "The same moment in UTC, as 2026-10-19T22:00:00Z, whatever zone it was set in. Null only where the zone is named in a way this client does not know." }
                 },
-                "required": ["date_time", "time_zone"]
+                "required": ["date_time", "time_zone", "at"]
             }
         ]
     });
@@ -332,8 +340,39 @@ mod tests {
         assert_eq!(shown["internal_message"], "Back on Monday.");
         assert_eq!(
             shown["start"],
-            json!({ "date_time": "2026-10-20T08:00:00", "time_zone": "UTC" })
+            json!({ "date_time": "2026-10-20T08:00:00", "time_zone": "UTC", "at": "2026-10-20T08:00:00Z" })
         );
         assert_eq!(shown["end"]["time_zone"], "AUS Eastern Standard Time");
+    }
+
+    #[test]
+    fn a_time_set_in_a_zone_under_windows_name_for_it_is_given_as_the_moment_it_is() {
+        let scheduled = |zone: &str| {
+            shown(&json!({
+                "status": "scheduled",
+                "scheduledStartDateTime": { "dateTime": "2026-10-20T08:00:00.0000000", "timeZone": zone },
+                "scheduledEndDateTime": { "dateTime": "2026-06-24T17:30:00.0000000", "timeZone": zone }
+            }))
+        };
+
+        // Sydney is eleven hours ahead of UTC in October, and ten in June.
+        let sydney = scheduled("AUS Eastern Standard Time");
+        assert_eq!(sydney["start"]["at"], "2026-10-19T21:00:00Z");
+        assert_eq!(sydney["end"]["at"], "2026-06-24T07:30:00Z");
+        // As it came, too, for whoever wants the clock it was set by.
+        assert_eq!(sydney["start"]["date_time"], "2026-10-20T08:00:00");
+        assert_eq!(sydney["start"]["time_zone"], "AUS Eastern Standard Time");
+        // Brisbane keeps to ten hours all year, under either name.
+        for brisbane in ["E. Australia Standard Time", "Australia/Brisbane"] {
+            assert_eq!(scheduled(brisbane)["start"]["at"], "2026-10-19T22:00:00Z");
+        }
+
+        // A zone under no name that is known has no moment to give, and says so.
+        let unknown = scheduled("Middle of Nowhere Standard Time");
+        assert_eq!(unknown["start"]["at"], Value::Null);
+        assert_eq!(
+            unknown["start"]["time_zone"],
+            "Middle of Nowhere Standard Time"
+        );
     }
 }

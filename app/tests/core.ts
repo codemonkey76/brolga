@@ -390,7 +390,7 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             end: null,
             ...(core.replies ?? {}),
         };
-        const when = (time: unknown) => (time ? { date_time: String(time).replace("Z", ""), time_zone: "UTC" } : null);
+        const when = (time: unknown) => (time ? { date_time: String(time).replace("Z", ""), time_zone: "UTC", at: String(time) } : null);
         const acted = (ids: unknown, apply: (m: (typeof mail)[number]) => (() => void) | null) => {
             const undo: (() => void)[] = [];
             for (const m of mail.filter((each) => (ids as string[]).includes(each.id))) {
