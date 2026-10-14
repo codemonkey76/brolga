@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { Bot, CalendarDays, CircleUser, Mail as MailIcon, Users } from "@lucide/svelte";
+    import { Bot, CalendarDays, Mail as MailIcon, Settings as SettingsIcon, Users } from "@lucide/svelte";
     import { type Account, type Archive, type SharedMailbox, listAccounts, listArchives, listShared, mailboxes } from "./lib/accounts";
-    import Accounts from "./lib/Accounts.svelte";
+    import Settings from "./lib/Settings.svelte";
     import { type Asked, nextRequest } from "./lib/commands";
     import Agents from "./lib/Agents.svelte";
     import Calendar from "./lib/Calendar.svelte";
@@ -105,7 +105,7 @@
         { title: "Go to Mail", keys: "Ctrl+1", run: () => go("mail") },
         { title: "Go to Calendar", keys: "Ctrl+2", run: () => go("calendar") },
         { title: "Go to People (address book)", keys: "Ctrl+3 or Ctrl+Shift+B", run: () => go("people") },
-        { title: "Go to Accounts", keys: "", run: () => go("accounts") },
+        { title: "Go to Settings", keys: "", run: () => go("accounts") },
         { title: "Go to Agents", keys: "", run: () => go("agents") },
         { title: "New message", keys: "Ctrl+N", run: press("mail", "n", { ctrl: true }) },
         { title: "New meeting", keys: "Ctrl+Shift+Q", run: meeting },
@@ -164,9 +164,9 @@
             <Users size={20} aria-hidden="true" />
             <span>People</span>
         </button>
-        <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Accounts">
-            <CircleUser size={20} aria-hidden="true" />
-            <span>Accounts</span>
+        <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Settings">
+            <SettingsIcon size={20} aria-hidden="true" />
+            <span>Settings</span>
         </button>
         <button type="button" class:current={view === "agents"} aria-current={view === "agents"} onclick={() => (view = "agents")} title="What AI agents have asked for">
             <Bot size={20} aria-hidden="true" />
@@ -200,7 +200,7 @@
         {:else if view === "agents"}
             <div class="scroll"><Agents /></div>
         {:else}
-            <div class="scroll"><Accounts onChanged={changed} onArchives={reload} /></div>
+            <Settings onChanged={changed} onArchives={reload} />
         {/if}
     </main>
 

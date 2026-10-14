@@ -20,7 +20,7 @@ test("signing in adds the account to the list", async ({ page }) => {
 
     // With a first account, the window goes straight to its mail.
     await expect(page.getByRole("navigation", { name: "Folders" })).toBeVisible();
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     const row = page.getByRole("list", { name: "Accounts" }).getByRole("listitem");
     await expect(row).toContainText("Robin Example");
     await expect(row).toContainText("robin@example.test");
@@ -57,7 +57,7 @@ test("with no app registration of Brolga's own, a client ID is asked for first",
     await page.getByLabel("Tenant ID or domain").fill("contoso.example");
     await signIn.click();
 
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await expect(page.getByRole("list", { name: "Accounts" })).toContainText("Robin Example");
     const asked = (await ran(page)).find((r) => r.command === "accounts.sign_in");
     expect(asked?.args).toEqual({ client_id: "11111111-2222-4333-8444-555555555555", tenant: "contoso.example" });
@@ -93,7 +93,7 @@ test("a sign-in being waited for can be given up on, in the browser or with a co
 
 test("an account that needs it can sign in again, as itself", async ({ page }) => {
     await withCore(page, { accounts: [robin, sam], signIn: { ...sam, needs_sign_in: false } });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     const row = page.getByRole("listitem").filter({ hasText: "Sam Taylor" });
 
     await expect(row.getByRole("status")).toHaveText("Needs sign-in");
@@ -108,7 +108,7 @@ test("an account that needs it can sign in again, as itself", async ({ page }) =
 
 test("removing an account asks first", async ({ page }) => {
     await withCore(page, { accounts: [robin] });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     const row = page.getByRole("listitem").filter({ hasText: "Robin Example" });
 
     await row.getByRole("button", { name: "Remove" }).click();
@@ -124,7 +124,8 @@ test("the window works from the keyboard alone", async ({ page }) => {
     await withCore(page, { signIn: robin });
 
     const signIn = page.getByRole("button", { name: "Sign in with your browser" });
-    for (let presses = 0; presses < 6 && !(await signIn.evaluate((b) => b === document.activeElement)); presses++) {
+    // Past the sections of the window, and those of the settings that need no account.
+    for (let presses = 0; presses < 12 && !(await signIn.evaluate((b) => b === document.activeElement)); presses++) {
         await page.keyboard.press("Tab");
     }
     await expect(signIn).toBeFocused();
@@ -135,7 +136,7 @@ test("the window works from the keyboard alone", async ({ page }) => {
 
 test("automatic replies are scheduled from the accounts screen, in local time", async ({ page }) => {
     await withCore(page, { accounts: [robin] });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Automatic replies" }).click();
     const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
 
@@ -166,7 +167,7 @@ test("automatic replies are scheduled from the accounts screen, in local time", 
 
 test("a sign-in from before automatic replies says to sign in again", async ({ page }) => {
     await withCore(page, { accounts: [robin], repliesRefused: "This sign-in was not given permission for mailbox settings. Sign in to the account again, from the accounts screen, to grant it." });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Automatic replies" }).click();
 
     await expect(page.getByRole("alert")).toContainText("Sign in to the account again");
@@ -238,7 +239,7 @@ test("an agent that wants to send is put to the user, who can say no", async ({ 
 
 test("a shared mailbox is added by its address, read in Mail, and removed", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Shared mailboxes" }).click();
     const section = page.getByRole("region", { name: "Shared mailboxes of robin@example.test" });
 
@@ -270,7 +271,7 @@ test("a shared mailbox is added by its address, read in Mail, and removed", asyn
     await expect(picker).toHaveValue("tenant-1.robin~support@example.test");
     await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.messages.list").at(-1)?.args).toMatchObject({ account_id: "tenant-1.robin~support@example.test", folder_id: "shared-archive" });
 
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Shared mailboxes" }).click();
     await page.getByRole("button", { name: "Remove support@example.test" }).click();
     await page.getByRole("button", { name: "Mail", exact: true }).click();
@@ -393,7 +394,7 @@ test("rules are listed, turned off, made, changed and deleted", async ({ page })
         },
     ];
     await withCore(page, { accounts: [robin], mail: inbox, rules });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Rules" }).click();
     const section = page.getByRole("region", { name: "Rules for robin@example.test" });
     const rows = section.getByRole("listitem");
@@ -457,7 +458,7 @@ test("rules are listed, turned off, made, changed and deleted", async ({ page })
 
 test("rules that cannot be read say why", async ({ page }) => {
     await withCore(page, { accounts: [robin], offline: true });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Rules" }).click();
 
     const section = page.getByRole("region", { name: "Rules for robin@example.test" });
@@ -467,7 +468,7 @@ test("rules that cannot be read say why", async ({ page }) => {
 
 test("categories are added, recoloured and deleted", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Categories" }).click();
     const section = page.getByRole("region", { name: "Categories for robin@example.test" });
     const rows = section.getByRole("listitem");
@@ -497,7 +498,7 @@ test("categories are added, recoloured and deleted", async ({ page }) => {
 
 test("a person who shared only their calendar is added the same way, and is in Calendar and not in Mail", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Shared mailboxes" }).click();
     const section = page.getByRole("region", { name: "Shared mailboxes of robin@example.test" });
     await section.getByRole("textbox", { name: "Address of a shared mailbox" }).fill("alex@example.test");
@@ -514,7 +515,7 @@ test("a person who shared only their calendar is added the same way, and is in C
 
 test("the calendar is shared with someone, what they see is changed, and the sharing is stopped", async ({ page }) => {
     await withCore(page, { accounts: [robin] });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Calendar sharing" }).click();
     const section = page.getByRole("region", { name: "Calendar sharing for robin@example.test" });
     const rows = section.getByRole("listitem");
@@ -548,7 +549,8 @@ test("the calendar is shared with someone, what they see is changed, and the sha
 
 test("a PST file is read into an archive, with how far it has got, and then is read in Mail", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox, pickFiles: ["/home/robin/Old mail.pst"] });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Archives" }).click();
     const section = page.getByRole("region", { name: "Archives" });
     await expect(section.getByRole("listitem")).toHaveCount(0);
 
@@ -577,7 +579,7 @@ test("a PST file is read into an archive, with how far it has got, and then is r
     expect((await ran(page)).some((r) => r.command === "mail.drafts.create" && r.args?.account_id === "archive:1")).toBe(false);
 
     // Removing asks first.
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await section.getByRole("button", { name: "Remove Old mail" }).click();
     expect((await ran(page)).some((r) => r.command === "archives.remove")).toBe(false);
     await section.getByRole("button", { name: "Remove it?" }).click();
@@ -586,7 +588,8 @@ test("a PST file is read into an archive, with how far it has got, and then is r
 
 test("Brolga is kept running and started at sign-in only when chosen, and says when there is no tray", async ({ page }) => {
     await withCore(page, { accounts: [robin], noTray: true });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Start-up and updates" }).click();
     const here = page.getByRole("region", { name: "This computer" });
     const applied = () => page.evaluate(() => (window as unknown as { applied: unknown[] }).applied.at(-1));
 
@@ -604,7 +607,8 @@ test("Brolga is kept running and started at sign-in only when chosen, and says w
 test("an import can be stopped, and one that failed says why", async ({ page }) => {
     const failed = { id: "archive:9", name: "Broken", source: "Broken.pst", state: "failed", messages: 0, messages_done: null, messages_total: null, skipped: 0, error: "this is not a PST or OST file, or it is damaged" };
     await withCore(page, { accounts: [robin], archives: [failed], pickFiles: ["/home/robin/Huge.pst"] });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Archives" }).click();
     const section = page.getByRole("region", { name: "Archives" });
     await expect(section.getByRole("listitem").filter({ hasText: "Broken" })).toContainText("Failed: this is not a PST or OST file");
 
@@ -616,7 +620,8 @@ test("an import can be stopped, and one that failed says why", async ({ page }) 
 
 test("looking for new versions is on until it is turned off, and then nothing is looked for unasked", async ({ page }) => {
     await withCore(page, { accounts: [robin], newer: { version: "0.1.6", installs: true, page: "https://example.test/releases" } });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Start-up and updates" }).click();
     const box = page.getByRole("region", { name: "This computer" }).getByRole("checkbox", { name: /Look for new versions/ });
     await expect(box).toBeChecked();
 
@@ -728,7 +733,7 @@ test("a contact with the same number or address twice shows both", async ({ page
 test("a choice that was refused goes back to what it was: sharing, a category's colour, a rule and this computer's", async ({ page }) => {
     const rules = [{ id: "rule-1", name: "Newsletters", enabled: true, sequence: 1, read_only: false, conditions: { senderContains: ["newsletter"] }, exceptions: {}, actions: { markAsRead: true } }];
     await withCore(page, { accounts: [robin], rules });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     const why = "Microsoft 365 could not be reached.";
 
     await page.getByRole("button", { name: "Calendar sharing" }).click();
@@ -760,6 +765,7 @@ test("a choice that was refused goes back to what it was: sharing, a category's 
     await expect(listed.getByRole("alert")).toHaveText(why);
     await expect(on).toBeChecked();
 
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Start-up and updates" }).click();
     const here = page.getByRole("region", { name: "This computer" });
     await refuse(page, "app.desktop.set");
     await here.getByRole("checkbox", { name: /Keep running/ }).click();
@@ -772,7 +778,7 @@ test("a choice that was refused goes back to what it was: sharing, a category's 
 test("a shared mailbox that could not be removed stays in the list, and it says why", async ({ page }) => {
     const shared = [{ id: "tenant-1.robin~support@example.test", account_id: "tenant-1.robin", address: "support@example.test", name: "Support" }];
     await withCore(page, { accounts: [robin], shared });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Shared mailboxes" }).click();
     const section = page.getByRole("region", { name: "Shared mailboxes of robin@example.test" });
 
@@ -790,7 +796,7 @@ test("a shared mailbox that could not be removed stays in the list, and it says 
 test("on a dark window the dot of a colour has a ring, so that a dark one is seen", async ({ page }) => {
     await page.emulateMedia({ colorScheme: "dark" });
     await withCore(page, { accounts: [robin] });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Categories" }).click();
     const dot = page.getByRole("region", { name: "Categories for robin@example.test" }).locator(".dot").first();
 
@@ -808,7 +814,7 @@ test("automatic replies scheduled by another zone's clock show when that is here
         end: { date_time: "2026-10-26T17:30:00", time_zone: "Europe/London", at: "2026-10-26T17:30:00Z" },
     };
     await withCore(page, { accounts: [robin], replies });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Automatic replies" }).click();
     const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
 
@@ -829,7 +835,7 @@ test("automatic replies set in a zone under Windows' name for it show their time
         end: { date_time: "2026-10-24T17:30:00", time_zone: "AUS Eastern Standard Time", at: "2026-10-24T06:30:00Z" },
     };
     await withCore(page, { accounts: [robin], replies });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Automatic replies" }).click();
     const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
 
@@ -851,10 +857,73 @@ test("automatic replies set in a zone under no name that is known leave the time
         end: { date_time: "2026-10-24T17:30:00", time_zone: "Middle of Nowhere Standard Time", at: null },
     };
     await withCore(page, { accounts: [robin], replies });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Automatic replies" }).click();
     const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
 
     await expect(form.getByLabel("From", { exact: true })).toHaveValue("");
     await expect(form.getByText("a time zone Brolga does not know (“Middle of Nowhere Standard Time”)")).toBeVisible();
+});
+
+test("settings are in sections, one shown at a time, and a mailbox's are shown for the account chosen", async ({ page }) => {
+    await withCore(page, { accounts: [robin, { ...sam, needs_sign_in: false }], mail: inbox });
+    await page.getByRole("button", { name: "Settings" }).click();
+    const sections = page.getByRole("navigation", { name: "Settings" });
+    const pane = page.getByRole("region", { name: "Accounts", exact: true });
+
+    // Accounts to begin with: who is signed in, and adding another.
+    await expect(sections.getByRole("button", { name: "Accounts", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(pane.getByRole("list", { name: "Accounts" }).getByRole("listitem")).toHaveCount(2);
+    await expect(pane.getByRole("button", { name: "Sign in with your browser" })).toBeVisible();
+    // Nothing of a mailbox is asked which mailbox here.
+    await expect(page.getByRole("combobox", { name: "Account" })).toHaveCount(0);
+
+    // A mailbox's settings are one account's at a time, and the other's when it is chosen.
+    await sections.getByRole("button", { name: "Rules" }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Rules" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Rules for robin@example.test" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Accounts" })).toHaveCount(0);
+    await page.getByRole("combobox", { name: "Account" }).selectOption("sam.taylor@northwind.example");
+    await expect(page.getByRole("region", { name: "Rules for sam.taylor@northwind.example" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Rules for robin@example.test" })).toHaveCount(0);
+    // The account stays chosen from one section to the next.
+    await sections.getByRole("button", { name: "Categories" }).click();
+    await expect(page.getByRole("region", { name: "Categories for sam.taylor@northwind.example" })).toBeVisible();
+    await sections.getByRole("button", { name: "Signature" }).click();
+    await expect(page.getByRole("form", { name: "Signature for sam.taylor@northwind.example" })).toBeVisible();
+
+    // The section is the one left, when the settings are come back to and when the window is opened again.
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(sections.getByRole("button", { name: "Signature" })).toHaveAttribute("aria-current", "page");
+    await page.reload();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Signature" })).toHaveAttribute("aria-current", "page");
+});
+
+test("what is chosen in the settings for the week and for writing is what the calendar and a new message go by", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: inbox });
+    await page.getByRole("button", { name: "Settings" }).click();
+    const sections = page.getByRole("navigation", { name: "Settings" });
+
+    await sections.getByRole("button", { name: "Week" }).click();
+    await page.getByRole("region", { name: "Week" }).getByRole("combobox", { name: "Week starts on" }).selectOption("Sunday");
+    await sections.getByRole("button", { name: "Writing" }).click();
+    await page.getByRole("checkbox", { name: /Write new messages in plain text/ }).check();
+
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Week starts on" })).toHaveValue("0");
+    await page.getByRole("button", { name: "Mail", exact: true }).click();
+    await page.getByRole("button", { name: "New message" }).click();
+    await expect(page.getByRole("form", { name: "New message" }).getByRole("checkbox", { name: "Plain text" })).toBeChecked();
+});
+
+test("with no account there is nothing of a mailbox to set, and what is this computer's can still be", async ({ page }) => {
+    await withCore(page, {});
+    const sections = page.getByRole("navigation", { name: "Settings" });
+
+    await expect(sections.getByRole("button", { name: "Accounts", exact: true })).toHaveAttribute("aria-current", "page");
+    for (const of of ["Shared mailboxes", "Signature", "Automatic replies", "Rules", "Categories", "Calendar sharing"]) await expect(sections.getByRole("button", { name: of })).toBeDisabled();
+    await sections.getByRole("button", { name: "Start-up and updates" }).click();
+    await expect(page.getByRole("region", { name: "This computer" })).toBeVisible();
 });

@@ -76,7 +76,7 @@ You may prefer that Brolga runs under a registration your organisation owns.
 3. Under **API permissions**, add the delegated Microsoft Graph permissions
    in the tables above, and grant admin consent.
 4. Give people the application (client) ID and your tenant ID. On Brolga's
-   Accounts screen, under **Advanced**, they enter both before signing in.
+   **Settings**, **Accounts**, under **Advanced**, they enter both before signing in.
    Brolga remembers them.
 
 ## Where a person's data is kept
@@ -94,7 +94,7 @@ You may prefer that Brolga runs under a registration your organisation owns.
 
 ## Removing it
 
-A person removes their account on the Accounts screen, which forgets the
+A person removes their account under **Settings**, **Accounts**, which forgets the
 sign-in and deletes the local copy. To revoke it from your side, remove
 Brolga under **Enterprise applications**, or revoke the person's sessions.
 

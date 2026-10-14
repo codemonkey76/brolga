@@ -1,7 +1,6 @@
 <script lang="ts">
+    import { KeyRound, LogIn } from "@lucide/svelte";
     import AccountRow from "./AccountRow.svelte";
-    import Archives from "./Archives.svelte";
-    import Desktop from "./Desktop.svelte";
     import {
         type Account,
         type CodeSignIn,
@@ -18,11 +17,9 @@
     interface Props {
         /** Told whenever the list of accounts may have changed. */
         onChanged: (accounts: Account[]) => void;
-        /** Told whenever an archive is added, finishes or goes. */
-        onArchives?: () => void;
     }
 
-    let { onChanged, onArchives }: Props = $props();
+    let { onChanged }: Props = $props();
     let accounts = $state<Account[]>([]);
     let loaded = $state(false);
     let needsClientId = $state(false);
@@ -106,10 +103,7 @@
 </script>
 
 <div class="page">
-    <header>
-        <h1>Accounts</h1>
-        <p class="muted">Microsoft 365 work and school accounts in Brolga.</p>
-    </header>
+    <p class="muted">Microsoft 365 work and school accounts in Brolga.</p>
 
     {#if problem}
         <p class="problem" role="alert">{problem}</p>
@@ -121,7 +115,7 @@
         {#if accounts.length > 0}
             <ul class="card" aria-label="Accounts">
                 {#each accounts as account (account.id)}
-                    <AccountRow {account} busy={waiting !== null} onSignInAgain={again} onRemove={remove} onShared={() => onChanged(accounts)} />
+                    <AccountRow {account} busy={waiting !== null} onSignInAgain={again} onRemove={remove} />
                 {/each}
             </ul>
         {:else}
@@ -147,10 +141,10 @@
             {:else}
                 <div class="actions">
                     <button type="button" class="primary" disabled={waiting !== null || missingClientId} onclick={add}>
-                        Sign in with your browser
+                        <LogIn size={16} aria-hidden="true" />Sign in with your browser
                     </button>
                     <button type="button" disabled={waiting !== null || missingClientId} onclick={addWithCode}>
-                        Sign in with a code instead
+                        <KeyRound size={16} aria-hidden="true" />Sign in with a code instead
                     </button>
                 </div>
 
@@ -184,32 +178,21 @@
                 {/if}
             {/if}
         </section>
-
-        <Archives onChanged={onArchives} />
-        <Desktop />
     {/if}
 </div>
 
 <style>
     .page {
-        max-width: 40rem;
-        margin: 0 auto;
-        padding: 2rem 1rem;
+        max-width: 46rem;
         display: flex;
         flex-direction: column;
         gap: 1rem;
     }
 
-    h1,
     h2,
     p,
     ul {
         margin: 0;
-    }
-
-    h1 {
-        font-size: 1.5rem;
-        font-weight: 600;
     }
 
     h2 {
@@ -245,6 +228,12 @@
         display: flex;
         flex-wrap: wrap;
         gap: 0.5rem;
+    }
+
+    .actions button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
     }
 
     .advanced {

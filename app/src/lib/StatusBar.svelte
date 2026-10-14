@@ -181,7 +181,7 @@
             {/if}
         {:else if locked}
             <TriangleAlert size={13} aria-hidden="true" />
-            <span class="doing">{locked.username} needs signing in again, on the Accounts screen.</span>
+            <span class="doing">{locked.username} needs signing in again, in Settings under Accounts.</span>
         {:else if partial}
             <span class="doing">{whose(partial)}Not all of your mail has been fetched yet. The rest comes with the next sync.</span>
         {:else}

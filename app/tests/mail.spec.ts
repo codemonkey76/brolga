@@ -995,7 +995,7 @@ test("a message Microsoft 365 will not send comes back with the reason", async (
 
 test("a signature is set on the accounts screen and starts new messages", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: inbox });
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Signature" }).click();
     const editor = page.getByRole("form", { name: "Signature for robin@example.test" });
 
