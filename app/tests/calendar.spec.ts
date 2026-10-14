@@ -1078,3 +1078,42 @@ test("when people are free is looked up once an address has been typed, not at e
     expect(await looked()).toBe(2);
     expect((await ran(page)).filter((r) => r.command === "calendar.free_busy").at(-1)?.args.people).toEqual(["robin@example.test", "sam.taylor@example.test", "jo@example.test"]);
 });
+
+test("weeks start on the day chosen: the week, the month, the small month and the days of a repeat", async ({ page }) => {
+    const view = await calendar(page);
+    const columns = view.locator(".timegrid .day");
+    const views = view.getByRole("group", { name: "View" });
+    const small = page.getByLabel("Month to steer by");
+    const starts = page.getByRole("combobox", { name: "Week starts on" });
+
+    // Monday until something else is chosen.
+    await expect(starts).toHaveValue("1");
+    await views.getByRole("button", { name: "Week", exact: true }).click();
+    await expect(columns.first()).toHaveAccessibleName(/Monday,? (October 12|12 October)/);
+    await expect(small.getByRole("button").nth(2)).toHaveAccessibleName(/September 28, 2026|28 September 2026/);
+
+    await starts.selectOption("Sunday");
+    await expect(columns.first()).toHaveAccessibleName(/Sunday,? (October 11|11 October)/);
+    await expect(columns).toHaveCount(7);
+    await expect(small.getByRole("button").nth(2)).toHaveAccessibleName(/September 27, 2026|27 September 2026/);
+    // The working week is Monday to Friday all the same.
+    await views.getByRole("button", { name: "Work week" }).click();
+    await expect(columns).toHaveCount(5);
+    await expect(columns.first()).toHaveAccessibleName(/Monday,? (October 12|12 October)/);
+    await views.getByRole("button", { name: "Month" }).click();
+    await expect(view.locator(".month").getByRole("button", { name: /day,? / }).first()).toHaveAccessibleName(/Sunday,? (September 27|27 September)/);
+    // The days an event may repeat on are listed from the same day.
+    await view.getByRole("button", { name: "New event" }).click();
+    const editor = page.getByRole("form", { name: "New event" });
+    await editor.getByLabel("Repeats").selectOption("week");
+    await expect(editor.getByRole("group", { name: "On" }).getByRole("checkbox").first()).toHaveValue("sunday");
+
+    // It is kept: the window opened again starts its weeks the same way.
+    await page.reload();
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Week starts on" })).toHaveValue("0");
+
+    await page.getByRole("combobox", { name: "Week starts on" }).selectOption("Saturday");
+    await page.getByRole("region", { name: "Calendar" }).getByRole("group", { name: "View" }).getByRole("button", { name: "Week", exact: true }).click();
+    await expect(page.locator(".timegrid .day").first()).toHaveAccessibleName(/Saturday,? (October 10|10 October)/);
+});

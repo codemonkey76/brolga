@@ -1,5 +1,7 @@
 <script lang="ts">
     import { type Calendar, type CalendarEvent, type EventFields, type Repeat, type Scope, type Room, addDays, invitedFrom, invitedLine, listRooms, placeInMonth, span } from "./calendar";
+    import { weekdaysFrom } from "./calendar";
+    import { week } from "./week.svelte";
     import Availability from "./Availability.svelte";
     import Recipients from "./Recipients.svelte";
 
@@ -134,7 +136,7 @@
     let ends = $state(was.ends);
     let until = $state(was.until);
     let count = $state(was.count);
-    const WEEK = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    const WEEK = $derived(weekdaysFrom(week.first));
     const startDate = $derived(new Date(`${startDay}T00:00`));
     const place = $derived(placeInMonth(Number.isNaN(+startDate) ? new Date() : startDate));
     // From the 22nd to the 28th a day is the fourth of its kind, and in some months the last as well. After the 28th it is only the last.
