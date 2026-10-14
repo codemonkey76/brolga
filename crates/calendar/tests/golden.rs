@@ -734,3 +734,59 @@ fn a_series_that_steps_past_the_last_year_there_is_ends_and_does_not_panic() {
         assert_eq!(found.map(|found| found.len()).ok(), Some(1), "{kind}");
     }
 }
+
+#[test]
+fn a_series_whose_step_is_longer_than_any_span_there_is_ends_and_does_not_panic() {
+    // Found by the fuzzer: every 2,999,999 weeks is more days than a span
+    // of time can hold, and asking for one that long panicked.
+    for (kind, interval, extra, falls) in [
+        (
+            "weekly",
+            2_999_999_u32,
+            r#""daysOfWeek":["monday","thursday"],"firstDayOfWeek":"sunday""#,
+            2,
+        ),
+        ("daily", 4_000_000_000, r#""x":0"#, 1),
+        ("absoluteMonthly", 4_000_000_000, r#""dayOfMonth":2"#, 1),
+        (
+            "relativeMonthly",
+            4_000_000_000,
+            r#""daysOfWeek":["monday"],"index":"first""#,
+            1,
+        ),
+        (
+            "absoluteYearly",
+            4_000_000_000,
+            r#""dayOfMonth":2,"month":3"#,
+            1,
+        ),
+        (
+            "relativeYearly",
+            4_000_000_000,
+            r#""daysOfWeek":["monday"],"index":"first","month":3"#,
+            1,
+        ),
+    ] {
+        let recurrence: serde_json::Value = serde_json::from_str(&format!(
+            r#"{{"pattern":{{"type":"{kind}","interval":{interval},{extra}}},"range":{{"type":"noEnd","startDate":"2026-03-02"}}}}"#
+        ))
+        .unwrap();
+        // Monday 2 March 2026, the first Monday of its month.
+        let s = Series::from_graph(
+            date(2026, 3, 2).at(9, 0, 0, 0),
+            date(2026, 3, 2).at(9, 30, 0, 0),
+            "Australia/Sydney",
+            &recurrence,
+        )
+        .unwrap();
+
+        let found = occurrences(
+            &s,
+            "2020-01-01T00:00:00Z".parse().unwrap(),
+            "2032-01-01T00:00:00Z".parse().unwrap(),
+            500,
+        );
+        // What falls before the step runs out is found, and then it ends.
+        assert_eq!(found.map(|found| found.len()).ok(), Some(falls), "{kind}");
+    }
+}

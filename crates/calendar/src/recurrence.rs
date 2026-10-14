@@ -11,7 +11,7 @@
 
 use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::TimeZone;
-use jiff::{Span, Timestamp, ToSpan};
+use jiff::{Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,12 +321,11 @@ fn validate(pattern: &Pattern) -> Result<(), RecurrenceError> {
 /// The days a series falls on, from its first on, without end.
 fn days(series: &Series) -> Box<dyn Iterator<Item = Result<Date, RecurrenceError>> + '_> {
     let from = series.from;
-    let step = |n: i64, unit: fn(i64) -> Span| move |k: i64| unit(k * n);
 
     match &series.pattern {
         Pattern::Daily { interval } => {
-            let every = step(i64::from(*interval), |n| n.days());
-            Box::new((0i64..).map(move |k| add(from, every(k))))
+            let every = i64::from(*interval);
+            Box::new((0i64..).map(move |k| add(from, days_long(k.checked_mul(every))?)))
         }
         Pattern::Weekly {
             interval,
@@ -336,7 +335,7 @@ fn days(series: &Series) -> Box<dyn Iterator<Item = Result<Date, RecurrenceError
             // The week the series starts in begins on the first day of the
             // week on or before its start. Weeks are counted from there.
             let back = from.weekday().since(first_day_of_week.weekday());
-            let week_start = add(from, (-i64::from(back)).days());
+            let week_start = days_long(Some(-i64::from(back))).and_then(|back| add(from, back));
             let mut in_week: Vec<i64> = days_of_week
                 .iter()
                 .map(|day| i64::from(day.weekday().since(first_day_of_week.weekday())))
@@ -350,9 +349,15 @@ fn days(series: &Series) -> Box<dyn Iterator<Item = Result<Date, RecurrenceError
                     .flat_map(move |k| {
                         let week_start = week_start.clone();
                         in_week.clone().into_iter().map(move |offset| {
+                            // The weeks between may come to more days than
+                            // can be counted, where the interval is absurd.
+                            let on = k
+                                .checked_mul(weeks)
+                                .and_then(|weeks| weeks.checked_mul(7))
+                                .and_then(|days| days.checked_add(offset));
                             week_start
                                 .clone()
-                                .and_then(|start| add(start, (k * weeks * 7 + offset).days()))
+                                .and_then(|start| add(start, days_long(on)?))
                         })
                     })
                     // The days of the first week that come before the series starts are not in it.
@@ -367,7 +372,7 @@ fn days(series: &Series) -> Box<dyn Iterator<Item = Result<Date, RecurrenceError
             Box::new(
                 (0i64..)
                     .map(move |k| {
-                        month_of(from, k * interval)
+                        month_of(from, k.checked_mul(interval))
                             .map(|(year, month)| clamped(year, month, day_of_month))
                     })
                     .filter(move |day| day.as_ref().map_or(true, |day| *day >= from)),
@@ -382,7 +387,7 @@ fn days(series: &Series) -> Box<dyn Iterator<Item = Result<Date, RecurrenceError
             Box::new(
                 (0i64..)
                     .map(move |k| {
-                        month_of(from, k * interval)
+                        month_of(from, k.checked_mul(interval))
                             .map(|(year, month)| relative(year, month, days_of_week, *index))
                     })
                     .filter_map(Result::transpose)
@@ -398,7 +403,7 @@ fn days(series: &Series) -> Box<dyn Iterator<Item = Result<Date, RecurrenceError
             Box::new(
                 (0i64..)
                     .map(move |k| {
-                        year_of(from, k * interval)
+                        year_of(from, k.checked_mul(interval))
                             .map(|year| clamped(year, month as i8, day_of_month))
                     })
                     .filter(move |day| day.as_ref().map_or(true, |day| *day >= from)),
@@ -414,7 +419,7 @@ fn days(series: &Series) -> Box<dyn Iterator<Item = Result<Date, RecurrenceError
             Box::new(
                 (0i64..)
                     .map(move |k| {
-                        year_of(from, k * interval)
+                        year_of(from, k.checked_mul(interval))
                             .map(|year| relative(year, month, days_of_week, *index))
                     })
                     .filter_map(Result::transpose)
@@ -429,18 +434,32 @@ fn add(day: Date, span: Span) -> Result<Date, RecurrenceError> {
         .map_err(|_| RecurrenceError::OutOfRange)
 }
 
+/// So many days as a span of time, or the error that there is no such span:
+/// a span holds only so many, and a count may itself have run past what a
+/// number holds (`None`). How a series repeats is written by a stranger, so
+/// a span is never made of a number from one in the way that panics.
+fn days_long(days: Option<i64>) -> Result<Span, RecurrenceError> {
+    days.and_then(|days| Span::new().try_days(days).ok())
+        .ok_or(RecurrenceError::OutOfRange)
+}
+
 /// The year and month that is `months` months after the month of `from`.
-fn month_of(from: Date, months: i64) -> Result<(i16, i8), RecurrenceError> {
+/// No count of months (`None`) is one too many to have such a month.
+fn month_of(from: Date, months: Option<i64>) -> Result<(i16, i8), RecurrenceError> {
     let first = from.first_of_month();
-    let then = add(first, months.months())?;
+    let months = months
+        .and_then(|months| Span::new().try_months(months).ok())
+        .ok_or(RecurrenceError::OutOfRange)?;
+    let then = add(first, months)?;
 
     Ok((then.year(), then.month()))
 }
 
-fn year_of(from: Date, years: i64) -> Result<i16, RecurrenceError> {
+fn year_of(from: Date, years: Option<i64>) -> Result<i16, RecurrenceError> {
     // A year can be counted that there is no date in: the last is 9999.
-    i16::try_from(i64::from(from.year()) + years)
-        .ok()
+    years
+        .and_then(|years| i64::from(from.year()).checked_add(years))
+        .and_then(|year| i16::try_from(year).ok())
         .filter(|year| Date::new(*year, 1, 1).is_ok())
         .ok_or(RecurrenceError::OutOfRange)
 }
