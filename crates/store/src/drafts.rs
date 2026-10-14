@@ -621,9 +621,14 @@ impl AccountDb {
         let connection = self.connection();
         let mut statement = connection.prepare(&format!(
             "SELECT {COLUMNS} FROM drafts
-             WHERE state = 'editing' AND rev <> server_rev
+             WHERE state = 'editing'
+               AND (rev <> server_rev
+                    -- Its words are as they were, and its files are not.
+                    OR EXISTS (SELECT 1 FROM draft_files f WHERE f.draft_id = drafts.id AND NOT f.uploaded)
+                    OR EXISTS (SELECT 1 FROM draft_files_removed r WHERE r.draft_id = drafts.id))
                AND (server_id IS NOT NULL OR subject <> '' OR trim(body) <> ''
-                    OR to_recipients <> '[]' OR cc_recipients <> '[]' OR bcc_recipients <> '[]')
+                    OR to_recipients <> '[]' OR cc_recipients <> '[]' OR bcc_recipients <> '[]'
+                    OR EXISTS (SELECT 1 FROM draft_files f WHERE f.draft_id = drafts.id))
              ORDER BY seq"
         ))?;
         let drafts = statement.query_map([], read)?.collect::<Result<_, _>>()?;

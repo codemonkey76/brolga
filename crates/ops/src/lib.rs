@@ -417,13 +417,23 @@ impl Outbox {
     /// here, so a draft shows in other mail programs. A draft that cannot
     /// be saved there now is saved at the next pass; it is safe here
     /// meanwhile. Gives back how many were saved.
+    ///
+    /// Its files go with it, and those taken off here come off there: a
+    /// draft finished in another mail program is sent with what it has
+    /// there. A file that cannot go now does not hold up the words, and is
+    /// tried again at the next pass, and when the draft is sent.
     async fn save_drafts(&self) -> Result<u32, StoreError> {
         let mut saved = 0;
         for draft in self.db.drafts_to_upload()? {
             match self.put_on_server(&draft).await {
-                Ok(Some(_)) => {
+                Ok(Some(server_id)) => {
                     self.db.draft_uploaded(&draft.id, draft.rev)?;
                     saved += 1;
+                    if let Err(GraphError::Refused { status: 404, .. }) =
+                        self.level_files(&draft, &server_id).await
+                    {
+                        self.db.draft_unlinked(&draft.id)?;
+                    }
                 }
                 // The server's copy has gone. The words are still here, and
                 // get a new copy at the next pass.
