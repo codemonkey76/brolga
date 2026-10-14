@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.17" date="2026-10-14">
+      <description>
+        <p>Settings take the place of the Accounts screen. Everything there is to set is listed down the side under Accounts, Mail, Calendar and This computer, and shown one section at a time. A mailbox's signature, automatic replies, rules, categories, calendar sharing and shared mailboxes are shown for the account chosen. The day the week starts on and writing in plain text can be set there too.</p>
+      </description>
+    </release>
     <release version="0.1.16" date="2026-10-14">
       <description>
         <p>After Brolga has updated and started itself again, links and the sign-in page open in the browser as they should. A message whose sending could not be confirmed is never sent a second time unasked: it is checked for a few minutes and then handed back to be looked at. A draft that has been sent leaves Drafts at once. Pictures in a draft written in another mail program are kept when it is changed here. The day the week starts on can be chosen in the calendar. Automatic replies set from another mail program show when they start and end. On Windows, the channel the command line and agents use is kept to its own user.</p>
