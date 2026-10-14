@@ -167,6 +167,10 @@ pub fn downloads_dir() -> Option<PathBuf> {
 /// system's, in the environment. A browser started with those looks for
 /// its libraries in the AppImage and does not start at all, so the browser
 /// is given the environment as it was outside.
+///
+/// Outside every AppImage, not only this one: a copy started by the copy
+/// before it, as after an update, has that copy's places in its environment
+/// behind its own, and the one before that's behind those.
 pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     let Some(inside) = std::env::var_os("APPDIR").filter(|dir| !dir.is_empty()) else {
         return open::that_detached(url);
@@ -193,6 +197,10 @@ pub fn open_in_browser(url: &str) -> std::io::Result<()> {
                 None => opener.env_remove(name),
             };
         }
+        // Not left standing in the AppImage either, which is where an
+        // AppImage's program starts: a browser that stayed there would
+        // keep the AppImage from being put away when Brolga closes.
+        opener.current_dir(elsewhere(&inside));
         opener
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -212,21 +220,51 @@ pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     Err(last)
 }
 
+/// A directory to start a program in that is not inside an AppImage: the
+/// person's own, or failing that the top of the file system.
+fn elsewhere(inside: &str) -> PathBuf {
+    let within = mounted_like(inside);
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute() && home.is_dir())
+        .filter(|home| !within(&home.to_string_lossy()))
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// Whether a place is inside an AppImage, given where this one is mounted.
+///
+/// An AppImage is mounted for as long as it runs at a directory named
+/// `.mount_` and some letters, in the directory for temporary files. This
+/// one's is `inside`, and any directory so named beside it is another's:
+/// the copy this one was started from, most likely.
+fn mounted_like(inside: &str) -> impl Fn(&str) -> bool {
+    let inside = inside.trim_end_matches('/').to_owned();
+    let beside = inside
+        .rsplit_once('/')
+        .filter(|(_, name)| name.starts_with(".mount_"))
+        .map(|(parent, _)| format!("{parent}/.mount_"));
+
+    move |place: &str| {
+        place.starts_with(inside.as_str())
+            || beside
+                .as_deref()
+                .is_some_and(|beside| place.starts_with(beside))
+    }
+}
+
 /// What to change in an environment so that nothing in it points inside
-/// `inside`: for each variable that does, its value with those places taken
-/// out of its list, or `None` where nothing is left of it.
+/// an AppImage, this one being mounted at `inside`: for each variable that
+/// does, its value with those places taken out of its list, or `None`
+/// where nothing is left of it.
 fn outside_of(
     environment: impl Iterator<Item = (String, String)>,
     inside: &str,
 ) -> Vec<(String, Option<String>)> {
-    let inside = inside.trim_end_matches('/');
+    let within = mounted_like(inside);
     environment
         .filter(|(name, _)| name != "APPDIR")
         .filter_map(|(name, value)| {
-            let kept: Vec<&str> = value
-                .split(':')
-                .filter(|place| !place.starts_with(inside))
-                .collect();
+            let kept: Vec<&str> = value.split(':').filter(|place| !within(place)).collect();
             if kept.len() == value.split(':').count() {
                 return None;
             }
@@ -293,6 +331,91 @@ mod tests {
         }
         // What never pointed inside is left alone.
         assert_eq!(now("HOME"), None);
+    }
+
+    #[test]
+    fn a_browser_is_started_with_nothing_of_the_appimages_this_one_was_started_from() {
+        // As it is after two updates: this copy's places first, then those
+        // of the copy that started it, then those of the one before.
+        let app = "/tmp/.mount_brolgaBMBoFJ";
+        let inside = [
+            (
+                "PATH",
+                "/tmp/.mount_brolgaBMBoFJ/usr/bin/:/tmp/.mount_brolgaOodGMl/usr/bin/:/tmp/.mount_brolgaMfCmCo/usr/bin/:/usr/local/bin:/usr/bin",
+            ),
+            (
+                "LD_LIBRARY_PATH",
+                "/tmp/.mount_brolgaBMBoFJ/usr/lib/:/tmp/.mount_brolgaOodGMl/usr/lib/:/tmp/.mount_brolgaMfCmCo/usr/lib/",
+            ),
+            (
+                "XDG_DATA_DIRS",
+                "/tmp/.mount_brolgaBMBoFJ/usr/share/:/usr/share:/tmp/.mount_brolgaOodGMl/usr/share/:/usr/share:",
+            ),
+            (
+                "PYTHONPATH",
+                "/tmp/.mount_brolgaOodGMl/usr/share/pyshared/:",
+            ),
+            ("PWD", "/tmp/.mount_brolgaOodGMl/usr"),
+            // Temporary files of other programs are not an AppImage's.
+            ("SOCKET", "/tmp/.mounting/socket:/tmp/other"),
+            ("HOME", "/home/robin"),
+            ("APPDIR", "/tmp/.mount_brolgaBMBoFJ"),
+        ];
+        let changes = outside_of(
+            inside
+                .iter()
+                .map(|(n, v)| ((*n).to_owned(), (*v).to_owned())),
+            app,
+        );
+        let now = |name: &str| {
+            changes
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        };
+
+        assert_eq!(
+            now("PATH"),
+            Some(Some("/usr/local/bin:/usr/bin".to_owned()))
+        );
+        assert_eq!(
+            now("XDG_DATA_DIRS"),
+            Some(Some("/usr/share:/usr/share".to_owned()))
+        );
+        for gone in ["LD_LIBRARY_PATH", "PYTHONPATH", "PWD", "APPDIR", "APPIMAGE"] {
+            assert_eq!(now(gone), Some(None), "{gone}");
+        }
+        assert_eq!(now("SOCKET"), None);
+        assert_eq!(now("HOME"), None);
+        // Nothing of any AppImage is left in anything.
+        assert!(
+            changes
+                .iter()
+                .all(|(_, value)| !value.as_deref().unwrap_or_default().contains(".mount_")),
+            "{changes:?}"
+        );
+    }
+
+    #[test]
+    fn an_appimage_that_is_not_mounted_as_one_takes_out_only_its_own_places() {
+        // Unpacked and run from a folder, there is no mount to know others by.
+        let changes = outside_of(
+            [
+                (
+                    "PATH",
+                    "/opt/brolga/usr/bin:/tmp/.mount_other1/usr/bin:/usr/bin",
+                ),
+                ("APPDIR", "/opt/brolga"),
+            ]
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned())),
+            "/opt/brolga",
+        );
+
+        assert!(changes.contains(&(
+            "PATH".to_owned(),
+            Some("/tmp/.mount_other1/usr/bin:/usr/bin".to_owned())
+        )));
     }
 
     /// A store that holds only so much in an entry, as Windows does.
