@@ -628,6 +628,89 @@ async fn a_large_file_goes_up_in_pieces_and_arrives_whole() {
 }
 
 #[tokio::test]
+async fn a_drafts_files_are_kept_with_its_copy_on_the_server_and_come_off_it_with_it() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 1);
+    let server_id = f.db.draft(&draft.id).unwrap().unwrap().server_id.unwrap();
+    let there = || {
+        let mut names: Vec<String> = f
+            .graph
+            .attached(&server_id)
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        names.sort();
+        names
+    };
+
+    // A file is all that has changed. The copy is saved for it, and has it.
+    let plan =
+        f.db.attach_to_draft(&draft.id, "plan.pdf", "application/pdf", b"%PDF plan")
+            .unwrap()
+            .unwrap();
+    f.db.attach_to_draft(&draft.id, "notes.txt", "text/plain", b"notes")
+        .unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 1);
+    assert_eq!(there(), ["notes.txt", "plan.pdf"]);
+    // Level now, so nothing goes again.
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 0);
+    assert_eq!(there(), ["notes.txt", "plan.pdf"]);
+
+    // Taken off here, it comes off there.
+    f.db.detach_from_draft(&draft.id, plan.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 1);
+    assert_eq!(there(), ["notes.txt"]);
+
+    // Sent, it goes with the file it has, once.
+    f.db.queue_draft(&draft.id).unwrap();
+    assert_eq!(f.outbox.drain().await.unwrap().sent, 1);
+    let went: Vec<String> = f.graph.sent()[0]
+        .attachments
+        .iter()
+        .map(|a| a.name.clone())
+        .collect();
+    assert_eq!(went, ["notes.txt"]);
+}
+
+#[tokio::test]
+async fn a_file_that_cannot_go_with_a_saved_draft_does_not_hold_up_its_words_and_goes_later() {
+    let f = fixture().await;
+    let draft =
+        f.db.create_draft("new", None, &to("jo@example.test"))
+            .unwrap();
+    f.db.attach_to_draft(&draft.id, "plan.pdf", "application/pdf", b"%PDF plan")
+        .unwrap();
+    f.graph.drop_next_attachment();
+
+    assert_eq!(f.outbox.drain().await.unwrap().saved, 1);
+    let server_id = f.db.draft(&draft.id).unwrap().unwrap().server_id.unwrap();
+    let drafts = f.graph.folder_id("drafts");
+    assert!(
+        f.graph
+            .messages()
+            .iter()
+            .any(|(id, (folder, subject, _))| *id == server_id
+                && *folder == drafts
+                && subject == "Lunch"),
+        "the words were held up"
+    );
+    assert!(f.graph.attached(&server_id).is_empty());
+
+    // The next pass takes it, with nothing else changed.
+    f.outbox.drain().await.unwrap();
+    let names: Vec<String> = f
+        .graph
+        .attached(&server_id)
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, ["plan.pdf"]);
+}
+
+#[tokio::test]
 async fn a_draft_being_written_is_kept_on_the_server_and_brought_up_to_date() {
     let f = fixture().await;
     let drafts = f.graph.folder_id("drafts");
