@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.18" date="2026-10-14">
+      <description>
+        <p>Files attached to a draft are kept with it in the mailbox's Drafts folder as it is written, so a draft finished in another mail program goes with them. An invitation to a meeting that repeats at an absurd interval no longer stops Brolga.</p>
+      </description>
+    </release>
     <release version="0.1.17" date="2026-10-14">
       <description>
         <p>Settings take the place of the Accounts screen. Everything there is to set is listed down the side under Accounts, Mail, Calendar and This computer, and shown one section at a time. A mailbox's signature, automatic replies, rules, categories, calendar sharing and shared mailboxes are shown for the account chosen. The day the week starts on and writing in plain text can be set there too.</p>
