@@ -804,8 +804,8 @@ test("automatic replies scheduled by another zone's clock show when that is here
     const replies = {
         status: "scheduled",
         internal_message: "Away.",
-        start: { date_time: "2026-10-20T08:00:00.0000000", time_zone: "Europe/London" },
-        end: { date_time: "2026-10-26T17:30:00.0000000", time_zone: "Europe/London" },
+        start: { date_time: "2026-10-20T08:00:00", time_zone: "Europe/London", at: "2026-10-20T07:00:00Z" },
+        end: { date_time: "2026-10-26T17:30:00", time_zone: "Europe/London", at: "2026-10-26T17:30:00Z" },
     };
     await withCore(page, { accounts: [robin], replies });
     await page.getByRole("button", { name: "Accounts" }).click();
@@ -818,4 +818,43 @@ test("automatic replies scheduled by another zone's clock show when that is here
     await form.getByLabel("To people in your organisation").fill("Away until Monday.");
     await form.getByRole("button", { name: "Save" }).click();
     await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.automatic_replies.set")?.args).toMatchObject({ start: "2026-10-20T07:00:00Z", end: "2026-10-26T17:30:00Z" });
+});
+
+test("automatic replies set in a zone under Windows' name for it show their times, and one under no known name says so", async ({ page }) => {
+    // Set from Outlook in Sydney's time, which Microsoft 365 names as Windows does. The core gives the moments.
+    const replies = {
+        status: "scheduled",
+        internal_message: "Away.",
+        start: { date_time: "2026-10-20T08:00:00", time_zone: "AUS Eastern Standard Time", at: "2026-10-19T21:00:00Z" },
+        end: { date_time: "2026-10-24T17:30:00", time_zone: "AUS Eastern Standard Time", at: "2026-10-24T06:30:00Z" },
+    };
+    await withCore(page, { accounts: [robin], replies });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Automatic replies" }).click();
+    const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
+
+    // In Brisbane, an hour behind Sydney in October.
+    await expect(form.getByLabel("From", { exact: true })).toHaveValue("2026-10-20T07:00");
+    await expect(form.getByLabel("Until", { exact: true })).toHaveValue("2026-10-24T16:30");
+    await expect(form.getByText("a time zone Brolga does not know")).toHaveCount(0);
+    // Something else is changed, and the times go back as the moments they were, with nothing typed again.
+    await form.getByLabel("To people in your organisation").fill("Away until Monday.");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "mail.automatic_replies.set")?.args).toMatchObject({ start: "2026-10-19T21:00:00Z", end: "2026-10-24T06:30:00Z" });
+});
+
+test("automatic replies set in a zone under no name that is known leave the times to be set, and say why", async ({ page }) => {
+    const replies = {
+        status: "scheduled",
+        internal_message: "Away.",
+        start: { date_time: "2026-10-20T08:00:00", time_zone: "Middle of Nowhere Standard Time", at: null },
+        end: { date_time: "2026-10-24T17:30:00", time_zone: "Middle of Nowhere Standard Time", at: null },
+    };
+    await withCore(page, { accounts: [robin], replies });
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Automatic replies" }).click();
+    const form = page.getByRole("form", { name: "Automatic replies for robin@example.test" });
+
+    await expect(form.getByLabel("From", { exact: true })).toHaveValue("");
+    await expect(form.getByText("a time zone Brolga does not know (“Middle of Nowhere Standard Time”)")).toBeVisible();
 });
