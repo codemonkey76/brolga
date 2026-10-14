@@ -336,7 +336,8 @@ export const dayOf = (date: Date) => `${date.getFullYear()}-${String(date.getMon
 /** The days a flag is usually given: today, tomorrow, the end of this working week, the start of the next. */
 export function flagDays(now = new Date()): { label: string; day: string }[] {
     const ahead = (days: number) => dayOf(new Date(now.getFullYear(), now.getMonth(), now.getDate() + days));
-    // Monday is 0. Friday of this week, or today if the week's work is over.
+    // Monday is 0, whichever day the week is said to start on: the working
+    // week is Monday to Friday. Friday of this week, or today if its work is over.
     const weekday = (now.getDay() + 6) % 7;
 
     return [
@@ -395,15 +396,18 @@ export function when(iso: string, now = new Date()): string {
     });
 }
 
-/** Which stretch of time a message belongs to in a list by date: today, yesterday, this week, last week, then its month. */
-export function dateGroup(iso: string, now = new Date()): string {
+/**
+ * Which stretch of time a message belongs to in a list by date: today, yesterday, this week, last week, then its month.
+ * `first` is the day weeks start on, as `getDay` counts them: Monday unless said.
+ */
+export function dateGroup(iso: string, now = new Date(), first = 1): string {
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return "";
     const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
     const DAY = 86_400_000;
     const ago = Math.round((day(now) - day(date)) / DAY);
-    // Days since this week's Monday.
-    const intoWeek = (now.getDay() + 6) % 7;
+    // Days since this week began.
+    const intoWeek = (now.getDay() - first + 7) % 7;
 
     if (ago < 0) return "Later";
     if (ago === 0) return "Today";

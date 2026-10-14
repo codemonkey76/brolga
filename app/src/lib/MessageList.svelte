@@ -1,6 +1,7 @@
 <script lang="ts">
     import { Check, Flag, FlagOff, Forward, Reply, ReplyAll, Trash } from "@lucide/svelte";
     import { type Category, type Message, categoryColour, dateGroup, when, who } from "./mail";
+    import { week } from "./week.svelte";
 
     interface Props {
         /** How many messages there are in all, loaded or not. */
@@ -49,7 +50,7 @@
     // it starts, with no heading rows between the messages.
     const group = (index: number) => {
         const row = rows[index];
-        return byDate && row ? dateGroup(row.received_at) : "";
+        return byDate && row ? dateGroup(row.received_at, undefined, week.first) : "";
     };
     const top = $derived(group(Math.min(Math.max(0, total - 1), Math.floor(scrollTop / ROW))));
     const starts = (index: number) => index > 0 && group(index) !== "" && group(index - 1) !== "" && group(index) !== group(index - 1);

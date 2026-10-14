@@ -1,5 +1,7 @@
 import { type Page, expect, test } from "@playwright/test";
 import { bulk, inbox, lunch, notified, ran, refuse, robin, sam, sent, told, withCore } from "./core";
+import { daysOf, startOfWeek, weekdaysFrom } from "../src/lib/calendar";
+import { dateGroup } from "../src/lib/mail";
 
 const picture = async (page: Page, name: string) => {
     if (process.env.SCREENSHOTS) await page.screenshot({ path: `../docs/screenshots/${name}.png` });
@@ -2307,4 +2309,38 @@ test("the menus for a day to follow up by and for categories are put away by Esc
     }
     // The message is as it was: Escape put a menu away and did nothing else.
     await expect(messages(page).getByRole("option", { selected: true })).toContainText("Budget review moved to Thursday");
+});
+
+test("a week is reckoned from the day it is said to start on, in the calendar's days and in mail's stretches of time", () => {
+    // Wednesday 14 October 2026.
+    const now = new Date(2026, 9, 14, 10);
+    const day = (date: Date) => `${date.getMonth() + 1}/${date.getDate()}`;
+
+    expect(day(startOfWeek(now))).toBe("10/12");
+    expect(day(startOfWeek(now, 0))).toBe("10/11");
+    expect(day(startOfWeek(now, 6))).toBe("10/10");
+    // A day is the start of its own week when weeks start on it.
+    expect(day(startOfWeek(new Date(2026, 9, 11), 0))).toBe("10/11");
+    expect(day(startOfWeek(new Date(2026, 9, 11)))).toBe("10/5");
+
+    for (const first of [1, 0, 6]) {
+        // The working week is Monday to Friday whichever day the week starts on.
+        expect(daysOf("work_week", now, first).map(day)).toEqual(["10/12", "10/13", "10/14", "10/15", "10/16"]);
+        expect(daysOf("week", now, first)).toHaveLength(7);
+        expect(daysOf("week", now, first)[0].getDay()).toBe(first);
+        expect(daysOf("month", now, first)[0].getDay()).toBe(first);
+        expect(daysOf("month", now, first)).toHaveLength(42);
+    }
+    expect(weekdaysFrom(0)[0]).toBe("sunday");
+    expect(weekdaysFrom()).toEqual(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+
+    // Sunday the 11th: last week if weeks start on Monday, this week if on Sunday.
+    const sunday = new Date(2026, 9, 11, 9).toISOString();
+    expect(dateGroup(sunday, now)).toBe("Last week");
+    expect(dateGroup(sunday, now, 0)).toBe("Earlier this week");
+    expect(dateGroup(sunday, now, 6)).toBe("Earlier this week");
+    // Friday the 9th is last week by any of them; Friday the 2nd is last week only from Saturday.
+    expect(dateGroup(new Date(2026, 9, 9, 9).toISOString(), now, 0)).toBe("Last week");
+    expect(dateGroup(new Date(2026, 9, 3, 9).toISOString(), now, 6)).toBe("Last week");
+    expect(dateGroup(new Date(2026, 9, 3, 9).toISOString(), now)).not.toBe("Last week");
 });

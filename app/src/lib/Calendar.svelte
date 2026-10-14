@@ -20,6 +20,7 @@
         updateEvent,
         type CalendarEvent,
         type View,
+        WEEK_STARTS,
         addDays,
         calendarColour,
         daysOf,
@@ -30,7 +31,6 @@
         sameDay,
         showCalendar,
         startOfDay,
-        startOfWeek,
         step,
         timeSaid,
         whenSaid,
@@ -38,6 +38,7 @@
     import { execute, say } from "./commands";
     import { openLink } from "./mail";
     import MonthGrid from "./MonthGrid.svelte";
+    import { setWeekStart, week } from "./week.svelte";
     import EventEditor from "./EventEditor.svelte";
     import Rsvp from "./Rsvp.svelte";
     import { Pencil, Plus, TreePalm, Trash, X } from "@lucide/svelte";
@@ -171,7 +172,7 @@
         }
     }
 
-    const days = $derived(daysOf(view, anchor));
+    const days = $derived(daysOf(view, anchor, week.first));
     const title = $derived.by(() => {
         const month = (date: Date) => date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
         if (view === "month") return month(anchor);
@@ -452,7 +453,7 @@
 
     // ---- the small month to steer by -----------------------------------
     let mini = $state(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-    const miniDays = $derived(daysOf("month", mini));
+    const miniDays = $derived(daysOf("month", mini, week.first));
     $effect(() => {
         // It follows what is being shown.
         mini = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
@@ -500,6 +501,14 @@
                     </button>
                 {/each}
             </div>
+            <label class="week-start muted">
+                Week starts on
+                <select aria-label="Week starts on" value={week.first} onchange={(event) => setWeekStart(Number(event.currentTarget.value))}>
+                    {#each WEEK_STARTS as each (each.day)}
+                        <option value={each.day}>{each.name}</option>
+                    {/each}
+                </select>
+            </label>
         </div>
 
         <h2 id="calendars-heading">
@@ -1113,6 +1122,19 @@
     .people li {
         padding: 0.1rem 0;
         font-size: 0.85rem;
+    }
+
+    .week-start {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-top: 0.4rem;
+        font-size: 0.78rem;
+    }
+
+    .week-start select {
+        font-size: inherit;
+        padding: 0.1rem 0.2rem;
     }
 
     .mini-head {
