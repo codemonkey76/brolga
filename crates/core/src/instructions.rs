@@ -43,6 +43,13 @@ fn last_active_property() -> String {
     property("LastActive")
 }
 
+fn model_property() -> String {
+    property("Model")
+}
+fn arrivals_since_property() -> String {
+    property("ArrivalsSince")
+}
+
 /// The property each message is marked with once it has been dealt with.
 pub(crate) fn processed_property() -> String {
     property("Processed")
@@ -138,6 +145,26 @@ pub(crate) struct Settings {
     pub list: List,
     pub processor: Option<Processor>,
     pub last_active: Option<String>,
+    /// Which model the processing device asks. Where to reach it, and the
+    /// key for it, stay on that device.
+    #[serde(default)]
+    pub model: Option<ModelChoice>,
+    /// Mail that arrived in the Inbox from this moment on is dealt with as
+    /// it arrives; mail from before, only by a run over existing mail.
+    #[serde(default)]
+    pub arrivals_since: Option<String>,
+}
+
+/// The model a mailbox's instructions are put to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ModelChoice {
+    /// `anthropic` or `ollama`.
+    pub provider: String,
+    pub model: String,
+    /// The person has agreed that this mailbox's mail is sent to Anthropic.
+    /// Without it nothing is.
+    #[serde(default)]
+    pub cloud_consent: bool,
 }
 
 /// What stops the settings being read or written.
@@ -223,6 +250,14 @@ fn read_settings(message_id: &str, held: &HashMap<String, String>) -> Result<Set
             .get(&last_active_property())
             .filter(|at| !at.is_empty())
             .cloned(),
+        model: held
+            .get(&model_property())
+            .filter(|m| !m.is_empty())
+            .and_then(|m| serde_json::from_str(m).ok()),
+        arrivals_since: held
+            .get(&arrivals_since_property())
+            .filter(|at| !at.is_empty())
+            .cloned(),
     })
 }
 
@@ -258,6 +293,8 @@ pub(crate) async fn read(mailbox: &Mailbox) -> Result<Option<Settings>, Trouble>
         instructions_property(),
         processor_property(),
         last_active_property(),
+        model_property(),
+        arrivals_since_property(),
     ];
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     let mut found: Option<(Settings, String)> = None;
@@ -504,15 +541,67 @@ pub(crate) async fn set_processor(
     Ok(now_held)
 }
 
+/// Choose the model the mailbox's instructions are put to.
+pub(crate) async fn set_model(
+    mailbox: &Mailbox,
+    choice: &ModelChoice,
+) -> Result<Settings, Trouble> {
+    let settings = read_or_make(mailbox).await?;
+    let written = serde_json::to_string(choice).map_err(|e| Trouble::Refused(e.to_string()))?;
+    mailbox
+        .graph
+        .set_message_properties(&settings.message_id, &[(&model_property(), &written)])
+        .await
+        .map_err(|e| Trouble::from_graph(e, "the model was not changed"))?;
+    let now_held = read(mailbox).await?.ok_or(Trouble::Unreached(
+        "the instructions could not be read back",
+    ))?;
+    if now_held.model.as_ref() != Some(choice) {
+        return Err(Trouble::Conflict {
+            by: "another device".to_owned(),
+        });
+    }
+
+    Ok(now_held)
+}
+
+/// The moment from which arriving mail is dealt with, fixed the first time
+/// it is asked for and the same from then on, whichever device asks.
+pub(crate) async fn arrivals_since(
+    mailbox: &Mailbox,
+    settings: &Settings,
+) -> Result<String, Trouble> {
+    if let Some(since) = &settings.arrivals_since {
+        return Ok(since.clone());
+    }
+    let since = now();
+    mailbox
+        .graph
+        .set_message_properties(
+            &settings.message_id,
+            &[(&arrivals_since_property(), &since)],
+        )
+        .await
+        .map_err(|e| Trouble::from_graph(e, "the instructions could not be started"))?;
+    // Another device that fixed it a moment before wins: what is held is it.
+    let held = read(mailbox)
+        .await?
+        .and_then(|s| s.arrivals_since)
+        .unwrap_or(since);
+
+    Ok(held)
+}
+
 /// What a sync does for the instructions: read them again, so they can be
 /// shown when the mailbox cannot be reached, and, on the processing device,
-/// say that it is still there, at most every quarter of an hour.
-pub(crate) async fn on_sync(mailbox: &Mailbox, device: &Device) -> Result<(), Trouble> {
+/// say that it is still there, at most every quarter of an hour. Gives back
+/// whether this is the processing device, to deal with the mail that came.
+pub(crate) async fn on_sync(mailbox: &Mailbox, device: &Device) -> Result<bool, Trouble> {
     if mailbox.archive || mailbox.calendar_only {
-        return Ok(());
+        return Ok(false);
     }
     let Some(settings) = read(mailbox).await? else {
-        return Ok(());
+        return Ok(false);
     };
     let mine = settings
         .processor
@@ -532,7 +621,7 @@ pub(crate) async fn on_sync(mailbox: &Mailbox, device: &Device) -> Result<(), Tr
         let _ = read(mailbox).await;
     }
 
-    Ok(())
+    Ok(mine)
 }
 
 /// When a message was dealt with by the instructions, and by which version

@@ -190,8 +190,17 @@ own change still in the form.
 
 One computer, chosen by hand there, carries the instructions out. The
 others show which one it is and when it was last active, and do nothing.
-This version keeps the instructions and the choice of computer; carrying
-them out comes in a later version.
+
+The instructions are read by a model you choose for each mailbox: one at
+Anthropic, with your own API key saved on that computer, or one on an
+Ollama server. Nothing is sent to Anthropic until you tick the box agreeing
+to it for that mailbox; what is sent is who a message is from and to, its
+subject, its text (up to 8,000 characters) and the names of its
+attachments, never their contents. After each sync, the chosen computer
+deals with mail that arrived in the Inbox since the instructions were first
+switched on. What it did is listed in the same place, with an Undo for
+each. Running the instructions over mail already there comes in a later
+version.
 
 ## AI agents
 

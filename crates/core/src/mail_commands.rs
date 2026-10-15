@@ -295,8 +295,11 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             // them out says it is still running. Trouble with them is not
             // the sync's.
             mailbox.stage(Some("instructions"));
-            if let Ok(device) = crate::device::this(context.mailboxes.global()) {
-                let _ = crate::instructions::on_sync(&mailbox, &device).await;
+            if let Ok(device) = crate::device::this(context.mailboxes.global())
+                && let Ok(true) = crate::instructions::on_sync(&mailbox, &device).await
+            {
+                // The mail that came is dealt with after, without holding the sync up.
+                crate::processing::soon(context.mailboxes.clone(), account.id.clone(), mailbox.clone(), device);
             }
             Ok::<_, String>(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts)))
         }

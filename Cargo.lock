@@ -519,6 +519,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
+name = "brolga-ai"
+version = "0.1.20"
+dependencies = [
+ "brolga-fake-ai",
+ "jsonschema",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "brolga-app"
 version = "0.1.20"
 dependencies = [
@@ -621,10 +634,12 @@ version = "0.1.20"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "brolga-ai",
  "brolga-auth",
  "brolga-calendar",
  "brolga-commands",
  "brolga-contacts",
+ "brolga-fake-ai",
  "brolga-fake-graph",
  "brolga-graph",
  "brolga-mail",
@@ -641,6 +656,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "brolga-fake-ai"
+version = "0.1.20"
+dependencies = [
+ "axum",
+ "serde_json",
  "tokio",
 ]
 

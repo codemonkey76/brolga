@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 base64.workspace = true
+brolga-ai.workspace = true
 brolga-auth.workspace = true
 brolga-calendar = { path = "../calendar" }
 brolga-contacts = { path = "../contacts" }
@@ -34,6 +35,7 @@ tokio.workspace = true
 pst-writer = { package = "outlook-pst-rw", version = "1.2" }
 axum.workspace = true
 brolga-fake-graph.workspace = true
+brolga-fake-ai.workspace = true
 
 [lints]
 workspace = true

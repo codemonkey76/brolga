@@ -12,6 +12,7 @@ mod agent_commands;
 mod archive_commands;
 mod calendar_commands;
 mod contact_commands;
+mod deciding;
 mod device;
 mod draft_commands;
 mod holiday_commands;
@@ -20,6 +21,7 @@ mod instructions;
 mod link_commands;
 mod mail_commands;
 mod mailboxes;
+mod processing;
 mod remote_images;
 mod reply_commands;
 mod rule_commands;
@@ -67,6 +69,8 @@ pub struct CoreOptions {
     /// The computer's own name, which this copy of Brolga is first named
     /// after, where it is known.
     pub host_name: Option<String>,
+    /// Where Anthropic's API is. `None` is the real one; tests name a stand-in.
+    pub anthropic_base: Option<String>,
 }
 
 /// Keep every account's mail up to date for as long as this is polled: a
@@ -115,7 +119,7 @@ impl Core {
         device::settle(&global, options.host_name.as_deref()).map_err(CoreError::Device)?;
         let accounts = Arc::new(Accounts::new(
             db,
-            options.secrets,
+            options.secrets.clone(),
             TokenClient::new(options.authority)?,
         ));
 
@@ -124,6 +128,14 @@ impl Core {
             accounts.clone(),
             options.data_dir.clone(),
             options.graph_base.clone(),
+            mailboxes::Ai {
+                secrets: options.secrets.clone(),
+                anthropic_base: options
+                    .anthropic_base
+                    .clone()
+                    .unwrap_or_else(|| brolga_ai::ANTHROPIC.to_owned()),
+                http: brolga_ai::client().ok(),
+            },
         ));
 
         let mut registry = builtin_registry()?;
@@ -169,10 +181,13 @@ impl Core {
             },
         )?;
 
+        let registry = Arc::new(registry);
+        probed.set_registry(&registry);
+
         Ok(Self {
             accounts,
             mailboxes: probed,
-            registry: Arc::new(registry),
+            registry,
             window,
         })
     }

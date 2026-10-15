@@ -29,6 +29,8 @@ pub(crate) struct Mailbox {
     pub outbox: Arc<brolga_ops::Outbox>,
     /// One sync of an account at a time: two would fetch the same pages.
     pub syncing: Mutex<()>,
+    /// One pass of its mail instructions at a time.
+    pub processing: Mutex<()>,
     /// Which part of a sync is running, while one is.
     stage: std::sync::Mutex<Option<&'static str>>,
     /// The file that says so to other copies of Brolga on this computer.
@@ -121,6 +123,20 @@ pub(crate) struct Mailboxes {
     data_dir: Option<PathBuf>,
     graph_base: Option<String>,
     open: Mutex<HashMap<String, Arc<Mailbox>>>,
+    /// The commands, for mail instructions to act through, once they are all
+    /// registered.
+    registry: std::sync::OnceLock<std::sync::Weak<brolga_commands::Registry>>,
+    /// How mail instructions reach a model.
+    pub ai: Ai,
+}
+
+/// What mail instructions need to reach a model from this device.
+pub(crate) struct Ai {
+    /// The API key is kept here, as sign-in tokens are.
+    pub secrets: Arc<dyn brolga_auth::SecretStore>,
+    /// [`brolga_ai::ANTHROPIC`], except in tests.
+    pub anthropic_base: String,
+    pub http: Option<reqwest::Client>,
 }
 
 /// Gets a mailbox's Graph client its access tokens from the account registry.
@@ -176,6 +192,7 @@ impl Mailboxes {
         accounts: Arc<Accounts>,
         data_dir: Option<PathBuf>,
         graph_base: Option<String>,
+        ai: Ai,
     ) -> Self {
         Self {
             global,
@@ -183,7 +200,19 @@ impl Mailboxes {
             data_dir,
             graph_base,
             open: Mutex::new(HashMap::new()),
+            registry: std::sync::OnceLock::new(),
+            ai,
         }
+    }
+
+    /// Hand over the commands, once they are all registered.
+    pub(crate) fn set_registry(&self, registry: &Arc<brolga_commands::Registry>) {
+        let _ = self.registry.set(Arc::downgrade(registry));
+    }
+
+    /// The commands, while Brolga is running.
+    pub(crate) fn registry(&self) -> Option<Arc<brolga_commands::Registry>> {
+        self.registry.get().and_then(std::sync::Weak::upgrade)
     }
 
     /// The settings kept for this copy of Brolga as a whole.
@@ -482,6 +511,7 @@ impl Mailboxes {
             }),
             shared,
             syncing: Mutex::new(()),
+            processing: Mutex::new(()),
             stage: std::sync::Mutex::new(None),
             lock_file: path.map(|path| path.with_extension("sync-lock")),
         });

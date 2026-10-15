@@ -1,0 +1,22 @@
+[package]
+name = "brolga-ai"
+description = "Asks an AI model, at Anthropic or on an Ollama server, for one answer in a JSON schema."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+jsonschema.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+brolga-fake-ai.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

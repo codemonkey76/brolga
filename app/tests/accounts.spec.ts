@@ -527,6 +527,58 @@ test("mail instructions are written, ordered, turned off and deleted, and one co
     await expect(device).toContainText("This computer (Workshop PC) carries out these instructions.");
 });
 
+test("the model is chosen, agreed to and tried, and what the instructions did can be undone", async ({ page }) => {
+    const instructions = [{ id: "i-1", name: "Telstra", text: "Invoices from Telstra go in Accounts/Telstra.", enabled: true, actions: ["move"] }];
+    const instructionsLog = [
+        { at: "2026-10-16T09:00:00Z", command: "mail.messages.move", outcome: "ok", detail: "A Telstra invoice.", subject: "Your Telstra invoice", instruction: "Telstra", undo_id: "undo-1" },
+        { at: "2026-10-16T09:00:00Z", command: "mail.instructions.move", outcome: "refused", detail: "the instruction does not allow it", subject: "Free phones!!!", instruction: null, undo_id: null },
+    ];
+    await withCore(page, { accounts: [robin], mail: inbox, instructions, instructionsLog, instructionsProcessor: { device_id: "device-here", device_name: "titan", since: "2026-10-15T08:00:00Z" } });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+    const section = page.getByRole("region", { name: "Mail instructions for robin@example.test" });
+    const model = section.getByLabel("Model", { exact: true });
+
+    await expect(model).toContainText("No model has been chosen yet.");
+    await model.getByRole("button", { name: "Choose a model" }).click();
+    const form = section.getByRole("form", { name: "Choose the model" });
+    await expect(form.getByLabel("Model", { exact: true })).toHaveValue("claude-haiku-5-5");
+    await form.getByRole("textbox", { name: "API key" }).fill("sk-ant-mine");
+    // Agreeing is the person's, and says what goes.
+    await expect(form.getByText("Never what is in the attachments.")).toBeVisible();
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(model).toContainText("has not been agreed to, so nothing is sent");
+    await expect(section.getByLabel("Processing", { exact: true })).toContainText("Nothing is being done");
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.model.set_key")?.args).toEqual({ key: "sk-ant-mine" });
+
+    await model.getByRole("button", { name: "Change the model" }).click();
+    await form.getByLabel("Send this mailbox's mail to Anthropic to be read").check();
+    await picture(page, "instructions-model");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(model).toContainText("claude-haiku-5-5 at Anthropic reads the mail.");
+    expect((await ran(page)).filter((r) => r.command === "mail.instructions.model.set").at(-1)?.args).toMatchObject({ provider: "anthropic", cloud_consent: true });
+    await expect(section.getByLabel("Processing", { exact: true })).toContainText("7 sent to the model today, of at most 500");
+
+    await model.getByRole("button", { name: "Try it" }).click();
+    await expect(model).toContainText("answered properly in 1.2 seconds");
+
+    // A local model is picked from those the server has.
+    await model.getByRole("button", { name: "Change the model" }).click();
+    await form.getByLabel("A model on an Ollama server").check();
+    await expect(form.getByLabel("Model", { exact: true })).toHaveValue("llama3.2");
+    await form.getByLabel("Model", { exact: true }).selectOption("qwen3");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(model).toContainText("qwen3 on Ollama reads the mail.");
+
+    await section.getByText("What the instructions have done").click();
+    const log = section.getByRole("list", { name: "What the instructions have done" });
+    await expect(log.getByRole("listitem").nth(0)).toContainText("Moved: Your Telstra invoice");
+    await expect(log.getByRole("listitem").nth(1)).toContainText("Not done");
+    await log.getByRole("button", { name: "Undo" }).click();
+    await expect(log.getByRole("button", { name: "Undone" })).toBeDisabled();
+    expect((await ran(page)).find((r) => r.command === "mail.undo")?.args).toMatchObject({ undo_id: "undo-1" });
+});
+
 test("mail instructions that cannot be read say why", async ({ page }) => {
     await withCore(page, { accounts: [robin], offline: true });
     await page.getByRole("button", { name: "Settings" }).click();

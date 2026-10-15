@@ -101,6 +101,15 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | ID token claims reference | https://learn.microsoft.com/entra/identity-platform/id-token-claims-reference | `tid`, `oid`, `preferred_username` and `name`, to label an account |
 | Claims challenges, claims requests, and client capabilities | https://learn.microsoft.com/entra/identity-platform/claims-challenge | Reading a claims challenge from a 401's `WWW-Authenticate` header |
 
+## Anthropic and Ollama
+
+| Source | URL | Used for |
+|---|---|---|
+| Structured outputs | https://platform.claude.com/docs/en/build-with-claude/structured-outputs | `output_config.format` with `type: json_schema` on `POST /v1/messages`, no beta header; the JSON comes back as the answer's text. Schemas: `additionalProperties: false` on every object, no `minLength`/`maxLength`/`minimum`/`maximum`, at most 24 optional parameters and 16 unions, so the instructions' schema has neither. A refusal or `max_tokens` stop may not fit the schema. Read 16 October 2026 (TKT-01184) |
+| Errors; Rate limits | https://platform.claude.com/docs/en/api/errors | The error body `{"type":"error","error":{"type","message"}}`; 401, 402, 403 and 404 are not asked again; 429 waits for `retry-after`, except the spend-cap 429 (`enforced_spend_limit_reached`), which has none; 500, 504 and 529 are asked again later |
+| Models overview; Pricing; Claude Haiku 5.5 migration guide | https://platform.claude.com/docs/en/about-claude/models/overview | `claude-haiku-5-5` is current: adaptive thinking on by default (its blocks come before the text, so the text is found by type), `temperature` only 1 if sent, no prefill, `stop_reason: refusal` to be handled. $0.10 and $0.50 per million tokens in and out, for prompts up to 100,000 tokens |
+| Ollama: Chat; Structured outputs; List models | https://docs.ollama.com/api/chat | `POST /api/chat` with `format` as a JSON schema, `stream: false` and temperature 0; the JSON comes back in `message.content`. `GET /api/tags` lists the installed models by `name` |
+
 ## Model Context Protocol
 
 | Document | URL | Used for |
