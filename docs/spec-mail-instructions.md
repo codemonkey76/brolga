@@ -135,8 +135,12 @@ for the model to use.
 | Named tools | An instruction names each tool it may call, by server and tool name. The model cannot call any other tool. | P0 |
 | Fixed inputs | An instruction can fix a tool's inputs (for example client = CarCoop, assigned to = Shane). The model fills only the inputs left open, and what it fills is checked against the tool's own schema before the call. A fixed input cannot be changed by the model. | P0 |
 | Ask first | Each instruction that names a tool has a switch: ask first, or run unattended. New instructions ask first. A call that asks first waits in an Approvals list, showing the message, the instruction, the tool and every input, until it is approved or rejected. Nothing is called until then. | P0 |
-| Run unattended | Switching an instruction to run unattended, or back, is done by the person in Brolga's window and cannot be done from the CLI, the control channel or an agent. The same goes for approving or rejecting a waiting call. | P0 |
-| Approvals list | The Approvals list is on the processing device, with a count shown in the window. Calls can be approved or rejected one by one or all at once. A waiting call whose tool or instruction has since changed asks again. | P0 |
+| Run unattended | Switching an instruction to run unattended, or back, is done by the person in Brolga's window, on any device signed in to the mailbox, and cannot be done from the CLI, the control channel or an agent. The same goes for approving or rejecting a waiting call. | P0 |
+| Approvals list | The Approvals list is kept in the mailbox (see "Where it lives"), so it shows, with a count, on every device signed in to the mailbox, not only the processing device. Calls can be approved or rejected there one by one or all at once. A device other than the processing device needs no MCP server set up to approve. | P0 |
+| Carrying out an approval | The processing device makes an approved call within one sync of seeing the approval. Until it has, the call shows as approved and waiting for the processing device, with when that device was last active. Once made, its result shows on every device. | P0 |
+| Approval matches the call | The processing device keeps its own copy of each call it put up for approval, and makes only that call: an approval changes nothing but the decision. If the item in the mailbox no longer matches its copy, the call is not made and is shown as changed. A waiting call whose tool or instruction has since changed asks again. | P0 |
+| Decided once | Approving or rejecting is written with If-Match, so a call decided on two devices at once takes the first decision, and the second device is told it was already decided. | P0 |
+| Who can approve | Anyone who can open the mailbox in Brolga can approve its calls, as anyone who can open it can edit its instructions. For a shared mailbox the instruction editor says so. | P0 |
 | Once only | Before a call, Brolga records locally that it is about to make it, and after it, the result. A call interrupted by a crash or restart is not made again by itself: it is shown as unknown, for the person to check and retry or drop. | P0 |
 | No undo | A call to an outside tool cannot be undone by Brolga. The record says so, and undoing a run leaves its outside calls listed as not undone. | P0 |
 | Failure | A call that fails is kept with the error and retried with back-off up to three times, then left for the person. | P0 |
@@ -169,8 +173,16 @@ property-set GUID hold:
 - `Model`: the provider and model name only. Keys and addresses stay on the
   device.
 
-MCP server addresses and tokens, the Approvals list and the record of outside
-calls stay on the processing device.
+Each outside call that asks first is one more message in the folder, made by
+the processing device, holding the mailbox message, instruction, server, tool
+and every input, and a `Decision` property (waiting, approved or rejected, by
+which device and when) that other devices change with If-Match. When the call
+is made, its result is added. Decided items are deleted after 30 days. Brolga
+syncs this folder on its own, by delta, so approvals reach other devices
+within one sync.
+
+MCP server addresses and tokens, and the processing device's own copy of each
+call and its record of calls made, stay on the processing device.
 
 Each processed message gets a `String {Brolga GUID} Name Processed` property
 holding the time and the instruction-list version, set by PATCH (Create
@@ -203,19 +215,23 @@ editing from other devices and is an owner decision before it is used.
 8. Tasks made in Brolga show in To Do on the web with their due day, reminder
    and link, and tasks changed in To Do show in Brolga within one sync.
 9. Against a test MCP server: a call that asks first is not made until
-   approved in the window; a rejected call is never made; an agent cannot
-   approve a call or switch an instruction to run unattended; a call
-   interrupted by a restart is not made twice.
+   approved in the window; a call approved on device B is made by
+   processing device A within one sync, and its result shows on B; a call
+   decided on two devices at once is decided once; a call whose inputs are
+   changed in the mailbox is not made; a rejected call is never made; an
+   agent cannot approve a call or switch an instruction to run unattended; a
+   call interrupted by a restart is not made twice.
 10. Each new command is in the registry with a schema and an example, and is
     reachable over CLI and MCP with a test.
 
 ## Open decisions
 
-1. **Default Anthropic model.** `claude-haiku-5-5` (cheapest and fastest) is
-   proposed.
-2. **Mail folders other than the Inbox** for arrivals processing, e.g. mail
+1. **Mail folders other than the Inbox** for arrivals processing, e.g. mail
    the server rules have already moved. Proposed: Inbox only in this version.
 
 Settled: "create a reminder" is a To Do task with a reminder (owner,
 2026-10-16). Outside tool calls ask first by default, and the owner switches an
 instruction to run unattended once satisfied with it (owner, 2026-10-16).
+Calls can be approved from any device signed in to the mailbox, not only the
+processing device (owner, 2026-10-16). The default Anthropic model is
+`claude-haiku-5-5` (owner, 2026-10-16).
