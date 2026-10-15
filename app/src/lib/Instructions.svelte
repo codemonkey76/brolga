@@ -139,6 +139,158 @@
         await read();
     }
 
+    interface Model {
+        provider: "anthropic" | "ollama" | null;
+        model: string | null;
+        cloud_consent: boolean;
+        key_saved: boolean;
+        ollama_address: string;
+        default_anthropic_model: string;
+    }
+
+    interface Status {
+        ready: boolean;
+        not_ready_because: string | null;
+        waiting: number;
+        failed: number;
+        today: { requests: number };
+        daily_cap: number;
+        last_error: { message_id: string; error: string; at: string } | null;
+    }
+
+    interface Entry {
+        at: string;
+        command: string;
+        outcome: "ok" | "refused" | "failed";
+        detail: string;
+        subject: string | null;
+        instruction: string | null;
+        undo_id: string | null;
+    }
+
+    let model = $state<Model | null>(null);
+    let status = $state<Status | null>(null);
+    let entries = $state<Entry[]>([]);
+    /** The model being chosen, while its form is open. */
+    let choosing = $state<{ provider: "anthropic" | "ollama"; model: string; consent: boolean; address: string; key: string } | null>(null);
+    let ollamaModels = $state<string[] | null>(null);
+    let ollamaProblem = $state<string | null>(null);
+    let tried = $state<string | null>(null);
+    /** Undo ids already taken back. */
+    let undone = $state<string[]>([]);
+
+    async function readModel() {
+        try {
+            model = await execute<Model>("mail.instructions.model.get", { account_id: accountId });
+            status = await execute<Status>("mail.instructions.status", { account_id: accountId });
+            entries = (await execute<{ entries: Entry[] }>("mail.instructions.log", { account_id: accountId, limit: 20 })).entries;
+        } catch {
+            // The list above says what is wrong.
+        }
+    }
+
+    $effect(() => {
+        readModel();
+    });
+
+    function choose() {
+        if (!model) return;
+        choosing = {
+            provider: model.provider ?? "anthropic",
+            model: model.model ?? (model.provider === "ollama" ? "" : model.default_anthropic_model),
+            consent: model.cloud_consent,
+            address: model.ollama_address,
+            key: "",
+        };
+        problem = null;
+        tried = null;
+        if (choosing.provider === "ollama") findModels();
+    }
+
+    async function findModels() {
+        if (!choosing) return;
+        ollamaModels = null;
+        ollamaProblem = null;
+        try {
+            const found = await execute<{ reachable: boolean; models: string[]; error: string | null }>("mail.instructions.model.ollama_models", { address: choosing.address });
+            ollamaModels = found.models;
+            if (!found.reachable) ollamaProblem = found.error;
+            else if (choosing && !found.models.includes(choosing.model)) choosing.model = found.models[0] ?? "";
+        } catch (failure) {
+            ollamaProblem = say(failure);
+        }
+    }
+
+    async function saveModel(submitted: SubmitEvent) {
+        submitted.preventDefault();
+        if (!choosing) return;
+        busy = true;
+        problem = null;
+        try {
+            if (choosing.provider === "anthropic" && choosing.key.trim()) {
+                await execute("mail.instructions.model.set_key", { key: choosing.key.trim() });
+            }
+            const args: Record<string, unknown> = { account_id: accountId, provider: choosing.provider, model: choosing.model.trim() || undefined };
+            if (choosing.provider === "anthropic") args.cloud_consent = choosing.consent;
+            else args.ollama_address = choosing.address.trim();
+            await execute("mail.instructions.model.set", args);
+            choosing = null;
+        } catch (failure) {
+            problem = say(failure);
+        } finally {
+            busy = false;
+            await readModel();
+        }
+    }
+
+    async function forgetKey() {
+        await execute("mail.instructions.model.set_key", { key: "" }).catch((failure) => (problem = say(failure)));
+        await readModel();
+    }
+
+    async function test() {
+        tried = "Asking the model…";
+        try {
+            const result = await execute<{ ok: boolean; model: string; seconds: number; error: string | null }>("mail.instructions.model.test", { account_id: accountId });
+            tried = result.ok ? `${result.model} answered properly in ${result.seconds.toFixed(1)} seconds.` : `It did not work: ${result.error}`;
+        } catch (failure) {
+            tried = say(failure);
+        }
+    }
+
+    async function processNow() {
+        busy = true;
+        problem = null;
+        try {
+            const pass = await execute<{ processed: number; already_done: number; failed: number; stopped: string | null }>("mail.instructions.process", { account_id: accountId });
+            tried = pass.stopped ?? `${pass.processed} message${pass.processed === 1 ? "" : "s"} dealt with${pass.failed ? `, ${pass.failed} could not be` : ""}.`;
+        } catch (failure) {
+            problem = say(failure);
+        } finally {
+            busy = false;
+            await readModel();
+        }
+    }
+
+    async function undo(entry: Entry) {
+        if (!entry.undo_id) return;
+        try {
+            await execute("mail.undo", { account_id: accountId, undo_id: entry.undo_id });
+            undone = [...undone, entry.undo_id];
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    /** What an entry in the log did, in words. */
+    const did = (entry: Entry) =>
+        ({
+            "mail.messages.move": "Moved",
+            "mail.messages.set_categories": "Categorised",
+            "mail.messages.set_flag": "Flagged",
+            "mail.messages.set_read": "Marked",
+        })[entry.command] ?? entry.command.replace(/^mail\.instructions\./, "Wanted to ");
+
     const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "never");
     const allowed = (each: Instruction) =>
         ACTIONS.filter((action) => each.actions.includes(action.id))
@@ -150,7 +302,7 @@
     <p class="muted">
         Instructions are written in plain words, such as “Invoices from Telstra go in Accounts/Telstra”. An AI model reads each message arriving in the inbox and does what the instructions that fit it allow. They are kept in the mailbox, so every computer signed in to it shows the same list, and they are carried out by one computer you choose.
     </p>
-    <p class="muted">This version of Brolga keeps the instructions and the choice of computer. Carrying them out comes in a later version.</p>
+    <p class="muted">Running the instructions over mail already in the mailbox comes in a later version.</p>
     {#if problem}
         <p class="problem" role="alert">{problem}</p>
     {/if}
@@ -207,6 +359,120 @@
                 </form>
             {/if}
         </div>
+
+        {#if model}
+            <div class="device" aria-label="Model">
+                {#if model.provider === "anthropic"}
+                    <p><strong>{model.model}</strong> at Anthropic reads the mail.</p>
+                    {#if !model.cloud_consent}
+                        <p class="warning">Sending this mailbox's mail to Anthropic has not been agreed to, so nothing is sent.</p>
+                    {/if}
+                {:else if model.provider === "ollama"}
+                    <p><strong>{model.model}</strong> on Ollama reads the mail.</p>
+                {:else}
+                    <p>No model has been chosen yet.</p>
+                {/if}
+                {#if listed.processing_here && model.provider === "anthropic"}
+                    <p class="muted">{model.key_saved ? "An Anthropic API key is saved on this computer." : "No Anthropic API key is saved on this computer."}</p>
+                {:else if listed.processing_here && model.provider === "ollama"}
+                    <p class="muted">This computer reaches Ollama at {model.ollama_address}.</p>
+                {/if}
+
+                {#if choosing}
+                    <form aria-label="Choose the model" onsubmit={saveModel}>
+                        <fieldset>
+                            <legend>Read the mail with</legend>
+                            <label><input type="radio" name="provider" value="anthropic" bind:group={choosing.provider} /> A model at Anthropic, with an API key</label>
+                            <label><input type="radio" name="provider" value="ollama" bind:group={choosing.provider} onchange={findModels} /> A model on an Ollama server</label>
+                        </fieldset>
+                        {#if choosing.provider === "anthropic"}
+                            <label class="stacked">Model <input type="text" bind:value={choosing.model} placeholder={model.default_anthropic_model} /></label>
+                            {#if listed.processing_here}
+                                <label class="stacked">
+                                    API key {model.key_saved ? "(one is saved; type a new one to replace it)" : ""}
+                                    <input type="password" autocomplete="off" bind:value={choosing.key} placeholder="sk-ant-…" />
+                                </label>
+                            {/if}
+                            <label class="consent">
+                                <input type="checkbox" bind:checked={choosing.consent} />
+                                <span>
+                                    Send this mailbox's mail to Anthropic to be read
+                                    <small class="muted">For each message that arrives: who it is from and to, its subject, its text (up to 8,000 characters) and the names of its attachments. Never what is in the attachments.</small>
+                                </span>
+                            </label>
+                        {:else}
+                            <label class="stacked">Ollama's address <input type="text" bind:value={choosing.address} onchange={findModels} /></label>
+                            {#if ollamaProblem}
+                                <p class="warning">{ollamaProblem}</p>
+                            {/if}
+                            <label class="stacked">
+                                Model
+                                <select aria-label="Model" bind:value={choosing.model} disabled={!ollamaModels?.length}>
+                                    {#each ollamaModels ?? [] as each (each)}
+                                        <option value={each}>{each}</option>
+                                    {/each}
+                                </select>
+                            </label>
+                        {/if}
+                        <div class="buttons">
+                            <button type="submit" class="primary" disabled={busy || listed.offline || (choosing.provider === "ollama" && !choosing.model)}>Save</button>
+                            <button type="button" onclick={() => (choosing = null)}>Cancel</button>
+                        </div>
+                    </form>
+                {:else}
+                    <div class="buttons">
+                        <button type="button" disabled={listed.offline} onclick={choose}>{model.provider ? "Change the model" : "Choose a model"}</button>
+                        {#if listed.processing_here && model.provider}
+                            <button type="button" onclick={test}>Try it</button>
+                        {/if}
+                        {#if listed.processing_here && model.key_saved}
+                            <button type="button" onclick={forgetKey}>Forget the API key</button>
+                        {/if}
+                    </div>
+                {/if}
+                {#if tried}
+                    <p class="muted" role="status">{tried}</p>
+                {/if}
+            </div>
+        {/if}
+
+        {#if listed.processing_here && status}
+            <div class="device" aria-label="Processing">
+                {#if status.ready}
+                    <p>New mail in the Inbox is dealt with after each sync. {status.today.requests} sent to the model today{model?.provider === "anthropic" ? `, of at most ${status.daily_cap}` : ""}.</p>
+                {:else}
+                    <p class="warning">Nothing is being done: {status.not_ready_because}</p>
+                {/if}
+                {#if status.waiting || status.failed}
+                    <p class="muted">{status.waiting} waiting to be tried again{status.failed ? `, ${status.failed} given up on` : ""}.</p>
+                {/if}
+                {#if status.last_error}
+                    <p class="muted">Last trouble, {when(status.last_error.at)}: {status.last_error.error}</p>
+                {/if}
+                <div class="buttons">
+                    <button type="button" disabled={busy || !status.ready} onclick={processNow}>Deal with new mail now</button>
+                </div>
+            </div>
+        {/if}
+
+        {#if entries.length > 0}
+            <details class="log">
+                <summary>What the instructions have done</summary>
+                <ul aria-label="What the instructions have done">
+                    {#each entries as entry, n (n)}
+                        <li>
+                            <span class="what">
+                                <span>{entry.outcome === "ok" ? did(entry) : entry.outcome === "refused" ? `Not done (${did(entry)})` : "Did not work"}: {entry.subject ?? ""}</span>
+                                <span class="muted">{when(entry.at)}{entry.instruction ? ` · ${entry.instruction}` : ""}{entry.detail ? ` · ${entry.detail}` : ""}</span>
+                            </span>
+                            {#if entry.outcome === "ok" && entry.undo_id}
+                                <button type="button" disabled={undone.includes(entry.undo_id)} onclick={() => undo(entry)}>{undone.includes(entry.undo_id) ? "Undone" : "Undo"}</button>
+                            {/if}
+                        </li>
+                    {/each}
+                </ul>
+            </details>
+        {/if}
 
         {#if listed.instructions.length > 0}
             <label class="whole">
@@ -375,6 +641,38 @@
         display: flex;
         flex-wrap: wrap;
         gap: 0.5rem;
+    }
+
+    .warning {
+        color: var(--danger);
+    }
+
+    .consent {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        font-size: 0.9rem;
+    }
+
+    .consent span {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .log summary {
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+
+    .log ul {
+        margin: 0.4rem 0 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    select {
+        font: inherit;
+        padding: 0.35rem;
     }
 
     .link {

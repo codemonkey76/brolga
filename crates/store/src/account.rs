@@ -391,6 +391,33 @@ const STEPS: &[&str] = &[
     -- never came can be found again and not made twice.
     ALTER TABLE drafts ADD COLUMN create_marker TEXT;
 ",
+    "
+    -- Messages the mail instructions have dealt with, or are trying to, on
+    -- this device (docs/spec-mail-instructions.md). The mark on the
+    -- message in the mailbox is what counts; this keeps the device from
+    -- asking about the same message again, and holds what went wrong.
+    -- state: done, waiting (to be tried again from next_try, seconds since
+    -- 1970) or failed (tried too often, and left for the person).
+    CREATE TABLE instruction_marks (
+        message_id TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_try INTEGER NOT NULL DEFAULT 0,
+        error TEXT NOT NULL DEFAULT '',
+        at INTEGER NOT NULL DEFAULT (unixepoch())
+    ) STRICT;
+
+    -- What was asked of a model each day, by provider, for the cap on
+    -- messages sent to one in the cloud.
+    CREATE TABLE instruction_usage (
+        day TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, provider)
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1481,11 +1508,11 @@ impl AccountDb {
     }
 }
 
-const COLUMNS: &str = "id, folder_id, conversation_id, subject, preview, from_name, from_address, to_recipients, \
+pub(crate) const COLUMNS: &str = "id, folder_id, conversation_id, subject, preview, from_name, from_address, to_recipients, \
                        cc_recipients, received_at, sent_at, is_read, is_draft, has_attachments, importance, \
                        flag_status, categories, inference, flag_due, is_meeting, last_action";
 
-fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
+pub(crate) fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
         id: row.get(0)?,
         folder_id: row.get(1)?,

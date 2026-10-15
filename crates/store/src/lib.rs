@@ -12,6 +12,7 @@ mod calendar;
 mod contacts;
 mod drafts;
 mod global;
+mod marks;
 mod migrate;
 mod ops;
 
@@ -24,6 +25,7 @@ pub use calendar::{CalendarRow, EventRow};
 pub use contacts::ContactRow;
 pub use drafts::{Draft, DraftEdit, DraftFile};
 pub use global::{Account, AgentLogEntry, GlobalDb};
+pub use marks::{Mark, Usage};
 pub use ops::{FailedOp, MessageEdit, Op};
 
 #[derive(Debug, thiserror::Error)]

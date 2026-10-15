@@ -415,6 +415,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         default_client_id: DEFAULT_CLIENT_ID.map(str::to_owned),
         fetch_images_from_private_hosts: false,
         host_name: brolga_platform::host_name(),
+        anthropic_base: None,
     })?;
     let registry = core.registry();
     let control = registry.clone();

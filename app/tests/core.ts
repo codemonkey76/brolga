@@ -210,6 +210,9 @@ export interface FakeCore {
     /** Mail instructions, as `mail.instructions.list` gives them, and the computer that carries them out. */
     instructions?: { id: string; name: string; text: string; enabled: boolean; actions: string[] }[];
     instructionsProcessor?: { device_id: string; device_name: string; since: string };
+    /** The model the instructions use, and what they have done. */
+    instructionsModel?: { provider: "anthropic" | "ollama"; model: string; cloud_consent: boolean };
+    instructionsLog?: Record<string, unknown>[];
     /** How automatic replies are set to begin with, where that is not off. */
     replies?: Record<string, unknown>;
     /** Why automatic replies cannot be read, if they cannot. */
@@ -375,6 +378,10 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         /** Mail instructions as the mailbox keeps them, and this computer as the core knows it. */
         let instructions = { enabled: true, version: core.instructions ? 1 : 0, list: [...(core.instructions ?? [])], processor: core.instructionsProcessor ?? null };
         const computer = { id: "device-here", name: "titan" };
+        let chosenModel: { provider: string | null; model: string | null; cloud_consent: boolean } = core.instructionsModel ?? { provider: null, model: null, cloud_consent: false };
+        let keySaved = false;
+        let ollamaAt = "http://localhost:11434";
+        const modelShown = () => ({ ...chosenModel, key_saved: keySaved, ollama_address: ollamaAt, default_anthropic_model: "claude-haiku-5-5" });
         const instructed = () => ({
             enabled: instructions.enabled,
             version: instructions.version,
@@ -1068,6 +1075,28 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 instructions.processor = null;
                 return instructed();
             },
+            "mail.instructions.model.get": () => modelShown(),
+            "mail.instructions.model.set": (args) => {
+                if (args.ollama_address) ollamaAt = String(args.ollama_address);
+                chosenModel = {
+                    provider: String(args.provider),
+                    model: String(args.model ?? (args.provider === "anthropic" ? "claude-haiku-5-5" : "")),
+                    cloud_consent: args.provider === "anthropic" && Boolean(args.cloud_consent ?? chosenModel.cloud_consent),
+                };
+                return modelShown();
+            },
+            "mail.instructions.model.set_key": (args) => {
+                keySaved = String(args.key).length > 0;
+                return { key_saved: keySaved };
+            },
+            "mail.instructions.model.ollama_models": (args) => ({ address: String(args.address ?? ollamaAt), reachable: true, models: ["llama3.2", "qwen3"], error: null }),
+            "mail.instructions.model.test": () => ({ ok: true, provider: chosenModel.provider, model: chosenModel.model, seconds: 1.2, answer: { actions: [] }, error: null }),
+            "mail.instructions.process": () => ({ processed: 2, already_done: 0, failed: 0, stopped: null }),
+            "mail.instructions.status": () => {
+                const ready = instructions.processor?.device_id === computer.id && chosenModel.provider !== null && (chosenModel.provider !== "anthropic" || (chosenModel.cloud_consent && keySaved));
+                return { ready, not_ready_because: ready ? null : "Sending this mailbox's mail to Anthropic has not been agreed to.", waiting: 0, failed: 0, today: { requests: 7 }, daily_cap: 500, last_error: null, last_pass: null, last_pass_at: null };
+            },
+            "mail.instructions.log": () => ({ entries: core.instructionsLog ?? [] }),
             "app.device.rename": (args) => {
                 computer.name = String(args.name);
                 return { device: { ...computer } };

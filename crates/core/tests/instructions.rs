@@ -34,6 +34,7 @@ async fn device(identity: &FakeIdentity, graph: &FakeGraph, name: &str) -> Arc<R
         default_client_id: Some("client".to_owned()),
         fetch_images_from_private_hosts: false,
         host_name: Some(name.to_owned()),
+        anthropic_base: None,
     })
     .unwrap();
     let registry = core.registry();

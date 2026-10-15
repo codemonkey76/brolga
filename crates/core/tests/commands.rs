@@ -25,6 +25,15 @@ fn core_with_mail(
     graph: Option<&FakeGraph>,
     default_client_id: Option<&str>,
 ) -> Core {
+    core_with_model(identity, graph, default_client_id, None)
+}
+
+fn core_with_model(
+    identity: &FakeIdentity,
+    graph: Option<&FakeGraph>,
+    default_client_id: Option<&str>,
+    anthropic_base: Option<String>,
+) -> Core {
     Core::open(CoreOptions {
         data_dir: None,
         downloads_dir: Some(downloads()),
@@ -45,6 +54,7 @@ fn core_with_mail(
         default_client_id: default_client_id.map(str::to_owned),
         fetch_images_from_private_hosts: false,
         host_name: None,
+        anthropic_base,
     })
     .unwrap()
 }
@@ -161,7 +171,15 @@ async fn every_command_is_described_and_its_examples_run() {
         .to_string(),
     ));
     graph.add_message(&settings, kept);
-    let registry = core_with_mail(&identity, Some(&graph), Some(CLIENT_ID)).registry();
+    // A stand-in for Anthropic, so that no example reaches the real one.
+    let ai = brolga_fake_ai::FakeAi::start().await.unwrap();
+    let registry = core_with_model(
+        &identity,
+        Some(&graph),
+        Some(CLIENT_ID),
+        Some(ai.base_url()),
+    )
+    .registry();
     // The mail examples need an account with mail in it, which no example
     // can arrange for itself.
     registry

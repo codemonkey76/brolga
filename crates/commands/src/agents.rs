@@ -40,6 +40,8 @@ pub const WINDOW_ONLY: &[&str] = &[
     // (docs/spec-mail-instructions.md, "The processing device").
     "mail.instructions.processor.release",
     "mail.instructions.processor.take",
+    // The key to the person's own Anthropic account.
+    "mail.instructions.model.set_key",
 ];
 
 /// Arguments only a person gives, by command: an agent that sets one is
@@ -48,6 +50,10 @@ pub const WINDOW_ONLY: &[&str] = &[
 pub const NEVER_ARGUMENTS: &[(&str, &str)] = &[
     ("mail.messages.get", "allow_remote_content"),
     ("mail.messages.get", "allow_for_trusted_senders"),
+    // Where a mailbox's mail is sent to be read by a model is the person's
+    // to agree to (docs/spec-mail-instructions.md, "Cloud consent").
+    ("mail.instructions.model.set", "cloud_consent"),
+    ("mail.instructions.model.set", "ollama_address"),
 ];
 
 /// Commands that need the person's say-so only when they are given a

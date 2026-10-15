@@ -32,8 +32,10 @@ Built and released in this order, each usable on its own:
 
 1. **Groundwork:** the hidden settings folder, the processing device, the
    `mail.instructions.*` list commands and the processed mark. No model yet.
-2. **Mail actions:** both model providers, arrivals processing and runs over
-   existing mail, with the mail actions (move, categories, flag, read).
+2. **Mail actions**, in two parts (owner, 2026-10-16):
+   - **2a:** both model providers, arrivals processing, the record and undo,
+     with the mail actions (move, categories, flag, read).
+   - **2b:** runs over existing mail.
 3. **Tasks:** the Tasks section, and the "create a task" action.
 4. **Outside tools:** MCP servers, the tool action, and approvals.
 
@@ -58,7 +60,7 @@ those already have.
 | Action | Carried out by | Notes |
 |---|---|---|
 | Move to a folder | `mail.messages.move` | The folder must already exist and be named in the instruction. The model cannot create folders or move to Deleted Items or Junk. |
-| Set categories | `mail.messages.set_categories` | Adds categories from the mailbox's master list. It never creates a category. |
+| Set categories | `mail.messages.set_categories` | Adds categories from the mailbox's master list that the instruction names. It never creates a category or takes one away. |
 | Flag, with an optional due date | `mail.messages.set_flag` | The due date is a whole day, as now. |
 | Mark read or unread | `mail.messages.set_read` | |
 | Create a task | `tasks.create` | In a To Do list named in the instruction (default: the default list), with a title, optional due day and reminder, and a link back to the message. The reminder fires in To Do on every device, the phone included. |
@@ -99,13 +101,13 @@ refused.
 | Item | Requirement | Priority |
 |---|---|---|
 | Two providers | Anthropic (the Messages API, with an API key) or Ollama (a local server). Chosen per mailbox. Only the processing device needs the provider set up. | P0 |
-| Anthropic | Key stored in the system secret store, as sign-in tokens are, and never shown again or sent anywhere but `api.anthropic.com`. Default model `claude-haiku-5-5`, changeable. Replies are constrained with `output_config.format` (JSON schema). | P0 |
+| Anthropic | Key stored in the system secret store, as sign-in tokens are, and never shown again or sent anywhere but `api.anthropic.com`. Default model `claude-haiku-5-5`, changeable. Replies are constrained with `output_config.format` (JSON schema). Thinking and effort are left at the model's defaults, which every current model accepts. | P0 |
 | Ollama | Address defaults to `http://localhost:11434`, changeable. The model is picked from the server's installed models. Replies are constrained with `format` given a JSON schema. A non-local address must be `https`. | P0 |
 | One answer | The model gives one answer per message, in the JSON schema built from the instructions and the actions and tools they allow. It does not call tools itself, and nothing a tool returns is given back to it. Brolga carries out the answer. | P0 |
 | Cloud consent | Processing a mailbox with Anthropic is off until switched on for that mailbox, with a plain statement that message content is sent to Anthropic. | P0 |
 | What is sent | For each message: sender, recipients, subject, received time, folder, attachment names and the plain-text body cut to a limit (default 8,000 characters). Never attachment contents, never other messages. | P0 |
-| Settings commands | `mail.instructions.model.get`, `.set`, `.test` (sends a fixed test message and reports whether a valid answer came back). | P0 |
-| Failure | If the model cannot be reached, answers in a form that does not match the schema, or refuses, the message is left unmarked and retried later with back-off. Brolga does not guess an action. After a run of failures the mailbox shows why. | P0 |
+| Settings commands | `mail.instructions.model.get`, `.set`, `.test` (sends a fixed test message and reports whether a valid answer came back), `.ollama_models`, and `.set_key`, which only the window may run. An agent may not set `cloud_consent` or `ollama_address`. `mail.instructions.process` deals with arrived mail now, `.status` says whether processing can run and why not, and `.log` lists what was done. | P0 |
+| Failure | If the model cannot be reached, answers in a form that does not match the schema, or refuses, the message is left unmarked and retried later with back-off. Brolga does not guess an action. A message whose answer could not be used is tried again after 5 minutes, doubling, and left for the person after 5 tries; a model or mailbox that cannot be reached stops the pass, and a request to slow down pauses it for as long as asked. After a run of failures the mailbox shows why. | P0 |
 | Cost guard | A per-mailbox cap on messages sent to a cloud model per day (default 500). Arrivals over the cap wait until the next day. A run over existing mail shows the count, and the estimated cost for Anthropic, before the preview starts. | P1 |
 
 ### Tasks
@@ -150,7 +152,7 @@ for the model to use.
 
 | Item | Requirement | Priority |
 |---|---|---|
-| Untrusted input | The message is passed to the model as data, clearly marked as written by an outsider. The instructions come only from the mailbox's list. Text in an email cannot add actions, folders, categories, lists, tools or fixed inputs beyond what an instruction allows: every chosen action is checked against the instruction that named it before it is carried out. | P0 |
+| Untrusted input | The message is passed to the model as data (JSON in the user turn), clearly marked as written by an outsider. The answer's schema names only the enabled instructions, the actions they allow, and the folders and categories they name; Deleted Items, Junk Email, Drafts and Outbox are never among them. The instructions come only from the mailbox's list. Text in an email cannot add actions, folders, categories, lists, tools or fixed inputs beyond what an instruction allows: every chosen action is checked against the instruction that named it before it is carried out. | P0 |
 | What leaves | Inputs the model fills for an outside tool can carry text from the email to that service. The instruction editor says so where a tool is added. | P0 |
 | Record | Every action is written to the agent log (`app.agent_log`) with the mailbox, message, instruction, action, model, time and, for an outside tool, its inputs and result. It is listed with the message in the window. | P0 |
 | Undo | Each Brolga action keeps its undo id. A whole run over existing mail can be undone in one step. Outside tool calls are the exception above. | P0 |

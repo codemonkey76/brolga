@@ -12,9 +12,10 @@ use serde_json::{Value, json};
 use crate::device::{self, Device};
 use crate::instructions::{
     self, ACTIONS, Action, Instruction, LONGEST_NAME, LONGEST_TEXT, List, MOST_INSTRUCTIONS,
-    Settings, Trouble,
+    ModelChoice, Settings, Trouble,
 };
 use crate::mailboxes::{Mailbox, Mailboxes};
+use crate::processing;
 
 fn failed(reason: impl std::fmt::Display) -> CommandError {
     CommandError::Failed(reason.to_string())
@@ -296,6 +297,282 @@ async fn device_rename(mailboxes: Arc<Mailboxes>, args: Rename) -> Result<Value,
     let device = device::rename(mailboxes.global(), &args.name).map_err(failed)?;
 
     Ok(json!({ "device": device }))
+}
+
+fn shown_model(mailboxes: &Mailboxes, settings: Option<&Settings>) -> Value {
+    let choice = settings.and_then(|s| s.model.clone());
+    json!({
+        "provider": choice.as_ref().map(|c| c.provider.clone()),
+        "model": choice.as_ref().map(|c| c.model.clone()),
+        "cloud_consent": choice.as_ref().is_some_and(|c| c.cloud_consent),
+        "key_saved": matches!(mailboxes.ai.secrets.get(processing::KEY), Ok(Some(key)) if !key.is_empty()),
+        "ollama_address": processing::ollama_address(mailboxes),
+        "default_anthropic_model": brolga_ai::DEFAULT_ANTHROPIC_MODEL,
+    })
+}
+
+async fn model_get(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let settings = match instructions::read(&mailbox).await {
+        Ok(settings) => settings,
+        Err(Trouble::Unreached(_)) => instructions::kept(&mailbox),
+        Err(trouble) => return Err(failed(trouble)),
+    };
+
+    Ok(shown_model(&mailboxes, settings.as_ref()))
+}
+
+#[derive(Deserialize)]
+struct ModelSet {
+    account_id: Option<String>,
+    provider: String,
+    model: Option<String>,
+    cloud_consent: Option<bool>,
+    ollama_address: Option<String>,
+}
+
+async fn model_set(mailboxes: Arc<Mailboxes>, args: ModelSet) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    if let Some(address) = &args.ollama_address {
+        let checked = brolga_ai::checked_ollama(address).map_err(failed)?;
+        mailboxes
+            .global()
+            .set_setting(
+                processing::OLLAMA_ADDRESS,
+                checked.as_str().trim_end_matches('/'),
+            )
+            .map_err(failed)?;
+    }
+    let before = instructions::read(&mailbox).await.map_err(failed)?;
+    let kept_consent = before
+        .as_ref()
+        .and_then(|s| s.model.as_ref())
+        .is_some_and(|m| m.provider == "anthropic" && m.cloud_consent);
+    let model = match (
+        args.provider.as_str(),
+        args.model.map(|m| m.trim().to_owned()),
+    ) {
+        ("anthropic", Some(model)) if !model.is_empty() => model,
+        ("anthropic", _) => brolga_ai::DEFAULT_ANTHROPIC_MODEL.to_owned(),
+        ("ollama", Some(model)) if !model.is_empty() => model,
+        ("ollama", _) => {
+            return Err(failed(
+                "Choose one of the Ollama server's models, from mail.instructions.model.ollama_models.",
+            ));
+        }
+        (other, _) => {
+            return Err(failed(format!(
+                "`{other}` is not a model provider: choose anthropic or ollama."
+            )));
+        }
+    };
+    let choice = ModelChoice {
+        cloud_consent: args.provider == "anthropic" && args.cloud_consent.unwrap_or(kept_consent),
+        provider: args.provider,
+        model,
+    };
+    let settings = instructions::set_model(&mailbox, &choice)
+        .await
+        .map_err(failed)?;
+
+    Ok(shown_model(&mailboxes, Some(&settings)))
+}
+
+#[derive(Deserialize)]
+struct Key {
+    key: String,
+}
+
+async fn set_key(mailboxes: Arc<Mailboxes>, args: Key) -> Result<Value, CommandError> {
+    let key = args.key.trim();
+    if key.is_empty() {
+        mailboxes
+            .ai
+            .secrets
+            .delete(processing::KEY)
+            .map_err(failed)?;
+    } else {
+        mailboxes
+            .ai
+            .secrets
+            .set(processing::KEY, key)
+            .map_err(failed)?;
+    }
+
+    Ok(json!({ "key_saved": !key.is_empty() }))
+}
+
+#[derive(Deserialize)]
+struct Address {
+    address: Option<String>,
+}
+
+async fn ollama_models(mailboxes: Arc<Mailboxes>, args: Address) -> Result<Value, CommandError> {
+    let address = args
+        .address
+        .unwrap_or_else(|| processing::ollama_address(&mailboxes));
+    let http = mailboxes
+        .ai
+        .http
+        .clone()
+        .ok_or_else(|| failed("No connection could be set up."))?;
+    // A server that is not running is said so, not failed on: it is often
+    // just not started yet.
+    Ok(match brolga_ai::ollama_models(&http, &address).await {
+        Ok(models) => {
+            json!({ "address": address, "reachable": true, "models": models, "error": null })
+        }
+        Err(e) => {
+            json!({ "address": address, "reachable": false, "models": [], "error": e.to_string() })
+        }
+    })
+}
+
+/// Ask the mailbox's model about a made-up message, to see that it answers
+/// in the form asked for. No mail is sent.
+async fn model_test(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let settings = instructions::read(&mailbox).await.map_err(failed)?;
+    let mut choice = settings
+        .and_then(|s| s.model)
+        .ok_or_else(|| failed("No model has been chosen for this mailbox."))?;
+    // What goes is made up here, so it needs no leave to go.
+    choice.cloud_consent = true;
+    let provider = match processing::provider(&mailboxes, &choice) {
+        processing::Readiness::Ready { provider } => provider,
+        processing::Readiness::NotReady(why) => return Err(failed(why)),
+    };
+    let http = mailboxes
+        .ai
+        .http
+        .clone()
+        .ok_or_else(|| failed("No connection could be set up."))?;
+    let list = List {
+        instructions: vec![Instruction {
+            id: "i-test".to_owned(),
+            name: "Newsletters".to_owned(),
+            text: "Newsletters are marked read.".to_owned(),
+            enabled: true,
+            actions: vec![Action::SetRead],
+        }],
+        ..List::default()
+    };
+    let plan = crate::deciding::Plan::new(&list, &[], &[])
+        .ok_or_else(|| failed("The test could not be set up."))?;
+    let ask = plan.ask(
+        &crate::deciding::sample(),
+        "This week's newsletter: what is new.",
+        &[],
+        "2026-10-16",
+        "UTC",
+    );
+    let started = std::time::Instant::now();
+    match brolga_ai::ask(&http, &provider, &ask).await {
+        Ok(answer) => Ok(json!({
+            "ok": true, "provider": provider.name(), "model": answer.model,
+            "seconds": started.elapsed().as_secs_f64(), "answer": answer.value, "error": null
+        })),
+        Err(e) => Ok(json!({
+            "ok": false, "provider": provider.name(), "model": provider.model(),
+            "seconds": started.elapsed().as_secs_f64(), "answer": null, "error": e.to_string()
+        })),
+    }
+}
+
+async fn process(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let device = this_device(&mailboxes)?;
+    let pass = processing::pass(&mailboxes, &account.id, &mailbox, &device)
+        .await
+        .map_err(failed)?;
+
+    Ok(json!(pass))
+}
+
+async fn status(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let device = this_device(&mailboxes)?;
+    let settings = match instructions::read(&mailbox).await {
+        Ok(settings) => settings,
+        Err(Trouble::Unreached(_)) => instructions::kept(&mailbox),
+        Err(trouble) => return Err(failed(trouble)),
+    };
+    let readiness = match &settings {
+        Some(settings) => processing::readiness(&mailboxes, settings, &device),
+        None => processing::Readiness::NotReady("There are no instructions.".to_owned()),
+    };
+    let provider = settings
+        .as_ref()
+        .and_then(|s| s.model.as_ref())
+        .map_or("anthropic", |m| {
+            if m.provider == "ollama" {
+                "ollama"
+            } else {
+                "anthropic"
+            }
+        });
+    let mut shown = processing::status(&mailbox, provider);
+    match readiness {
+        processing::Readiness::Ready { .. } => {
+            shown["ready"] = json!(true);
+            shown["not_ready_because"] = Value::Null;
+        }
+        processing::Readiness::NotReady(why) => {
+            shown["ready"] = json!(false);
+            shown["not_ready_because"] = json!(why);
+        }
+    }
+
+    Ok(shown)
+}
+
+#[derive(Deserialize)]
+struct Log {
+    account_id: Option<String>,
+    limit: Option<u32>,
+}
+
+async fn log(mailboxes: Arc<Mailboxes>, args: Log) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let limit = args.limit.unwrap_or(50).min(500) as usize;
+    let entries: Vec<Value> = mailboxes
+        .global()
+        .agent_log(5_000)
+        .map_err(failed)?
+        .into_iter()
+        .filter(|entry| entry.client == processing::CLIENT)
+        .filter_map(|entry| {
+            let args: Value = serde_json::from_str(&entry.args).ok()?;
+            (args["mailbox"] == account.id.as_str()).then(|| {
+                json!({
+                    "at": entry.at,
+                    "command": entry.command,
+                    "outcome": entry.outcome,
+                    "detail": entry.detail,
+                    "message_id": args["message_id"],
+                    "subject": args["subject"],
+                    "from": args["from"],
+                    "instruction_id": args["instruction_id"],
+                    "instruction": args["instruction"],
+                    "model": args["model"],
+                    "undo_id": args["undo_id"],
+                })
+            })
+        })
+        .take(limit)
+        .collect();
+
+    Ok(json!({ "entries": entries }))
+}
+
+/// A key of the right shape for the example, which works nowhere.
+fn brolga_fake_key() -> &'static str {
+    "sk-ant-test-key"
 }
 
 fn handler<A, F, Fut>(mailboxes: &Arc<Mailboxes>, run: F) -> Handler
@@ -619,6 +896,195 @@ pub(crate) fn register(
             examples: vec![json!({ "message_id": "message-000008" })],
         },
         handler(&mailboxes, processed),
+    )?;
+
+    let model_shown = json!({
+        "type": "object",
+        "properties": {
+            "provider": { "type": ["string", "null"], "enum": ["anthropic", "ollama", null] },
+            "model": { "type": ["string", "null"] },
+            "cloud_consent": { "type": "boolean", "description": "The person has agreed that this mailbox's mail is sent to Anthropic. Without it nothing is." },
+            "key_saved": { "type": "boolean", "description": "An Anthropic API key is saved on this computer. It is never given out." },
+            "ollama_address": { "type": "string", "description": "Where this computer reaches Ollama." },
+            "default_anthropic_model": { "type": "string" }
+        },
+        "required": ["provider", "model", "cloud_consent", "key_saved", "ollama_address", "default_anthropic_model"]
+    });
+    const MODEL: &str = "The model is chosen for each mailbox and kept in it; the API key and the Ollama server's address stay on the computer that carries the instructions out.";
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.model.get".to_owned(),
+            title: "The model mail instructions use".to_owned(),
+            description: format!("Which model the mailbox's instructions are put to, at Anthropic or on an Ollama server, whether sending its mail to Anthropic has been agreed to, and whether this computer has a key saved. {MODEL}"),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id }, "additionalProperties": false }),
+            result_schema: model_shown.clone(),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, model_get),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.model.set".to_owned(),
+            title: "Choose the model mail instructions use".to_owned(),
+            description: format!(
+                "Choose the model the mailbox's instructions are put to: `anthropic` (default model {}) or `ollama` (one of the server's models).                  Only the person can agree to the mailbox's mail being sent to Anthropic (`cloud_consent`) or change where Ollama is reached. {MODEL}",
+                brolga_ai::DEFAULT_ANTHROPIC_MODEL
+            ),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id,
+                    "provider": { "type": "string", "enum": ["anthropic", "ollama"] },
+                    "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "cloud_consent": { "type": "boolean", "description": "Agree that this mailbox's mail is sent to Anthropic. Left out, it stays as it was." },
+                    "ollama_address": { "type": "string", "description": "Where this computer reaches Ollama: on this computer over http, or anywhere over https." }
+                },
+                "required": ["provider"],
+                "additionalProperties": false
+            }),
+            result_schema: model_shown,
+            examples: vec![json!({ "provider": "anthropic" })],
+        },
+        handler(&mailboxes, model_set),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.model.set_key".to_owned(),
+            title: "Save the Anthropic API key".to_owned(),
+            description: "Save this computer's Anthropic API key in the system's secret store, or forget it with an empty key. It is never shown or given out again, and goes only to Anthropic. Only the person can do this, in Brolga's window.".to_owned(),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "key": { "type": "string", "maxLength": 500 } }, "required": ["key"], "additionalProperties": false }),
+            result_schema: json!({ "type": "object", "properties": { "key_saved": { "type": "boolean" } }, "required": ["key_saved"] }),
+            examples: vec![json!({ "key": brolga_fake_key() })],
+        },
+        handler(&mailboxes, set_key),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.model.ollama_models".to_owned(),
+            title: "List an Ollama server's models".to_owned(),
+            description: "The models an Ollama server has, at this computer's Ollama address or another given. A server that cannot be reached is said so, with why.".to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "address": { "type": "string" } }, "additionalProperties": false }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "address": { "type": "string" }, "reachable": { "type": "boolean" },
+                    "models": { "type": "array", "items": { "type": "string" } }, "error": { "type": ["string", "null"] }
+                },
+                "required": ["address", "reachable", "models", "error"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, ollama_models),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.model.test".to_owned(),
+            title: "Try the mail instructions' model".to_owned(),
+            description: "Ask the mailbox's model about a made-up message, to see that it can be reached and answers in the form instructions need. No mail is sent. Says how long it took, or why it failed.".to_owned(),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id }, "additionalProperties": false }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" }, "provider": { "type": "string" }, "model": { "type": "string" },
+                    "seconds": { "type": "number" }, "answer": {}, "error": { "type": ["string", "null"] }
+                },
+                "required": ["ok", "provider", "model", "seconds", "error"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, model_test),
+    )?;
+
+    let pass = json!({
+        "type": "object",
+        "properties": {
+            "processed": { "type": "integer" }, "already_done": { "type": "integer" },
+            "failed": { "type": "integer" }, "stopped": { "type": ["string", "null"] }
+        },
+        "required": ["processed", "already_done", "failed", "stopped"]
+    });
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.process".to_owned(),
+            title: "Deal with new mail by the instructions now".to_owned(),
+            description: format!(
+                "On the processing device, deal now with the Inbox's mail that has arrived since the instructions were switched on and has not been dealt with, oldest first,                  as each sync does by itself. Up to 25 messages at a time. Says how many were dealt with, and why it stopped if it did. {WHAT}"
+            ),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id }, "additionalProperties": false }),
+            result_schema: pass.clone(),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, process),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.status".to_owned(),
+            title: "How mail instructions are getting on".to_owned(),
+            description: format!(
+                "Whether this computer can carry out the mailbox's instructions now and, if not, why; how many messages are waiting to be tried again or were given up on;                  how many were sent to the model today against the day's cap; the last trouble; and what the last pass did. {WHAT}"
+            ),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id }, "additionalProperties": false }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ready": { "type": "boolean" }, "not_ready_because": { "type": ["string", "null"] },
+                    "waiting": { "type": "integer" }, "failed": { "type": "integer" },
+                    "today": { "type": "object" }, "daily_cap": { "type": "integer" },
+                    "last_error": { "type": ["object", "null"] }, "last_pass": {}, "last_pass_at": { "type": ["string", "null"] }
+                },
+                "required": ["ready", "not_ready_because", "waiting", "failed", "today", "daily_cap", "last_error"]
+            }),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, status),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.log".to_owned(),
+            title: "What mail instructions have done".to_owned(),
+            description: format!(
+                "What the instructions have done to this mailbox's mail, the latest first: each action with its message, instruction and model, whether it was done (`ok`),                  not allowed (`refused`) or did not work (`failed`), and the undo_id to take it back with mail.undo. {WHAT}"
+            ),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": { "account_id": account_id, "limit": { "type": "integer", "minimum": 1, "maximum": 500 } },
+                "additionalProperties": false
+            }),
+            result_schema: json!({ "type": "object", "properties": { "entries": { "type": "array", "items": { "type": "object" } } }, "required": ["entries"] }),
+            examples: vec![json!({ "limit": 20 })],
+        },
+        handler(&mailboxes, log),
     )?;
 
     registry.register(
