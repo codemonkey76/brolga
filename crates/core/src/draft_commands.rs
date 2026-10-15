@@ -842,11 +842,48 @@ async fn take_up_pictures(mailbox: &Mailbox, server_id: &str, draft: &Draft) {
         let name = crate::saving::safe_name(each.name.as_deref().unwrap_or("picture"));
         if mailbox
             .db
-            .adopt_draft_picture(&draft.id, &name, kind, &data, wanted[at], &each.id)
+            .adopt_draft_file(&draft.id, &name, kind, &data, Some(wanted[at]), &each.id)
             .is_ok()
         {
             wanted.remove(at);
         }
+    }
+}
+
+/// Make the draft's own the files beside the body of a draft written in
+/// another mail program, such as a PDF, each under its id on the server's
+/// copy, so that they are listed while it is written and can be taken off.
+/// Left on, they go with the message as they came, once.
+///
+/// A file over the largest that can be attached here, or that cannot be
+/// fetched now, stays on the server's copy and goes with the message; it
+/// is only not listed. So do a message, event or contact attached whole,
+/// and a link to a file kept elsewhere, which are not files.
+async fn take_up_files(mailbox: &Mailbox, server_id: &str, draft: &Draft) {
+    let Ok(attached) = mailbox.graph.attachments(server_id).await else {
+        return;
+    };
+
+    for each in attached
+        .iter()
+        .filter(|a| a.is_inline != Some(true) && a.kind() == "file")
+        .filter(|a| a.size.is_some_and(|size| size <= MOST_FILES_BYTES))
+    {
+        let Ok(data) = mailbox.graph.attachment_content(server_id, &each.id).await else {
+            continue;
+        };
+        if data.len() > LARGEST_FILE {
+            continue;
+        }
+        let name = crate::saving::safe_name(each.name.as_deref().unwrap_or("file"));
+        let kind = each
+            .content_type
+            .as_deref()
+            .filter(|kind| !kind.trim().is_empty())
+            .unwrap_or_else(|| content_type(&name));
+        let _ = mailbox
+            .db
+            .adopt_draft_file(&draft.id, &name, kind, &data, None, &each.id);
     }
 }
 
@@ -913,6 +950,7 @@ async fn open_draft(mailboxes: Arc<Mailboxes>, args: OpenDraft) -> Result<Value,
             .map_err(failed)?;
     }
     take_up_pictures(&mailbox, &args.message_id, &draft).await;
+    take_up_files(&mailbox, &args.message_id, &draft).await;
 
     Ok(json!({ "draft": shown(&mailbox, &draft) }))
 }
@@ -1241,7 +1279,8 @@ pub(crate) fn register(
             id: "mail.drafts.open".to_owned(),
             title: "Carry on with a draft".to_owned(),
             description: "Take up a draft that is in the mailbox's Drafts folder, by its message id, to change or send it: the draft already here for it, \
-                          or a copy fetched now if it was written in another mail program. Pictures within its body that are attached to it come with it, as files with a `content_id`. \
+                          or a copy fetched now if it was written in another mail program. Pictures within its body that are attached to it come with it, as files with a `content_id`, \
+                          and so do the files attached beside the body, without one; either can be taken off with mail.drafts.files.remove. \
                           Formatting this client does not keep, such as fonts and colours, and pictures kept on the web (`web_pictures_left_out` counts them) \
                           are lost from a draft written elsewhere once it is changed here."
                 .to_owned(),
