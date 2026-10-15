@@ -634,6 +634,7 @@ dependencies = [
  "brolga-store",
  "brolga-sync",
  "futures",
+ "getrandom 0.4.3",
  "jiff",
  "outlook-pst-rw",
  "reqwest",

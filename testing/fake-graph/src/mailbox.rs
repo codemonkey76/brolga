@@ -314,6 +314,34 @@ impl Mailbox {
         id
     }
 
+    /// Add a hidden folder at the top of the mailbox ("Create mailFolder",
+    /// SOURCES.md). It never comes in the folder tree's delta, as on a
+    /// real mailbox (TKT-01184), so nothing of it is logged there.
+    pub fn add_hidden_folder(&mut self, name: &str) -> String {
+        let id = self.new_id("folder");
+        self.folders.insert(
+            id.clone(),
+            Folder {
+                name: name.to_owned(),
+                parent: self.root.clone(),
+                hidden: true,
+            },
+        );
+
+        id
+    }
+
+    /// The folders at the top of the mailbox, as "List mailFolders" gives
+    /// them: the hidden ones only when asked for.
+    pub fn top_folders(&self, include_hidden: bool) -> Vec<Value> {
+        self.folders
+            .iter()
+            .filter(|(_, folder)| folder.parent == self.root)
+            .filter(|(_, folder)| include_hidden || !folder.hidden)
+            .filter_map(|(id, _)| self.folder_json(id))
+            .collect()
+    }
+
     /// Add a folder that is one of those every mailbox may have, to be
     /// found from then on by its well-known name: an archive made the
     /// first time something is archived, say.
@@ -406,12 +434,15 @@ impl Mailbox {
                 id: id.to_owned(),
                 removed,
             });
-        // A folder's counts change with its messages.
-        self.folder_log.push(Change {
-            seq,
-            id: folder.to_owned(),
-            removed: false,
-        });
+        // A folder's counts change with its messages. A hidden folder is
+        // never in the folder tree's delta.
+        if !self.folders.get(folder).is_some_and(|f| f.hidden) {
+            self.folder_log.push(Change {
+                seq,
+                id: folder.to_owned(),
+                removed: false,
+            });
+        }
     }
 
     pub fn add_message(&mut self, folder: &str, message: FakeMessage) -> String {
@@ -566,6 +597,35 @@ impl Mailbox {
         ids.sort();
 
         ids
+    }
+
+    /// The extended properties a message has, as `(id, value)`.
+    pub fn properties(&self, id: &str) -> Vec<(String, String)> {
+        self.messages
+            .get(id)
+            .map(|stored| stored.message.properties.clone())
+            .unwrap_or_default()
+    }
+
+    /// Set an extended property of a message, a change to it like any other.
+    pub fn set_property(&mut self, id: &str, property: &str, value: &str) {
+        self.edit(id, |m| {
+            m.properties.retain(|(held, _)| held != property);
+            m.properties.push((property.to_owned(), value.to_owned()));
+        });
+    }
+
+    /// The messages in a folder, oldest first, as `(id, received)`.
+    pub fn received_in(&self, folder: &str) -> Vec<(String, String)> {
+        let mut all: Vec<(String, String)> = self
+            .messages
+            .iter()
+            .filter(|(_, stored)| stored.folder == folder)
+            .map(|(id, stored)| (id.clone(), stored.message.received.clone()))
+            .collect();
+        all.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+        all
     }
 
     /// Every message as it truly is: id to (folder, subject, read).
@@ -773,8 +833,9 @@ impl Mailbox {
     pub fn folders_delta(&self, token: Option<&str>, page_size: usize, link: &str) -> Answer {
         let snapshot = || {
             self.folders
-                .keys()
-                .map(|id| (String::new(), id.clone()))
+                .iter()
+                .filter(|(_, folder)| !folder.hidden)
+                .map(|(id, _)| (String::new(), id.clone()))
                 .collect::<Vec<_>>()
         };
 

@@ -36,6 +36,10 @@ pub const WINDOW_ONLY: &[&str] = &[
     "app.confirmations.answer",
     "app.confirmations.get",
     "app.confirmations.list",
+    // Which device carries out a mailbox's instructions is chosen by hand
+    // (docs/spec-mail-instructions.md, "The processing device").
+    "mail.instructions.processor.release",
+    "mail.instructions.processor.take",
 ];
 
 /// Arguments only a person gives, by command: an agent that sets one is

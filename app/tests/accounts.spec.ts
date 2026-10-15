@@ -456,6 +456,87 @@ test("rules are listed, turned off, made, changed and deleted", async ({ page })
     await expect(rows).toHaveCount(3);
 });
 
+test("mail instructions are written, ordered, turned off and deleted, and one computer is chosen to carry them out", async ({ page }) => {
+    const instructions = [{ id: "i-1", name: "Newsletters", text: "Newsletters are marked read.", enabled: true, actions: ["set_read"] }];
+    const shared = [{ id: `${robin.id}~support@example.test`, account_id: robin.id, address: "support@example.test", name: "Support" }];
+    await withCore(page, { accounts: [robin], mail: inbox, shared, instructions, instructionsProcessor: { device_id: "device-laptop", device_name: "laptop", since: "2026-10-15T08:00:00Z" } });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+    const section = page.getByRole("region", { name: "Mail instructions for robin@example.test" });
+    const rows = section.getByRole("listitem");
+
+    // A shared mailbox keeps instructions of its own, so it is offered too.
+    await expect(page.getByRole("combobox", { name: "Account" }).getByRole("option")).toHaveText(["robin@example.test", "support@example.test"]);
+    await expect(rows).toHaveCount(1);
+    await expect(section.getByLabel("Processing device")).toContainText("laptop carries out these instructions");
+
+    await section.getByRole("button", { name: "New instruction" }).click();
+    const form = section.getByRole("form", { name: "New instruction" });
+    await form.getByLabel("Name", { exact: true }).fill("Telstra invoices");
+    await form.getByLabel("The instruction, in plain words").fill("Invoices from Telstra go in Accounts/Telstra and are categorised Bills.");
+    // An instruction that may do nothing is not sent.
+    await form.getByRole("button", { name: "Save instruction" }).click();
+    await expect(section.getByRole("alert")).toContainText("at least one thing");
+    await form.getByLabel("Move it to a folder the instruction names").check();
+    await form.getByLabel("Give it categories").check();
+    await picture(page, "instructions");
+    await form.getByRole("button", { name: "Save instruction" }).click();
+    await expect(rows).toHaveCount(2);
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.set")?.args).toMatchObject({
+        name: "Telstra invoices",
+        actions: ["move", "set_categories"],
+        enabled: true,
+        version: 1,
+    });
+
+    await section.getByRole("checkbox", { name: "Newsletters is on" }).uncheck();
+    await expect.poll(async () => (await ran(page)).filter((r) => r.command === "mail.instructions.set").at(-1)?.args).toMatchObject({ instruction_id: "i-1", enabled: false, version: 2 });
+
+    await section.getByRole("button", { name: "Move Newsletters down" }).click();
+    await expect(rows.nth(0)).toContainText("Telstra invoices");
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.reorder")?.args).toMatchObject({ instruction_id: "i-1", position: 2 });
+
+    // Changed on another computer meanwhile, a change is refused and what was written stays in the form.
+    await refuse(page, "mail.instructions.set", "The instructions were changed on laptop since they were read, so this change was not made.");
+    await section.getByRole("button", { name: "Change Telstra invoices" }).click();
+    const changing = section.getByRole("form", { name: "Change instruction" });
+    await changing.getByLabel("Name", { exact: true }).fill("Telstra");
+    await changing.getByRole("button", { name: "Save instruction" }).click();
+    await expect(section.getByRole("alert")).toContainText("changed on laptop");
+    await expect(changing.getByLabel("Name", { exact: true })).toHaveValue("Telstra");
+    await changing.getByRole("button", { name: "Cancel" }).click();
+    await refuse(page, "mail.instructions.set", null);
+
+    // Deleting asks first.
+    await section.getByRole("button", { name: "Delete Newsletters" }).click();
+    expect((await ran(page)).some((r) => r.command === "mail.instructions.delete")).toBe(false);
+    await section.getByRole("button", { name: "Delete it?" }).click();
+    await expect(rows).toHaveCount(1);
+
+    // Taking the job from another computer asks first, and says which.
+    const device = section.getByLabel("Processing device");
+    await device.getByRole("button", { name: "Carry them out on this computer instead" }).click();
+    await expect(device).toContainText("Move the job from laptop to this computer (titan)?");
+    expect((await ran(page)).some((r) => r.command === "mail.instructions.processor.take")).toBe(false);
+    await device.getByRole("button", { name: "Yes, on this computer" }).click();
+    await expect(device).toContainText("This computer (titan) carries out these instructions.");
+
+    await device.getByRole("button", { name: "Rename" }).click();
+    await device.getByLabel("This computer's name").fill("Workshop PC");
+    await device.getByRole("button", { name: "Save" }).click();
+    await expect(device).toContainText("This computer (Workshop PC) carries out these instructions.");
+});
+
+test("mail instructions that cannot be read say why", async ({ page }) => {
+    await withCore(page, { accounts: [robin], offline: true });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+
+    const section = page.getByRole("region", { name: "Mail instructions for robin@example.test" });
+    await expect(section.getByRole("alert")).toContainText("could not be reached");
+    await expect(section.getByRole("button", { name: "New instruction" })).toHaveCount(0);
+});
+
 test("rules that cannot be read say why", async ({ page }) => {
     await withCore(page, { accounts: [robin], offline: true });
     await page.getByRole("button", { name: "Settings" }).click();

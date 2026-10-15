@@ -177,6 +177,22 @@ Installed from a package, Brolga offers itself as the program for `mailto:`
 links. Choose it as your default mail program in your desktop's settings, and
 a clicked address starts a new message in the window you already have open.
 
+## Mail instructions
+
+Under **Settings**, **Instructions**, each mailbox, a shared one included,
+can hold a list of instructions in plain words, such as “Invoices from
+Telstra go in Accounts/Telstra”, each with what it may do: move a message
+to a folder it names, give it categories, flag it, or mark it read or
+unread. The list is kept in the mailbox, in a hidden folder called Brolga,
+so every computer signed in to it shows the same list. If two computers
+change it at once, the second is told and shown the newer list, with its
+own change still in the form.
+
+One computer, chosen by hand there, carries the instructions out. The
+others show which one it is and when it was last active, and do nothing.
+This version keeps the instructions and the choice of computer; carrying
+them out comes in a later version.
+
 ## AI agents
 
 An agent on your computer can work with your mail through Brolga, with what

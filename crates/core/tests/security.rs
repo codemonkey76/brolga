@@ -39,6 +39,7 @@ fn started(
         graph_base: Some(graph.base_url()),
         default_client_id: Some("client".to_owned()),
         fetch_images_from_private_hosts: true,
+        host_name: None,
     })
     .unwrap()
     .registry()

@@ -290,6 +290,14 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                     }
                     other => other.to_string(),
                 });
+            // And the mail instructions, read again so they can be shown
+            // when the mailbox is out of reach; the device that carries
+            // them out says it is still running. Trouble with them is not
+            // the sync's.
+            mailbox.stage(Some("instructions"));
+            if let Ok(device) = crate::device::this(context.mailboxes.global()) {
+                let _ = crate::instructions::on_sync(&mailbox, &device).await;
+            }
             Ok::<_, String>(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts)))
         }
         .await;
@@ -1440,7 +1448,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                     "type": ["object", "null"],
                                     "description": "What a sync running in this copy of Brolga is busy with. Null when none is, or when another copy is doing the syncing.",
                                     "properties": {
-                                        "doing": { "type": "string", "enum": ["sending", "folders", "mail", "bodies", "markers", "calendar", "contacts"], "description": "sending: changes made here are going up. folders: the folder list is being read. mail: a folder's messages are being fetched. bodies: recent messages are being fetched whole, to read offline. markers: which messages were answered or forwarded is being asked." },
+                                        "doing": { "type": "string", "enum": ["sending", "folders", "mail", "bodies", "markers", "calendar", "contacts", "instructions"], "description": "sending: changes made here are going up. folders: the folder list is being read. mail: a folder's messages are being fetched. bodies: recent messages are being fetched whole, to read offline. markers: which messages were answered or forwarded is being asked. instructions: the mailbox's mail instructions are being read." },
                                         "folder_id": { "type": "string", "description": "With `mail`: the folder being fetched." },
                                         "folder": { "type": "string", "description": "Its name." },
                                         "fetched": { "type": ["integer", "null"], "description": "How many of its messages have been fetched, while it is being fetched whole. Null while it is only being checked for what is new." },

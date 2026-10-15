@@ -207,6 +207,9 @@ export interface FakeCore {
     archives?: { id: string; name: string; source: string; state: string; messages: number; messages_done: number | null; messages_total: number | null; skipped: number; error: string | null }[];
     /** The inbox's rules, as `mail.rules.list` gives them, less the sentence. */
     rules?: Record<string, unknown>[];
+    /** Mail instructions, as `mail.instructions.list` gives them, and the computer that carries them out. */
+    instructions?: { id: string; name: string; text: string; enabled: boolean; actions: string[] }[];
+    instructionsProcessor?: { device_id: string; device_name: string; since: string };
     /** How automatic replies are set to begin with, where that is not off. */
     replies?: Record<string, unknown>;
     /** Why automatic replies cannot be read, if they cannot. */
@@ -369,6 +372,29 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             { name: "Plain", color: "none" },
         ];
         let rules: Record<string, unknown>[] = [...(core.rules ?? [])];
+        /** Mail instructions as the mailbox keeps them, and this computer as the core knows it. */
+        let instructions = { enabled: true, version: core.instructions ? 1 : 0, list: [...(core.instructions ?? [])], processor: core.instructionsProcessor ?? null };
+        const computer = { id: "device-here", name: "titan" };
+        const instructed = () => ({
+            enabled: instructions.enabled,
+            version: instructions.version,
+            set_up: instructions.version > 0,
+            written_by: null,
+            written_at: null,
+            instructions: instructions.list,
+            processor: instructions.processor,
+            processing_here: instructions.processor?.device_id === computer.id,
+            last_active: instructions.processor ? "2026-10-16T08:00:00Z" : null,
+            this_device: { ...computer },
+            offline: false,
+        });
+        /** A change to the instructions, refused as the core refuses it if the list has moved on. */
+        const instruct = (args: Record<string, unknown>, change: () => void) => {
+            if (args.version !== undefined && args.version !== instructions.version) throw { code: "failed", message: "The instructions were changed on laptop since they were read, so this change was not made." };
+            change();
+            instructions.version += 1;
+            return instructed();
+        };
         let archived: { id: string; name: string; source: string; state: string; messages: number; messages_done: number | null; messages_total: number | null; skipped: number; error: string | null }[] = [
             ...(core.archives ?? []),
         ];
@@ -1008,6 +1034,43 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.categories.delete": (args) => {
                 kinds = kinds.filter((each) => each.name !== args.name);
                 return { categories: kinds };
+            },
+            "mail.instructions.list": () => {
+                if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the instructions could not be read." };
+                return instructed();
+            },
+            "mail.instructions.set": (args) => {
+                const made = { id: String(args.instruction_id ?? `i-${instructions.list.length + 1}`), name: String(args.name), text: String(args.text), enabled: args.enabled !== false, actions: args.actions as string[] };
+                instruct(args, () => {
+                    const at = instructions.list.findIndex((each) => each.id === made.id);
+                    if (at >= 0) instructions.list[at] = made;
+                    else instructions.list.push(made);
+                });
+                return { instruction: made, version: instructions.version };
+            },
+            "mail.instructions.delete": (args) => {
+                instruct(args, () => (instructions.list = instructions.list.filter((each) => each.id !== args.instruction_id)));
+                return { deleted: true, version: instructions.version };
+            },
+            "mail.instructions.reorder": (args) =>
+                instruct(args, () => {
+                    const moved = instructions.list.find((each) => each.id === args.instruction_id);
+                    if (!moved) return;
+                    instructions.list = instructions.list.filter((each) => each !== moved);
+                    instructions.list.splice(Number(args.position) - 1, 0, moved);
+                }),
+            "mail.instructions.set_enabled": (args) => instruct(args, () => (instructions.enabled = Boolean(args.enabled))),
+            "mail.instructions.processor.take": () => {
+                instructions.processor = { device_id: computer.id, device_name: computer.name, since: "2026-10-16T08:00:00Z" };
+                return instructed();
+            },
+            "mail.instructions.processor.release": () => {
+                instructions.processor = null;
+                return instructed();
+            },
+            "app.device.rename": (args) => {
+                computer.name = String(args.name);
+                return { device: { ...computer } };
             },
             "mail.rules.list": () => {
                 if (core.offline) throw { code: "failed", message: "Microsoft 365 could not be reached, so the rules could not be read." };
