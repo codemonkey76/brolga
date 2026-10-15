@@ -44,6 +44,7 @@ impl Fixture {
             graph_base: Some(graph.base_url()),
             default_client_id: Some("client".to_owned()),
             fetch_images_from_private_hosts: true,
+            host_name: None,
         })
         .unwrap();
         let registry = core.registry();
@@ -634,6 +635,7 @@ async fn two_copies_on_one_computer_do_not_sync_the_same_account_at_once() {
         graph_base: Some(graph.base_url()),
         default_client_id: Some("client".to_owned()),
         fetch_images_from_private_hosts: true,
+        host_name: None,
     })
     .unwrap();
     let registry = core.registry();
@@ -5118,6 +5120,7 @@ async fn a_large_pst_imports_within_bounded_memory_and_is_searchable() {
         graph_base: None,
         default_client_id: None,
         fetch_images_from_private_hosts: false,
+        host_name: None,
     })
     .unwrap();
     let registry = core.registry();

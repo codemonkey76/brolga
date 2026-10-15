@@ -45,9 +45,9 @@ Built and released in this order, each usable on its own:
 |---|---|---|
 | Per mailbox | Each mailbox, including a shared mailbox, has its own list. Each instruction has a name, its text, an on/off switch and an order. The list as a whole can be switched off. | P0 |
 | Allowed actions | Each instruction states which actions it may take, picked from the action list below, and for an outside tool exactly which tools. The model can only choose from what an instruction allows. | P0 |
-| Stored in the mailbox | The list is stored in the mailbox (see "Where it lives"), so it can be read and edited from any device signed in to it. Editing it from one device while another has it open does not lose either change: a conflict is shown and the newer copy reloaded, by the spec's If-Match conflict rule. | P0 |
+| Stored in the mailbox | The list is stored in the mailbox (see "Where it lives"), so it can be read and edited from any device signed in to it. Editing it from one device while another has it open does not lose either change: a conflict is shown and the newer copy reloaded. Each change says which version of the list it was made to and is refused if the list has moved on, and is read back once written, so that two written at the same moment are found out. If-Match is not documented for messages, so it is not used (SOURCES.md, "Update message"). | P0 |
 | Limits | At most 50 instructions per mailbox, each at most 2,000 characters. | P0 |
-| Commands | `mail.instructions.list`, `.get`, `.set`, `.delete`, `.reorder`, in the registry with schemas and examples, reachable over CLI and MCP. Changing instructions is a consequential command (it decides what is done to mail unattended), so an agent needs confirmation, as for `mail.rules.*`. | P0 |
+| Commands | `mail.instructions.list`, `.get`, `.set`, `.delete`, `.reorder` (one instruction to a place in the order), `.set_enabled` (the list as a whole) and `.processed` (whether a message carries the processed mark), in the registry with schemas and examples, reachable over CLI and MCP. Changing instructions is a consequential command (it decides what is done to mail unattended), so an agent needs confirmation, as for `mail.rules.*`. | P0 |
 
 ### Actions
 
@@ -73,9 +73,9 @@ refused.
 
 | Item | Requirement | Priority |
 |---|---|---|
-| One device | Instructions for a mailbox are carried out by one device only: the processing device. It is chosen by hand in Settings ("Process this mailbox's instructions on this device"). Until one is chosen, nothing is processed. | P0 |
+| One device | Instructions for a mailbox are carried out by one device only: the processing device. It is chosen by hand in Settings ("Process this mailbox's instructions on this device"). Until one is chosen, nothing is processed. `mail.instructions.processor.take` and `.release` are window-only: no CLI, control channel or agent can run them. | P0 |
 | No takeover | No device takes the role by itself. Every other device shows which device holds it and when that device was last active, and does nothing. Moving the role to another device is done by hand and asks for confirmation. | P0 |
-| Device identity | Each install has a random device id made on first run, kept locally, and a name the user can change (default: the host name). | P0 |
+| Device identity | Each install has a random device id made on first run, kept locally, and a name the user can change (default: the host name), by `app.device.get` and `.rename`. | P0 |
 | Last active | The processing device writes the time it was last active to the mailbox at most every 15 minutes while it is running. Other devices show it; it is not used for takeover. | P1 |
 | Catching up | When the processing device starts, or comes back online, it processes everything that arrived while it was away, oldest first. | P0 |
 | Once only | A processed message is marked in the mailbox (see "Where it lives"). A message that carries the mark is never processed again by arrivals processing, whichever device holds the role. A second device that wrongly also processes, for example two installs restored from one backup, finds the mark and skips. | P0 |
@@ -139,7 +139,7 @@ for the model to use.
 | Approvals list | The Approvals list is kept in the mailbox (see "Where it lives"), so it shows, with a count, on every device signed in to the mailbox, not only the processing device. Calls can be approved or rejected there one by one or all at once. A device other than the processing device needs no MCP server set up to approve. | P0 |
 | Carrying out an approval | The processing device makes an approved call within one sync of seeing the approval. Until it has, the call shows as approved and waiting for the processing device, with when that device was last active. Once made, its result shows on every device. | P0 |
 | Approval matches the call | The processing device keeps its own copy of each call it put up for approval, and makes only that call: an approval changes nothing but the decision. If the item in the mailbox no longer matches its copy, the call is not made and is shown as changed. A waiting call whose tool or instruction has since changed asks again. | P0 |
-| Decided once | Approving or rejecting is written with If-Match, so a call decided on two devices at once takes the first decision, and the second device is told it was already decided. | P0 |
+| Decided once | Approving or rejecting is written and read back, as the instruction list is, so a call decided on two devices at once has one decision, and the device whose decision did not stay is told it was already decided. | P0 |
 | Who can approve | Anyone who can open the mailbox in Brolga can approve its calls, as anyone who can open it can edit its instructions. For a shared mailbox the instruction editor says so. | P0 |
 | Once only | Before a call, Brolga records locally that it is about to make it, and after it, the result. A call interrupted by a crash or restart is not made again by itself: it is shown as unknown, for the person to check and retry or drop. | P0 |
 | No undo | A call to an outside tool cannot be undone by Brolga. The record says so, and undoing a run leaves its outside calls listed as not undone. | P0 |
@@ -176,7 +176,7 @@ property-set GUID hold:
 Each outside call that asks first is one more message in the folder, made by
 the processing device, holding the mailbox message, instruction, server, tool
 and every input, and a `Decision` property (waiting, approved or rejected, by
-which device and when) that other devices change with If-Match. When the call
+which device and when) that other devices change and read back. When the call
 is made, its result is added. Decided items are deleted after 30 days. Brolga
 syncs this folder on its own, by delta, so approvals reach other devices
 within one sync.
@@ -189,10 +189,11 @@ holding the time and the instruction-list version, set by PATCH (Create
 single-value extended property). Brolga's folder sync never shows the hidden
 folder and never syncs its message into the message list.
 
-If either of these does not behave as the documentation says on a live
-mailbox, the fallback is to keep instructions and the processing role on the
-processing device only, and to mark processed messages locally. That loses
-editing from other devices and is an owner decision before it is used.
+Both were checked on a real mailbox on 16 October 2026 (SOURCES.md): the
+hidden folder is left out of folder lists and the folder delta, the settings
+message keeps values of a million characters, and the processed mark is set
+on received mail. So the fallback, keeping everything on the processing
+device, is not used.
 
 ## Acceptance
 

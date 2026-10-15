@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { Archive, CalendarRange, CircleUser, Laptop, ListFilter, PenLine, Reply, Share2, Signature as SignatureIcon, Tag, Users } from "@lucide/svelte";
-    import { type Account, listAccounts } from "./accounts";
+    import { Archive, CalendarRange, CircleUser, Laptop, ListFilter, PenLine, Reply, Share2, Signature as SignatureIcon, Sparkles, Tag, Users } from "@lucide/svelte";
+    import { type Account, listAccounts, listShared, mailboxes, type SharedMailbox } from "./accounts";
     import Accounts from "./Accounts.svelte";
     import Archives from "./Archives.svelte";
     import AutoReplies from "./AutoReplies.svelte";
@@ -8,6 +8,7 @@
     import CalendarSharing from "./CalendarSharing.svelte";
     import Categories from "./Categories.svelte";
     import Desktop from "./Desktop.svelte";
+    import Instructions from "./Instructions.svelte";
     import Rules from "./Rules.svelte";
     import SharedMailboxes from "./SharedMailboxes.svelte";
     import Signature from "./Signature.svelte";
@@ -22,7 +23,7 @@
 
     let { onChanged, onArchives }: Props = $props();
 
-    type Id = "accounts" | "shared" | "signature" | "replies" | "rules" | "categories" | "writing" | "calendar-sharing" | "week" | "computer" | "archives";
+    type Id = "accounts" | "shared" | "signature" | "replies" | "rules" | "instructions" | "categories" | "writing" | "calendar-sharing" | "week" | "computer" | "archives";
 
     interface Section {
         id: Id;
@@ -32,6 +33,8 @@
         ofAccount?: boolean;
         /** Read from or written to Microsoft 365, so the account has to be signed in. */
         signedIn?: boolean;
+        /** Kept by mailboxes shared with an account as well, which are offered beside the accounts. */
+        sharedToo?: boolean;
     }
 
     /** Everything there is to set, under the part of Brolga it is about. */
@@ -49,6 +52,7 @@
                 { id: "signature", name: "Signature", icon: SignatureIcon, ofAccount: true },
                 { id: "replies", name: "Automatic replies", icon: Reply, ofAccount: true },
                 { id: "rules", name: "Rules", icon: ListFilter, ofAccount: true, signedIn: true },
+                { id: "instructions", name: "Instructions", icon: Sparkles, ofAccount: true, signedIn: true, sharedToo: true },
                 { id: "categories", name: "Categories", icon: Tag, ofAccount: true, signedIn: true },
                 { id: "writing", name: "Writing", icon: PenLine },
             ],
@@ -90,6 +94,8 @@
     }
 
     let accounts = $state<Account[]>([]);
+    /** The mailboxes shared with the accounts, for the sections they have their own settings in. */
+    let shared = $state<SharedMailbox[]>([]);
     let loaded = $state(false);
     /** The account whose settings are shown, where a section is a mailbox's. */
     let chosen = $state<string | null>(null);
@@ -97,6 +103,9 @@
         .then((listed) => (accounts = listed))
         .catch(() => {})
         .finally(() => (loaded = true));
+    listShared()
+        .then((listed) => (shared = listed))
+        .catch(() => {});
 
     function changed(now: Account[]) {
         accounts = now;
@@ -104,7 +113,9 @@
     }
 
     const section = $derived(SECTIONS.find((each) => each.id === shown) ?? SECTIONS[0]);
-    const account = $derived(accounts.find((each) => each.id === chosen) ?? accounts[0] ?? null);
+    /** The mailboxes the section can be shown for. */
+    const choices = $derived(section.sharedToo ? mailboxes(accounts, shared) : accounts);
+    const account = $derived(choices.find((each) => each.id === chosen) ?? choices[0] ?? null);
     /** A mailbox's settings need an account, and most need it signed in. Until then the section is not offered. */
     const offered = (each: Section) => !each.ofAccount || accounts.length > 0;
     // With no account to set anything for, there is only the accounts themselves to see.
@@ -155,9 +166,9 @@
     <section class="pane" aria-labelledby="settings-heading">
         <header>
             <h2 id="settings-heading">{section.name}</h2>
-            {#if section.ofAccount && accounts.length > 1}
+            {#if section.ofAccount && choices.length > 1}
                 <select aria-label="Account" value={account?.id} onchange={(event) => ((chosen = event.currentTarget.value), (said = null))}>
-                    {#each accounts as each (each.id)}
+                    {#each choices as each (each.id)}
                         <option value={each.id}>{each.username}</option>
                     {/each}
                 </select>
@@ -209,6 +220,8 @@
                             />
                         {:else if shown === "rules"}
                             <Rules accountId={account.id} username={account.username} />
+                        {:else if shown === "instructions"}
+                            <Instructions accountId={account.id} username={account.username} />
                         {:else if shown === "categories"}
                             <Categories accountId={account.id} username={account.username} />
                         {:else if shown === "calendar-sharing"}

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -974,6 +975,176 @@ impl GraphClient {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// The hidden folder of this name at the top of the mailbox, or none.
+    /// A hidden folder is listed only when `includeHiddenFolders` asks for
+    /// it, and never comes in the folder tree's delta ("mailFolder resource
+    /// type", "List mailFolders", SOURCES.md; the delta checked on a real
+    /// mailbox, TKT-01184). A folder of the same name that is not hidden is
+    /// the person's own, and is not this.
+    pub async fn hidden_folder(&self, name: &str) -> Result<Option<MailFolder>, GraphError> {
+        // In a filter a quote is written twice.
+        let filter = format!("displayName eq '{}'", name.replace('\'', "''"));
+        let url = Url::parse_with_params(
+            &format!("{}/me/mailFolders", self.base),
+            [
+                ("includeHiddenFolders", "true"),
+                ("$filter", filter.as_str()),
+                ("$select", FOLDER_SELECT),
+            ],
+        )
+        .map_err(|e| GraphError::Decode(e.to_string()))?;
+        let page: serde_json::Value = decode(&self.get(url.as_str(), None).await?)?;
+        let folders: Vec<MailFolder> = page["value"]
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter_map(|each| serde_json::from_value(each.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(folders
+            .into_iter()
+            .find(|folder| folder.is_hidden == Some(true)))
+    }
+
+    /// Make a hidden folder at the top of the mailbox ("Create mailFolder",
+    /// SOURCES.md: `isHidden` can be set only as a folder is made).
+    ///
+    /// Not safe to repeat blindly: the caller looks for it with
+    /// [`Self::hidden_folder`] when the answer is lost, or when Graph says
+    /// a folder of that name is there already.
+    pub async fn create_hidden_folder(&self, name: &str) -> Result<MailFolder, GraphError> {
+        let url = format!("{}/me/mailFolders", self.base);
+        let body = serde_json::json!({ "displayName": name, "isHidden": true });
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&body), false)
+                .await?,
+        )
+    }
+
+    /// The ids of the first few messages in a folder and when each arrived,
+    /// for a folder that holds a message or two ("List messages",
+    /// SOURCES.md).
+    pub async fn folder_messages_received(
+        &self,
+        folder_id: &str,
+    ) -> Result<Vec<(String, String)>, GraphError> {
+        let folder_id = seg(folder_id)?;
+        let url = format!(
+            "{}/me/mailFolders/{folder_id}/messages?$select=id,receivedDateTime&$top=10",
+            self.base
+        );
+        let page: serde_json::Value = decode(&self.get(&url, None).await?)?;
+
+        Ok(page["value"]
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter_map(|each| {
+                        Some((
+                            each["id"].as_str()?.to_owned(),
+                            each["receivedDateTime"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Make a message in a folder. It is made as a draft, and stays one
+    /// ("Create message", SOURCES.md). Extended properties may be given
+    /// with it ("Create single-value extended property", SOURCES.md).
+    ///
+    /// Not safe to repeat blindly: a second request makes a second message.
+    pub async fn create_message_in(
+        &self,
+        folder_id: &str,
+        message: &serde_json::Value,
+    ) -> Result<Message, GraphError> {
+        let folder_id = seg(folder_id)?;
+        let url = format!("{}/me/mailFolders/{folder_id}/messages", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(message), false)
+                .await?,
+        )
+    }
+
+    /// The values a message has for these single-value extended
+    /// properties, by their ids; one it does not have is left out. None if
+    /// there is no such message. An extended property can only be read by
+    /// asking for it with `$expand` ("Get singleValueLegacyExtendedProperty",
+    /// SOURCES.md).
+    pub async fn message_properties(
+        &self,
+        message_id: &str,
+        properties: &[&str],
+    ) -> Result<Option<HashMap<String, String>>, GraphError> {
+        let message_id = seg(message_id)?;
+        let filter = properties
+            .iter()
+            .map(|id| format!("id eq '{}'", id.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let expand = format!("singleValueExtendedProperties($filter={filter})");
+        let url = Url::parse_with_params(
+            &format!("{}/me/messages/{message_id}", self.base),
+            [("$select", "id"), ("$expand", expand.as_str())],
+        )
+        .map_err(|e| GraphError::Decode(e.to_string()))?;
+
+        let message: serde_json::Value = match self.get(url.as_str(), None).await {
+            Ok(body) => decode(&body)?,
+            Err(GraphError::Refused { status: 404, .. }) => return Ok(None),
+            Err(other) => return Err(other),
+        };
+
+        Ok(Some(
+            message["singleValueExtendedProperties"]
+                .as_array()
+                .map(|all| {
+                    all.iter()
+                        .filter_map(|each| {
+                            Some((
+                                each["id"].as_str()?.to_owned(),
+                                each["value"].as_str()?.to_owned(),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ))
+    }
+
+    /// Set single-value extended properties of a message, by id and value.
+    /// This works on a message that has been received as well as on a
+    /// draft ("Create single-value extended property", SOURCES.md; "Update
+    /// message" says drafts only, which a real mailbox does not hold to,
+    /// TKT-01184). Setting a value twice leaves it as setting it once does.
+    pub async fn set_message_properties(
+        &self,
+        message_id: &str,
+        properties: &[(&str, &str)],
+    ) -> Result<(), GraphError> {
+        let given: Vec<serde_json::Value> = properties
+            .iter()
+            .map(|(id, value)| serde_json::json!({ "id": id, "value": value }))
+            .collect();
+
+        self.update_message(
+            message_id,
+            &serde_json::json!({ "singleValueExtendedProperties": given }),
+        )
+        .await
     }
 
     /// Create a draft that answers or forwards a message: `createReply`,

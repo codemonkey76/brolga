@@ -156,6 +156,27 @@ pub fn data_dir() -> Option<PathBuf> {
         .map(|dirs| dirs.data_dir().to_path_buf())
 }
 
+/// The computer's own name, as its owner would know it, where it can be
+/// found: what a copy of Brolga is first called when other devices show it.
+pub fn host_name() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname").ok();
+    #[cfg(target_os = "windows")]
+    let name = std::env::var("COMPUTERNAME").ok();
+    #[cfg(target_os = "macos")]
+    let name = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok());
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    let name: Option<String> = None;
+
+    name.map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
 /// Where this user's downloads go, for saved attachments.
 pub fn downloads_dir() -> Option<PathBuf> {
     directories::UserDirs::new().and_then(|dirs| dirs.download_dir().map(PathBuf::from))

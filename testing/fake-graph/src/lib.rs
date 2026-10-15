@@ -245,13 +245,14 @@ impl FakeGraph {
                 get(automatic_replies),
             )
             .route("/v1.0/me/mailFolders/delta", get(folders_delta))
+            .route("/v1.0/me/mailFolders", get(top_folders).post(create_folder))
             .route(
                 "/v1.0/me/mailFolders/{folder}",
                 get(folder).delete(delete_folder),
             )
             .route(
                 "/v1.0/me/mailFolders/{folder}/messages",
-                get(folder_messages),
+                get(folder_messages).post(create_message_in),
             )
             .route(
                 "/v1.0/me/mailFolders/{folder}/move",
@@ -392,6 +393,53 @@ impl FakeGraph {
 
     pub fn add_folder(&self, name: &str, parent: Option<&str>) -> String {
         lock(&self.shared).mailbox.add_folder(name, parent)
+    }
+
+    /// Add a hidden folder at the top of the mailbox.
+    pub fn add_hidden_folder(&self, name: &str) -> String {
+        lock(&self.shared).mailbox.add_hidden_folder(name)
+    }
+
+    /// The id of the hidden folder of this name at the top of the mailbox.
+    pub fn hidden_folder(&self, name: &str) -> Option<String> {
+        lock(&self.shared)
+            .mailbox
+            .top_folders(true)
+            .into_iter()
+            .find(|f| f["isHidden"] == true && f["displayName"] == name)
+            .and_then(|f| f["id"].as_str().map(str::to_owned))
+    }
+
+    /// The messages in a folder, oldest first, by id.
+    pub fn messages_in(&self, folder: &str) -> Vec<String> {
+        lock(&self.shared)
+            .mailbox
+            .received_in(folder)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// A message as the server would give it, body and all.
+    pub fn message(&self, id: &str) -> Option<Value> {
+        lock(&self.shared).mailbox.message(id)
+    }
+
+    /// The value a message has for an extended property, by its id.
+    pub fn message_property(&self, message: &str, property: &str) -> Option<String> {
+        lock(&self.shared)
+            .mailbox
+            .properties(message)
+            .into_iter()
+            .find(|(id, _)| id == property)
+            .map(|(_, value)| value)
+    }
+
+    /// Set an extended property of a message, as another program would.
+    pub fn set_message_property(&self, message: &str, property: &str, value: &str) {
+        lock(&self.shared)
+            .mailbox
+            .set_property(message, property, value);
     }
 
     /// Add one of the folders every mailbox may have, known from then on
@@ -2213,9 +2261,162 @@ async fn folder_messages(
             );
         }
     };
-    let value: Vec<Value> = ids.into_iter().map(|id| json!({ "id": id })).collect();
+    let with_received = query
+        .get("$select")
+        .is_some_and(|select| select.split(',').any(|p| p == "receivedDateTime"));
+    let received: HashMap<String, String> = if with_received {
+        inner.mailbox.received_in(&id).into_iter().collect()
+    } else {
+        HashMap::new()
+    };
+    let value: Vec<Value> = ids
+        .into_iter()
+        .map(|id| match received.get(&id) {
+            Some(at) => json!({ "id": id, "receivedDateTime": at }),
+            None => json!({ "id": id }),
+        })
+        .collect();
 
     axum::Json(json!({ "value": value })).into_response()
+}
+
+/// "List mailFolders" (SOURCES.md): the folders at the top of the mailbox,
+/// the hidden ones only with `includeHiddenFolders=true`, and with a filter
+/// on the name if one is given.
+async fn top_folders(
+    State(shared): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let include_hidden = query
+        .get("includeHiddenFolders")
+        .is_some_and(|given| given == "true");
+    let named = match query.get("$filter") {
+        None => None,
+        Some(filter) => match filter
+            .strip_prefix("displayName eq '")
+            .and_then(|rest| rest.strip_suffix('\''))
+        {
+            Some(name) => Some(name.replace("''", "'")),
+            None => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequest",
+                    "This filter is not one the fake server knows.",
+                );
+            }
+        },
+    };
+    let value: Vec<Value> = lock(&shared)
+        .mailbox
+        .top_folders(include_hidden)
+        .into_iter()
+        .filter(|f| named.as_deref().is_none_or(|name| f["displayName"] == name))
+        .collect();
+
+    axum::Json(json!({ "value": value })).into_response()
+}
+
+/// "Create mailFolder" (SOURCES.md): 201 and the folder. A folder of the
+/// same name at the same level is refused, as Microsoft 365 refuses it.
+async fn create_folder(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let Some(name) = body["displayName"].as_str().filter(|n| !n.is_empty()) else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "ErrorInvalidRequest",
+            "A folder needs a displayName.",
+        );
+    };
+    let mut inner = lock(&shared);
+    if inner
+        .mailbox
+        .top_folders(true)
+        .iter()
+        .any(|f| f["displayName"] == name)
+    {
+        return error(
+            StatusCode::CONFLICT,
+            "ErrorFolderExists",
+            "A folder with the specified name already exists.",
+        );
+    }
+    let id = if body["isHidden"] == true {
+        inner.mailbox.add_hidden_folder(name)
+    } else {
+        inner.mailbox.add_folder(name, None)
+    };
+
+    match inner.mailbox.folder(&id) {
+        Some(folder) => (StatusCode::CREATED, axum::Json(folder)).into_response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// "Create message" in a folder (SOURCES.md): a draft, made there, with
+/// any extended properties given with it.
+async fn create_message_in(
+    State(shared): State<Shared>,
+    Path(folder): Path<String>,
+    axum::Json(message): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let Some(folder) = inner.mailbox.folder_id(&folder) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "itemNotFound",
+            "There is no such folder.",
+        );
+    };
+    let mut draft = new_draft(message["subject"].as_str().unwrap_or_default());
+    draft.body_html = message["body"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    draft.properties = given_properties(&message["singleValueExtendedProperties"]);
+    let id = inner.mailbox.add_message(&folder, draft);
+
+    match inner.mailbox.message(&id) {
+        Some(message) => (StatusCode::CREATED, axum::Json(message)).into_response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// The extended properties given as a request's
+/// `singleValueExtendedProperties`, as `(id, value)`.
+fn given_properties(given: &Value) -> Vec<(String, String)> {
+    given
+        .as_array()
+        .map(|given| {
+            given
+                .iter()
+                .filter_map(|each| {
+                    Some((
+                        each["id"].as_str()?.to_owned(),
+                        each["value"].as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The ids of the extended properties an `$expand` asks for, as
+/// `singleValueExtendedProperties($filter=id eq '…' or id eq '…')`.
+fn expanded_properties(expand: &str) -> Option<Vec<String>> {
+    let filter = expand
+        .strip_prefix("singleValueExtendedProperties($filter=")?
+        .strip_suffix(')')?;
+    filter
+        .split(" or ")
+        .map(|one| {
+            one.trim()
+                .strip_prefix("id eq '")
+                .and_then(|rest| rest.strip_suffix('\''))
+                .map(|id| id.replace("''", "'"))
+        })
+        .collect()
 }
 
 /// "mailFolder: move" (SOURCES.md): answered with 200 and the folder.
@@ -2266,10 +2467,27 @@ async fn message(
         .filter(|_| expanded)
         .and_then(|id| inner.calendars().one(&id));
 
+    // "Get singleValueLegacyExtendedProperty": those asked for that the
+    // message has, and nothing at all where it has none of them.
+    let asked = query
+        .get("$expand")
+        .and_then(|expand| expanded_properties(expand));
+    let held = inner.mailbox.properties(&message);
+
     match found {
         Some(mut message) => {
             if let Some(event) = event {
                 message["event"] = event;
+            }
+            if let Some(asked) = asked {
+                let given: Vec<Value> = held
+                    .iter()
+                    .filter(|(id, _)| asked.contains(id))
+                    .map(|(id, value)| json!({ "id": id, "value": value }))
+                    .collect();
+                if !given.is_empty() {
+                    message["singleValueExtendedProperties"] = Value::Array(given);
+                }
             }
             axum::Json(message).into_response()
         }
@@ -2364,6 +2582,13 @@ async fn update_message(
                 });
             }
             ("isRead", Value::Bool(read)) => inner.mailbox.set_read(&message, *read),
+            // "Create single-value extended property": set on a received
+            // message as on a draft, as a real mailbox does (TKT-01184).
+            ("singleValueExtendedProperties", Value::Array(_)) => {
+                for (id, value) in given_properties(value) {
+                    inner.mailbox.set_property(&message, &id, &value);
+                }
+            }
             ("flag", flag) if flag["flagStatus"].is_string() => {
                 // "followupFlag resource type": a due date with no start is refused.
                 if !flag["dueDateTime"].is_null() && flag["startDateTime"].is_null() {
@@ -2701,20 +2926,7 @@ async fn create_draft(
     draft.bcc = people(&message["bccRecipients"]);
     // "Create single-value extended property": given with the message it
     // is to be a property of.
-    draft.properties = message["singleValueExtendedProperties"]
-        .as_array()
-        .map(|given| {
-            given
-                .iter()
-                .filter_map(|each| {
-                    Some((
-                        each["id"].as_str()?.to_owned(),
-                        each["value"].as_str()?.to_owned(),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    draft.properties = given_properties(&message["singleValueExtendedProperties"]);
 
     created(&mut lock(&shared), draft)
 }

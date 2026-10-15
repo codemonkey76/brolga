@@ -12,8 +12,11 @@ mod agent_commands;
 mod archive_commands;
 mod calendar_commands;
 mod contact_commands;
+mod device;
 mod draft_commands;
 mod holiday_commands;
+mod instruction_commands;
+mod instructions;
 mod link_commands;
 mod mail_commands;
 mod mailboxes;
@@ -61,6 +64,9 @@ pub struct CoreOptions {
     /// Let a message's remote images be fetched from this computer or a
     /// private network. Always false outside tests.
     pub fetch_images_from_private_hosts: bool,
+    /// The computer's own name, which this copy of Brolga is first named
+    /// after, where it is known.
+    pub host_name: Option<String>,
 }
 
 /// Keep every account's mail up to date for as long as this is polled: a
@@ -88,6 +94,8 @@ pub enum CoreError {
     Auth(#[from] AuthError),
     #[error("Brolga's commands could not be set up: {0}")]
     Registry(#[from] RegistryError),
+    #[error("This device could not be given its id: {0}")]
+    Device(String),
 }
 
 pub struct Core {
@@ -104,6 +112,7 @@ impl Core {
             None => GlobalDb::in_memory()?,
         });
         let global = db.clone();
+        device::settle(&global, options.host_name.as_deref()).map_err(CoreError::Device)?;
         let accounts = Arc::new(Accounts::new(
             db,
             options.secrets,
@@ -133,6 +142,7 @@ impl Core {
         )?;
         shared_commands::register(&mut registry, mailboxes.clone())?;
         rule_commands::register(&mut registry, mailboxes.clone())?;
+        instruction_commands::register(&mut registry, mailboxes.clone())?;
         sharing_commands::register(&mut registry, mailboxes.clone())?;
         archive_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;

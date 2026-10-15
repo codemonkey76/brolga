@@ -8,7 +8,7 @@
 
     /** What a sync is busy with, as `app.sync.status` says it. */
     interface Now {
-        doing: "sending" | "folders" | "mail" | "bodies" | "markers" | "calendar" | "contacts";
+        doing: "sending" | "folders" | "mail" | "bodies" | "markers" | "calendar" | "contacts" | "instructions";
         folder?: string;
         fetched?: number | null;
         total?: number | null;
@@ -152,6 +152,8 @@
                 return "Fetching the calendar…";
             case "contacts":
                 return "Fetching contacts…";
+            case "instructions":
+                return "Reading mail instructions…";
         }
     }
 

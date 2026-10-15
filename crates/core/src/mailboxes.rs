@@ -186,6 +186,11 @@ impl Mailboxes {
         }
     }
 
+    /// The settings kept for this copy of Brolga as a whole.
+    pub(crate) fn global(&self) -> &brolga_store::GlobalDb {
+        &self.global
+    }
+
     /// The mailboxes shared with an account, in the order they were added.
     pub fn shared(&self, account_id: &str) -> Result<Vec<SharedMailbox>, String> {
         let kept = self

@@ -44,6 +44,7 @@ fn core_with_mail(
         graph_base: graph.map(FakeGraph::base_url),
         default_client_id: default_client_id.map(str::to_owned),
         fetch_images_from_private_hosts: false,
+        host_name: None,
     })
     .unwrap()
 }
@@ -138,6 +139,28 @@ async fn every_command_is_described_and_its_examples_run() {
     );
     // A folder of one's own making, for `mail.folders.move`.
     assert_eq!(graph.add_folder("Projects", None), "folder-000010");
+    // Mail instructions, kept in the mailbox's hidden settings folder, for
+    // `mail.instructions.get`, `.delete` and `.reorder`.
+    let settings = graph.add_hidden_folder("Brolga");
+    let mut kept = FakeMessage::new(
+        "Brolga settings",
+        "Robin Example",
+        "robin@example.test",
+        "2026-10-02T09:00:00Z",
+    );
+    kept.is_draft = true;
+    kept.properties.push((
+        "String {4431b77f-55c6-4e5f-9693-e9ccc2a3f0fb} Name Instructions".to_owned(),
+        json!({
+            "format": 1, "version": 1, "enabled": true, "written_by": null, "written_at": null,
+            "instructions": [
+                { "id": "i-newsletters", "name": "Newsletters", "text": "Newsletters are marked read.", "enabled": true, "actions": ["set_read"] },
+                { "id": "i-quotes", "name": "Quotes", "text": "A customer asking for a quote is flagged due in two days.", "enabled": true, "actions": ["flag"] }
+            ]
+        })
+        .to_string(),
+    ));
+    graph.add_message(&settings, kept);
     let registry = core_with_mail(&identity, Some(&graph), Some(CLIENT_ID)).registry();
     // The mail examples need an account with mail in it, which no example
     // can arrange for itself.
