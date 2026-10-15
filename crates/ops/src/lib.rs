@@ -69,26 +69,18 @@ pub struct Outbox {
     graph: Arc<GraphClient>,
     /// One pass at a time, so a change is not sent by two at once.
     draining: Mutex<()>,
-    /// Windows' name for the zone a day with no time is a day of.
-    zone: &'static str,
     /// How long a draft is watched after a request to send it that may
     /// have been carried out.
     confirm_within: std::time::Duration,
 }
 
 impl Outbox {
-    /// An outbox for a person in this computer's time zone.
+    /// An outbox for one account.
     pub fn new(graph: Arc<GraphClient>, db: Arc<AccountDb>) -> Self {
-        let zone = jiff::tz::TimeZone::system()
-            .iana_name()
-            .and_then(windows_zone)
-            .unwrap_or("UTC");
-
         Self {
             db,
             graph,
             draining: Mutex::new(()),
-            zone,
             confirm_within: CONFIRM_WITHIN,
         }
     }
@@ -97,16 +89,6 @@ impl Outbox {
     /// not be confirmed before it is handed back to its writer.
     pub fn confirming_within(mut self, long: std::time::Duration) -> Self {
         self.confirm_within = long;
-        self
-    }
-
-    /// The same outbox for a person in another time zone, named as the
-    /// zone database or as Windows names it. A name that is neither
-    /// changes nothing.
-    pub fn in_zone(mut self, name: &str) -> Self {
-        if let Some(zone) = windows_zone(name) {
-            self.zone = zone;
-        }
         self
     }
 
@@ -618,13 +600,16 @@ impl Outbox {
                 self.graph.update_message(&op.message_id, &changes).await
             }
             // "followupFlag resource type": a due date must come with a
-            // start. A day with no time is given as its first moment by
-            // the clock where its writer is, with the zone named as
-            // "dateTimeTimeZone resource type" asks, so that it is that
-            // day in their other mail programs too.
+            // start. A flag's dates are a task's ("[MS-OXOFLAG]: Setting a
+            // Time Flag"), and a task's due date is a time "of midnight"
+            // ("PidLidTaskDueDate Canonical Property"), kept in UTC: other
+            // mail programs show the day it is in UTC. So the day is sent
+            // as midnight UTC, wherever its writer is. Sent as midnight
+            // where they are, as 0.1.11 to 0.1.19 did, it was the day
+            // before for anyone east of Greenwich (TKT-01179).
             "flag_due" => {
                 let day =
-                    json!({ "dateTime": format!("{}T00:00:00", op.value), "timeZone": self.zone });
+                    json!({ "dateTime": format!("{}T00:00:00", op.value), "timeZone": "UTC" });
                 let changes = json!({
                     "flag": { "flagStatus": "flagged", "startDateTime": day, "dueDateTime": day }
                 });
@@ -662,14 +647,6 @@ impl Outbox {
 /// of a change ends with.
 fn kept(error: StoreError) -> GraphError {
     GraphError::Decode(error.to_string())
-}
-
-/// Windows' name for a time zone, which is the one Microsoft 365 is sure
-/// to take ("dateTimeTimeZone resource type", SOURCES.md).
-fn windows_zone(name: &str) -> Option<&'static str> {
-    brolga_calendar::iana_zone(name)
-        .and_then(brolga_calendar::windows_zone)
-        .or_else(|| brolga_calendar::windows_zone(name))
 }
 
 /// Whether an attachment on the server's copy of a draft may be a file put

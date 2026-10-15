@@ -906,18 +906,17 @@ async fn a_place_the_server_no_longer_takes_is_dropped_and_the_pass_begins_again
     assert_eq!(sync.sync_last_actions(5).await.unwrap(), 20);
 }
 
-/// The day a message's flag is due, as a sync made in this zone keeps it.
-async fn due_as_read(f: &Fixture, zone: &str, id: &str) -> String {
-    let zone = jiff::tz::TimeZone::get(zone).unwrap();
+/// The day a message's flag is due, as a sync keeps it.
+async fn due_as_read(f: &Fixture, id: &str) -> String {
     // Every message is read afresh, as a first sync reads it.
     f.db.restart_messages_sync(&f.inbox).unwrap();
-    f.sync(10).with_zone(zone).sync_all().await.unwrap();
+    f.sync(10).sync_all().await.unwrap();
 
     f.db.message(id).unwrap().unwrap().flag_due
 }
 
 #[tokio::test]
-async fn a_flag_is_due_on_the_day_it_is_due_where_the_reader_is() {
+async fn a_flag_is_due_on_the_day_its_time_is_in_utc_as_other_mail_programs_show_it() {
     let f = Fixture::new().await;
     let due = |date_time: &str, zone: &str| {
         let id = f
@@ -932,35 +931,20 @@ async fn a_flag_is_due_on_the_day_it_is_due_where_the_reader_is() {
         );
         id
     };
-    // Due on the 21st, set where it is ten hours ahead of UTC: the first
-    // moment of that day there is the afternoon of the 20th in UTC.
-    let ahead = due("2026-10-20T14:00:00.0000000", "UTC");
-    // The same day, given in the zone it was set in, by its Windows name.
-    let named = due("2026-10-21T00:00:00.0000000", "E. Australia Standard Time");
-    // And as an older Brolga wrote it: the day, at midnight UTC.
-    let older = due("2026-10-21T00:00:00.0000000", "UTC");
-    assert_eq!(
-        due_as_read(&f, "Australia/Brisbane", &ahead).await,
-        "2026-10-21"
-    );
-    assert_eq!(
-        due_as_read(&f, "Australia/Brisbane", &named).await,
-        "2026-10-21"
-    );
-    assert_eq!(
-        due_as_read(&f, "Australia/Brisbane", &older).await,
-        "2026-10-21"
-    );
-    // Behind UTC, the first moment of the 21st is four hours into it in UTC.
+    // As Outlook and To Do keep a day: midnight UTC. Set to the 22nd in
+    // To Do from Brisbane, it read back as the 22nd (TKT-01179).
+    let outlook = due("2026-10-22T00:00:00.0000000", "UTC");
+    assert_eq!(due_as_read(&f, &outlook).await, "2026-10-22");
+    // As Brolga 0.1.11 to 0.1.19 wrote the 20th in Brisbane: 14:00 UTC on
+    // the 19th, which Outlook shows as the 19th. Shown the same here.
+    let written_ahead = due("2026-10-19T14:00:00.0000000", "UTC");
+    assert_eq!(due_as_read(&f, &written_ahead).await, "2026-10-19");
+    // The same moment given in the zone it was set in, by its Windows name.
+    let named = due("2026-10-20T00:00:00.0000000", "E. Australia Standard Time");
+    assert_eq!(due_as_read(&f, &named).await, "2026-10-19");
+    // Behind UTC: four in the morning UTC is still that day in UTC.
     let behind = due("2026-10-21T04:00:00.0000000", "UTC");
-    assert_eq!(
-        due_as_read(&f, "America/New_York", &behind).await,
-        "2026-10-21"
-    );
-    assert_eq!(
-        due_as_read(&f, "America/New_York", &older).await,
-        "2026-10-21"
-    );
+    assert_eq!(due_as_read(&f, &behind).await, "2026-10-21");
 }
 
 #[tokio::test]

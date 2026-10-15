@@ -2374,10 +2374,6 @@ async fn update_message(
                     );
                 }
                 let status = flag["flagStatus"].as_str().unwrap_or_default().to_owned();
-                let due = flag["dueDateTime"]["dateTime"]
-                    .as_str()
-                    .and_then(|at| at.get(..10))
-                    .map(str::to_owned);
                 // "dateTimeTimeZone resource type": a time by the clock in
                 // the zone named, which is kept as the moment it is.
                 let due_at = flag["dueDateTime"]["dateTime"].as_str().and_then(|at| {
@@ -2386,6 +2382,12 @@ async fn update_message(
                         flag["dueDateTime"]["timeZone"].as_str().unwrap_or("UTC"),
                     )
                 });
+                // The day it is due, as other mail programs show it: the day
+                // that moment is in UTC (TKT-01179), not the day as written.
+                let due = due_at
+                    .as_deref()
+                    .and_then(|at| at.get(..10))
+                    .map(str::to_owned);
                 // Given as null, a date is taken away; not given, it is left.
                 let no_date = flag.get("dueDateTime").is_some_and(Value::is_null);
                 inner.mailbox.set_flag(&message, &status);
