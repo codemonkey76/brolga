@@ -591,6 +591,34 @@ impl AccountDb {
         Ok(queued > 0)
     }
 
+    /// What would be sent, as one value that changes whenever any of it
+    /// does: the count of changes to the draft's words and addresses, and
+    /// which files are on it. A file is never changed in place, only put
+    /// on or taken off, so its id stands for its contents. Nothing if
+    /// there is no such draft.
+    pub fn draft_version(&self, id: &str) -> Result<Option<String>, StoreError> {
+        version_of(&self.connection(), id)
+    }
+
+    /// Queue a draft to be sent only if it is still at `version`, checked
+    /// and queued in one go so that no change can come between the two.
+    /// False if it has changed, is already queued, or is not here.
+    pub fn queue_draft_at(&self, id: &str, version: &str) -> Result<bool, StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        if version_of(&transaction, id)?.as_deref() != Some(version) {
+            return Ok(false);
+        }
+        let queued = transaction.execute(
+            "UPDATE drafts SET state = 'queued', error = NULL, updated_at = unixepoch()
+             WHERE id = ?1 AND state <> 'queued'",
+            [id],
+        )?;
+        transaction.commit()?;
+
+        Ok(queued > 0)
+    }
+
     /// Take a queued draft back to be edited, if no request to send it has
     /// gone out yet. Once one has, it may be sent already. It counts as a
     /// change to the draft, so that an outbox with the draft in hand, as it
@@ -820,6 +848,27 @@ impl AccountDb {
 /// Part a draft from its copy on the server, and from everything that was
 /// known about that copy: which of its files had gone there, what was
 /// attached there first, and what was still to be taken off it.
+/// A draft's version, read on whatever connection or transaction the
+/// caller holds: `<rev>:<file id>,<file id>…`, files in id order.
+fn version_of(connection: &rusqlite::Connection, id: &str) -> Result<Option<String>, StoreError> {
+    let rev: Option<i64> = connection
+        .query_row("SELECT rev FROM drafts WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let Some(rev) = rev else {
+        return Ok(None);
+    };
+    let mut statement =
+        connection.prepare("SELECT id FROM draft_files WHERE draft_id = ?1 ORDER BY id")?;
+    let files = statement
+        .query_map([id], |row| row.get::<_, i64>(0))?
+        .map(|file| file.map(|file| file.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Some(format!("{rev}:{}", files.join(","))))
+}
+
 fn unlink(transaction: &rusqlite::Transaction<'_>, id: &str) -> Result<(), StoreError> {
     transaction.execute(
         "UPDATE drafts SET server_id = NULL, quoted = NULL, server_rev = -1, send_tried = 0, send_tried_at = NULL,
@@ -876,6 +925,45 @@ mod tests {
         assert!(!db.discard_draft(&draft.id).unwrap());
         assert!(!db.queue_draft(&draft.id).unwrap());
         assert_eq!(db.queued_drafts().unwrap()[0].body, "One");
+    }
+
+    #[test]
+    fn a_draft_is_queued_at_a_version_only_while_it_is_still_at_that_version() {
+        let db = AccountDb::in_memory().unwrap();
+        let draft = db.create_draft("new", None, &start("One")).unwrap();
+        let seen = db.draft_version(&draft.id).unwrap().unwrap();
+
+        // Its words changed after it was seen.
+        assert!(db.edit_draft(&draft.id, &start("Two")).unwrap());
+        assert!(!db.queue_draft_at(&draft.id, &seen).unwrap());
+        assert_eq!(db.draft(&draft.id).unwrap().unwrap().state, "editing");
+
+        // Seen again, it goes.
+        let seen = db.draft_version(&draft.id).unwrap().unwrap();
+        assert!(db.queue_draft_at(&draft.id, &seen).unwrap());
+        assert_eq!(db.queued_drafts().unwrap()[0].body, "Two");
+        assert!(!db.queue_draft_at(&draft.id, &seen).unwrap());
+        assert_eq!(db.draft_version("no-such-draft").unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_put_on_or_taken_off_is_a_new_version_though_the_words_are_the_same() {
+        let db = AccountDb::in_memory().unwrap();
+        let draft = db.create_draft("new", None, &start("One")).unwrap();
+        let bare = db.draft_version(&draft.id).unwrap().unwrap();
+
+        let file = db
+            .attach_to_draft(&draft.id, "a.txt", "text/plain", b"a")
+            .unwrap()
+            .unwrap();
+        let with_file = db.draft_version(&draft.id).unwrap().unwrap();
+        assert_ne!(bare, with_file);
+        assert!(!db.queue_draft_at(&draft.id, &bare).unwrap());
+
+        assert!(db.detach_from_draft(&draft.id, file.id).unwrap());
+        assert_ne!(db.draft_version(&draft.id).unwrap().unwrap(), with_file);
+        assert!(!db.queue_draft_at(&draft.id, &with_file).unwrap());
+        assert_eq!(db.draft(&draft.id).unwrap().unwrap().state, "editing");
     }
 
     #[test]

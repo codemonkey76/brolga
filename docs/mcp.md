@@ -136,8 +136,9 @@ not open, the agent is told no.
 - Your yes is to that message. The server reads the draft before it asks and
   again when you answer; if it has changed, nothing is sent and you are asked
   again about what it has become. After three rounds of that the agent is
-  told no. (The check and the send are two steps, so something else changing
-  the draft in the instant between them is not caught.)
+  told no. The send is held to the draft as it was in that last check: if
+  anything about it changes after that, even a file put on or taken off,
+  the send is refused and nothing goes.
 - For anything else, you are shown the arguments whole. The record under
   **Agents** keeps them with anything private cut down to its length; the
   question does not, since you cannot agree to words you cannot read.
