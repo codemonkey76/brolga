@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.19" date="2026-10-15">
+      <description>
+        <p>Files attached to a draft begun in another mail program are listed when it is opened here, and can be opened or taken off. The library that secures Brolga's connections is updated for four security fixes.</p>
+      </description>
+    </release>
     <release version="0.1.18" date="2026-10-14">
       <description>
         <p>Files attached to a draft are kept with it in the mailbox's Drafts folder as it is written, so a draft finished in another mail program goes with them. An invitation to a meeting that repeats at an absurd interval no longer stops Brolga.</p>
