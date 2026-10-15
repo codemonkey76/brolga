@@ -244,6 +244,46 @@ mod tests {
         }
     }
 
+    /// Looks like a short form rather than a name, by the rule
+    /// tools/holidays/generate.py picks names by: capitals and no small
+    /// letters (`B`, `RS`, `NÖ`), two letters at most (`St`), or one short
+    /// word with two or more capitals (`FBiH`). Real short names such as
+    /// Zug or Goa are not caught; nor is a name in a script with no
+    /// capitals at all.
+    fn abbreviated(name: &str) -> bool {
+        let letters = name.chars().count();
+        let capitals = name.chars().filter(|c| c.is_uppercase()).count();
+        let cased = capitals > 0 || name.chars().any(char::is_lowercase);
+        (capitals > 0 && !name.chars().any(char::is_lowercase))
+            || (cased && letters <= 2)
+            || (!name.contains(' ') && letters <= 5 && capitals >= 2)
+    }
+
+    #[test]
+    fn every_region_is_offered_by_a_name_not_a_short_form() {
+        let short: Vec<String> = places()
+            .iter()
+            .flat_map(|place| {
+                place
+                    .regions
+                    .iter()
+                    .filter(|(_, name)| abbreviated(name))
+                    .map(|(code, name)| format!("{}/{code} {name}", place.code))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(short.is_empty(), "named by a short form: {short:?}");
+
+        assert_eq!(name_of("NZ", Some("AUK")), Some("Auckland"));
+        assert_eq!(name_of("AT", Some("1")), Some("Burgenland"));
+        assert_eq!(name_of("MY", Some("01")), Some("Johor"));
+        assert_eq!(name_of("BA", Some("SRP")), Some("Republika Srpska"));
+        // Names that are short and right stay as they were.
+        assert_eq!(name_of("CH", Some("ZG")), Some("Zug"));
+        assert_eq!(name_of("FR", Some("974")), Some("La Réunion"));
+        assert_eq!(name_of("IN", Some("TS")), Some("Telangāna"));
+    }
+
     #[test]
     fn a_place_is_found_whatever_the_case_and_one_that_is_not_there_is_none() {
         assert_eq!(name_of("au", Some("qld")), Some("Queensland"));

@@ -39,6 +39,36 @@ def days(code, years, region=None):
     return {day.isoformat(): name for day, name in found.items()}
 
 
+def abbreviated(name):
+    """Looks like a short form rather than a name: capitals and no small
+    letters (B, RS, NÖ), two letters at most (St), or one short word with two
+    or more capitals (FBiH). Real short names such as Zug or Goa pass, as does
+    a name in a script with no capitals. A test in crates/calendar holds the
+    shipped table to the same rule."""
+    capitals = sum(ch.isupper() for ch in name)
+    small = any(ch.islower() for ch in name)
+    return (capitals and not small) or ((capitals or small) and len(name) <= 2) or (" " not in name and len(name) <= 5 and capitals >= 2)
+
+
+def region_names(kind):
+    """Each region's name, by its code. The library gives a region every
+    alias it answers to, full name first, then local names and short forms.
+    The last one listed is taken, as before, unless it is a short form; then
+    the first that is not one. Taking the first always would trade good names
+    for codes (France's overseas regions list their code first) and for
+    unfamiliar spellings."""
+    aliases = {}
+    for alias, code in (getattr(kind, "subdivisions_aliases", None) or {}).items():
+        aliases.setdefault(code, []).append(alias)
+    names = {}
+    for code, given in aliases.items():
+        name = given[-1]
+        if abbreviated(name):
+            name = next((alias for alias in given if not abbreviated(alias)), name)
+        names[code] = name
+    return names
+
+
 def spaced(name):
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
 
@@ -49,7 +79,7 @@ def main():
     countries = []
     for code, regions in sorted(holidays.list_supported_countries(include_aliases=False).items()):
         kind = holidays.country_holidays(code).__class__
-        names = {short: long for long, short in (getattr(kind, "subdivisions_aliases", None) or {}).items()}
+        names = region_names(kind)
         whole = days(code, years)
         country = {"code": code, "name": spaced(NAMES.get(code, code)), "days": sorted(whole.items()), "regions": []}
         for region in regions:
@@ -68,6 +98,9 @@ def main():
     made = {"source": f"holidays {holidays.__version__} (https://github.com/vacanza/holidays, MIT)", "first_year": first, "last_year": last, "countries": countries}
     OUT.write_text(json.dumps(made, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     print(f"{len(countries)} countries, {sum(len(c['regions']) for c in countries)} regions, {OUT.stat().st_size:,} bytes")
+    short = [f"{c['code']}/{r['code']} {r['name']}" for c in countries for r in c["regions"] if abbreviated(r["name"])]
+    if short:
+        print("Named by a short form, with no better name in the library (the calendar crate's test will fail):", ", ".join(short))
 
 
 if __name__ == "__main__":
