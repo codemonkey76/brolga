@@ -557,6 +557,15 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                     .map(shown),
                 note: "",
             }),
+            "mail.conversations.in_folder": (args) => ({
+                messages: (args.conversation_ids as string[]).flatMap((conversation) =>
+                    inFolder(args.folder_id)
+                        .filter((m) => shown(m).conversation_id === conversation)
+                        .sort((a, b) => b.received_at.localeCompare(a.received_at))
+                        .map(shown),
+                ),
+                note: "",
+            }),
             "mail.messages.get": (args) => {
                 const m = mail.find((each) => each.id === args.message_id);
                 if (!m) throw { code: "failed", message: "There is no such message on this computer." };
