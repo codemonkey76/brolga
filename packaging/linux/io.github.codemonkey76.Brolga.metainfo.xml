@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.20" date="2026-10-16">
+      <description>
+        <p>A follow-up date set in Brolga now shows as the same day in Outlook; before, it showed a day early east of Greenwich. In conversation view, deleting, moving, archiving, marking read or unread and categorising a conversation does it to the whole conversation in that folder, and a flag goes on its newest message. A message an AI agent was allowed to send goes out only as it was shown. Public holiday regions in New Zealand, Austria, Malaysia and Bosnia are listed by name.</p>
+      </description>
+    </release>
     <release version="0.1.19" date="2026-10-15">
       <description>
         <p>Files attached to a draft begun in another mail program are listed when it is opened here, and can be opened or taken off. The library that secures Brolga's connections is updated for four security fixes.</p>
