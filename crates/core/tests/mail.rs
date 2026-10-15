@@ -1860,11 +1860,15 @@ async fn pictures_in_a_draft_written_in_another_mail_program_are_kept_through_a_
 
     // The attached picture is the draft's own now, under the name the body
     // calls it by, and can be shown. The drawing is not a plain picture and
-    // is not; the body still names it, and the server still has it.
+    // is not; the body still names it, and the server still has it. The
+    // file beside them is the draft's own too, and listed.
     let files = draft["files"].as_array().unwrap();
-    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files.len(), 2, "{files:?}");
     assert_eq!(files[0]["content_id"], "Logo@Example");
     assert_eq!(files[0]["content_type"], "image/png");
+    assert_eq!(files[1]["name"], "plan.pdf");
+    assert_eq!(files[1]["content_type"], "application/pdf");
+    assert_eq!(files[1]["content_id"], Value::Null);
     let got = f
         .run(
             "mail.drafts.files.get",
@@ -1890,10 +1894,10 @@ async fn pictures_in_a_draft_written_in_another_mail_program_are_kept_through_a_
         0
     );
     assert_eq!(f.graph.attached(&id).len(), 3);
-    // Opened again it is the same draft, with the picture once, and still says so.
+    // Opened again it is the same draft, with each file once, and still says so.
     let again = f.run("mail.drafts.open", json!({ "message_id": id })).await["draft"].clone();
     assert_eq!(again["id"], draft["id"]);
-    assert_eq!(again["files"].as_array().unwrap().len(), 1);
+    assert_eq!(again["files"].as_array().unwrap().len(), 2);
     assert_eq!(again["web_pictures_left_out"], 1);
 
     f.run(
@@ -1964,6 +1968,59 @@ async fn a_picture_taken_out_of_a_draft_written_elsewhere_does_not_go_with_it() 
         .collect();
     went.sort();
     assert_eq!(went, ["drawing.svg", "plan.pdf"]);
+}
+
+#[tokio::test]
+async fn a_file_taken_off_a_draft_written_elsewhere_does_not_go_with_it() {
+    use base64::Engine;
+
+    let f = Fixture::signed_in().await;
+    let id = f.graph.add_message(
+        &f.graph.folder_id("drafts"),
+        draft_with_pictures().attach_link("Budget.xlsx"),
+    );
+    f.sync().await;
+    let draft = f.run("mail.drafts.open", json!({ "message_id": id })).await["draft"].clone();
+
+    // The file can be opened here as it was attached. A link to a file
+    // kept elsewhere is not a file, and is not listed.
+    let files = draft["files"].as_array().unwrap();
+    let names: Vec<&str> = files.iter().map(|f| f["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["logo.png", "plan.pdf"]);
+    let got = f
+        .run(
+            "mail.drafts.files.get",
+            json!({ "draft_id": draft["id"], "file_id": files[1]["id"] }),
+        )
+        .await;
+    assert_eq!(
+        got["file"]["content_base64"],
+        base64::engine::general_purpose::STANDARD.encode(b"%PDF")
+    );
+
+    let removed = f
+        .run(
+            "mail.drafts.files.remove",
+            json!({ "draft_id": draft["id"], "file_id": files[1]["id"] }),
+        )
+        .await;
+    assert_eq!(removed["removed"], true);
+    f.run("mail.drafts.send", json!({ "draft_id": draft["id"] }))
+        .await;
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+
+    let sent = f.graph.sent();
+    assert_eq!(sent.len(), 1);
+    let mut went: Vec<&str> = sent[0]
+        .attachments
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    went.sort();
+    assert_eq!(went, ["Budget.xlsx", "drawing.svg", "logo.png"]);
+    assert_eq!(f.graph.drafts_created(), 0);
 }
 
 #[tokio::test]

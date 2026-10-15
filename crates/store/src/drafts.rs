@@ -284,18 +284,18 @@ impl AccountDb {
         }))
     }
 
-    /// Count as a draft's own a picture within its body that the server's
-    /// copy already has, on a draft written in another mail program: by the
-    /// name the body refers to it by, and its id on that copy. It is not
-    /// sent there again, and taken out of the body here it is taken off
-    /// there, as a picture put in here would be.
-    pub fn adopt_draft_picture(
+    /// Count as a draft's own a file the server's copy already has, on a
+    /// draft written in another mail program, by its id on that copy: a
+    /// picture within the body, under the name the body refers to it by,
+    /// or a file beside it, with none. It is not sent there again, and
+    /// taken off here it is taken off there, as a file put on here would be.
+    pub fn adopt_draft_file(
         &self,
         draft_id: &str,
         name: &str,
         content_type: &str,
         data: &[u8],
-        content_id: &str,
+        content_id: Option<&str>,
         attachment_id: &str,
     ) -> Result<DraftFile, StoreError> {
         let connection = self.connection();
@@ -312,7 +312,7 @@ impl AccountDb {
             size: data.len() as i64,
             upload_tried: true,
             uploaded: true,
-            content_id: Some(content_id.to_owned()),
+            content_id: content_id.map(str::to_owned),
             attachment_id: Some(attachment_id.to_owned()),
         })
     }
