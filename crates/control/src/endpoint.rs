@@ -154,25 +154,59 @@ fn current_uid() -> io::Result<u32> {
         return Ok(*UID.get_or_init(|| own.uid()));
     }
 
-    let probe = std::env::temp_dir().join(format!(
-        "brolga-uid-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.subsec_nanos())
-    ));
-    // `create_new` fails on anything already there, a link included, so
-    // the file read is one this process made.
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)?;
-    let uid = file.metadata().map(|made| made.uid());
-    drop(file);
-    let _ = std::fs::remove_file(&probe);
-    let uid = uid?;
+    let uid = probe_uid(&std::env::temp_dir())?;
 
     Ok(*UID.get_or_init(|| uid))
+}
+
+/// The user this process runs as, from the owner of a file it makes in
+/// `dir` and takes away again.
+#[cfg(unix)]
+fn probe_uid(dir: &std::path::Path) -> io::Result<u32> {
+    use std::os::unix::fs::MetadataExt;
+
+    // A name already taken, by a file left from an earlier process of the
+    // same number, say, is passed over for the next.
+    let mut tries = 0;
+    loop {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let probe = probe_path(dir, at);
+        // `create_new` fails on anything already there, a link included, so
+        // the file read is one this process made.
+        let file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && tries < 8 => {
+                tries += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let uid = file.metadata().map(|made| made.uid());
+        drop(file);
+        let _ = std::fs::remove_file(&probe);
+        return uid;
+    }
+}
+
+/// Where a probe is made: named for the process, the moment and a count
+/// kept by the process, so that two threads asking in one instant (macOS
+/// clocks tick in microseconds) never reach for the same file.
+#[cfg(unix)]
+fn probe_path(dir: &std::path::Path, at: std::time::Duration) -> PathBuf {
+    static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    dir.join(format!(
+        "brolga-uid-{}-{}-{count}",
+        std::process::id(),
+        at.subsec_nanos()
+    ))
 }
 
 #[cfg(windows)]
@@ -200,6 +234,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         base
+    }
+
+    #[test]
+    fn two_probes_in_the_same_instant_are_not_given_the_same_name() {
+        // macOS clocks tick in microseconds, so two threads can ask at the
+        // same instant; their probes must still differ.
+        let dir = scratch("names");
+        let at = std::time::Duration::from_micros(1_700_000_000_000_001);
+
+        assert_ne!(probe_path(&dir, at), probe_path(&dir, at));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_user_is_found_from_many_threads_at_once_and_no_probe_is_left() {
+        let dir = scratch("probes");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(32));
+        let threads: Vec<_> = (0..32)
+            .map(|_| {
+                let (dir, start) = (dir.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    probe_uid(&dir)
+                })
+            })
+            .collect();
+        let found: Vec<u32> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap().unwrap())
+            .collect();
+
+        assert!(found.iter().all(|uid| *uid == found[0]));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
