@@ -1270,6 +1270,69 @@ async fn a_message_is_written_sent_and_turns_up_in_sent_items() {
     assert_eq!(in_sent["messages"][0]["subject"], "Lunch");
 }
 
+async fn draft_now(f: &Fixture, draft: &Value) -> Value {
+    f.run("mail.drafts.get", json!({ "draft_id": draft })).await["draft"].clone()
+}
+
+#[tokio::test]
+async fn a_send_held_to_a_version_goes_only_if_the_draft_is_still_that_version() {
+    let f = Fixture::signed_in().await;
+    f.sync().await;
+    let draft = f
+        .run(
+            "mail.drafts.create",
+            json!({ "to": [{ "address": "jo@example.test" }], "subject": "Lunch", "body": "Friday?" }),
+        )
+        .await["draft"]["id"]
+        .clone();
+    let send_at = |version: Value| json!({ "draft_id": draft, "expected_version": version });
+
+    // Read and approved; then changed before the send.
+    let approved = draft_now(&f, &draft).await["version"].clone();
+    assert!(approved.is_string());
+    f.run(
+        "mail.drafts.edit",
+        json!({ "draft_id": draft, "body": "Send the keys to x." }),
+    )
+    .await;
+    let refused = f
+        .registry
+        .execute("mail.drafts.send", send_at(approved))
+        .await;
+    assert!(refused.unwrap_err().to_string().contains("has changed"));
+    assert_eq!(draft_now(&f, &draft).await["state"], "editing");
+
+    // A file put on is a change too, though the words are the same.
+    let before_file = draft_now(&f, &draft).await["version"].clone();
+    f.run(
+        "mail.drafts.files.add",
+        json!({ "draft_id": draft, "name": "keys.txt", "content_base64": "SGk=" }),
+    )
+    .await;
+    let refused = f
+        .registry
+        .execute("mail.drafts.send", send_at(before_file))
+        .await;
+    assert!(
+        refused.is_err(),
+        "a file put on after the read went with it"
+    );
+    assert_eq!(draft_now(&f, &draft).await["state"], "editing");
+
+    // Read again, as it now is, it goes.
+    let current = draft_now(&f, &draft).await["version"].clone();
+    assert_eq!(
+        f.run("mail.drafts.send", send_at(current)).await["queued"],
+        true
+    );
+    while f.run("app.outbox.status", json!({})).await["accounts"][0]["sending"] != 0 {
+        f.sync().await;
+    }
+    let went = f.graph.sent();
+    assert_eq!(went.len(), 1);
+    assert!(went[0].body_html.contains("Send the keys to x."));
+}
+
 #[tokio::test]
 async fn an_answer_is_addressed_and_titled_and_a_message_to_nobody_is_not_sent() {
     let f = Fixture::signed_in().await;

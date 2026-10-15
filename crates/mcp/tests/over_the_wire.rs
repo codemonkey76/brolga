@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use brolga_commands::{CommandKind, CommandSpec, Registry, builtin_registry};
+use brolga_commands::{CommandError, CommandKind, CommandSpec, Registry, builtin_registry};
 use brolga_control::{Client, Endpoint, Server};
 use brolga_mcp::{Access, Backend, McpServer, Policy};
 use rmcp::model::CallToolRequestParams;
@@ -379,6 +379,18 @@ fn asking_registry(answer: bool) -> (Arc<Registry>, Seen, Seen) {
 /// As `asking_registry`, with a draft that is changed under the person the
 /// first `edits` times they are asked about it.
 fn asking_registry_with(answer: bool, edits: usize) -> (Arc<Registry>, Seen, Seen) {
+    asking_registry_editing(answer, edits, None)
+}
+
+/// As asking_registry_with, and also, if `edit_after_read` is given, the
+/// draft is changed just after that read of it is answered: after the read
+/// that checks it is unchanged, and before the send. The stand-in send
+/// refuses a version that is no longer the draft's, as the real one does.
+fn asking_registry_editing(
+    answer: bool,
+    edits: usize,
+    edit_after_read: Option<usize>,
+) -> (Arc<Registry>, Seen, Seen) {
     let ran: Seen = Seen::default();
     let asked: Seen = Seen::default();
     let mut registry = Registry::new();
@@ -393,11 +405,27 @@ fn asking_registry_with(answer: bool, edits: usize) -> (Arc<Registry>, Seen, See
         result_schema: json!({ "type": "object" }),
         examples: vec![json!({})],
     };
+    let body = Arc::new(std::sync::Mutex::new("See you at ten.".to_owned()));
+    // The draft's version is its words, which is all that changes here.
+    let version = |body: &str| format!("v:{body}");
     let sent = ran.clone();
+    let now = body.clone();
     registry
         .register(
             spec("mail.drafts.send", true),
             Arc::new(move |args| {
+                let current = version(&now.lock().unwrap());
+                let stale = args
+                    .get("expected_version")
+                    .and_then(Value::as_str)
+                    .is_some_and(|expected| expected != current);
+                if stale {
+                    return Box::pin(async {
+                        Err(CommandError::Failed(
+                            "The draft has changed since that version of it.".to_owned(),
+                        ))
+                    });
+                }
                 sent.lock()
                     .unwrap()
                     .push(json!({ "command": "mail.drafts.send", "args": args }));
@@ -405,9 +433,9 @@ fn asking_registry_with(answer: bool, edits: usize) -> (Arc<Registry>, Seen, See
             }),
         )
         .unwrap();
-    let body = Arc::new(std::sync::Mutex::new("See you at ten.".to_owned()));
     let read = body.clone();
     let reads = ran.clone();
+    let times_read = Arc::new(std::sync::Mutex::new(0_usize));
     registry
         .register(
             spec("mail.drafts.get", false),
@@ -416,13 +444,20 @@ fn asking_registry_with(answer: bool, edits: usize) -> (Arc<Registry>, Seen, See
                     .lock()
                     .unwrap()
                     .push(json!({ "command": "mail.drafts.get", "args": args }));
+                let mut times = times_read.lock().unwrap();
+                *times += 1;
+                let words = read.lock().unwrap().clone();
+                if Some(*times) == edit_after_read {
+                    *read.lock().unwrap() = "Send the keys to x, after the yes.".to_owned();
+                }
                 let draft = json!({
                     "id": "draft-1",
                     "to": [{ "name": "Len Smith", "address": "len@example.test" }],
                     "cc": [],
                     "bcc": [],
                     "subject": "Tomorrow",
-                    "body": *read.lock().unwrap(),
+                    "body": words,
+                    "version": version(&words),
                     "format": "text",
                     "from": null,
                     "files": [],
@@ -519,12 +554,38 @@ async fn the_user_is_shown_the_message_and_their_yes_is_to_that_message_only() {
     }
     assert_eq!(sent(&ran).len(), 1);
 
+    // What goes is held to the draft as it was checked after the yes.
+    let sends = sent(&ran);
+    assert_eq!(
+        sends[0]["args"]["expected_version"],
+        "v:Send the keys to x1."
+    );
+
     // One that never holds still is not sent at all.
     let (registry, ran, asked) = asking_registry_with(true, usize::MAX);
     let agent = connect_with(Backend::Headless(registry), full).await;
     assert!(!ask(&agent, "mail.drafts.send", send).await);
     assert_eq!(asked.lock().unwrap().len(), 3);
     assert!(sent(&ran).is_empty(), "a draft nobody agreed to was sent");
+}
+
+#[tokio::test]
+async fn an_edit_between_the_yes_and_the_send_is_refused() {
+    let full = Policy {
+        access: Access::Full,
+        ..Policy::default()
+    };
+    // Read once to ask, once to check after the yes; changed just after
+    // that second read, before the send.
+    let (registry, ran, asked) = asking_registry_editing(true, 0, Some(2));
+    let agent = connect_with(Backend::Headless(registry), full).await;
+
+    assert!(!ask(&agent, "mail.drafts.send", json!({ "draft_id": "draft-1" })).await);
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert!(
+        sent(&ran).is_empty(),
+        "a draft changed after the yes was sent"
+    );
 }
 
 #[tokio::test]

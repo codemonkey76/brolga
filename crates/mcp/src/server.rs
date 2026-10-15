@@ -96,12 +96,20 @@ impl McpServer {
                 // the window, and goes ahead only on a yes. With no window
                 // to ask in the answer is no.
                 let allowed = match permitted {
-                    Ok(Needs::Nothing) => Ok(()),
+                    Ok(Needs::Nothing) => Ok(None),
                     Ok(Needs::SaySo) => self.say_so(client, &command, &args).await,
                     Err(reason) => Err(reason),
                 };
                 let result = match allowed {
-                    Ok(()) => self.backend.execute(&command, args.clone()).await,
+                    Ok(approved) => {
+                        let mut args = args.clone();
+                        // A send goes out only as the draft was when the
+                        // user said yes; changed since, it is refused.
+                        if let (Some(version), Some(args)) = (approved, args.as_object_mut()) {
+                            args.insert("expected_version".to_owned(), Value::String(version));
+                        }
+                        self.backend.execute(&command, args).await
+                    }
                     Err(reason) => {
                         self.record(client, &command, &args, Outcome::Refused(reason.clone()))
                             .await;
@@ -125,11 +133,18 @@ impl McpServer {
     /// A message to be sent is read first, and the person is shown it as it
     /// was read. Their yes is to that message and no other: if the draft has
     /// changed by the time they answer, they are asked again about what it
-    /// has become.
-    async fn say_so(&self, client: &str, command: &str, args: &Value) -> Result<(), String> {
+    /// has become. For a send, the yes comes back as the draft's version
+    /// when it was read again after the answer and found unchanged, for the
+    /// send to be held to: an edit after that read is refused at the send.
+    async fn say_so(
+        &self,
+        client: &str,
+        command: &str,
+        args: &Value,
+    ) -> Result<Option<String>, String> {
         for _ in 0..ASK_AT_MOST {
             let draft = if command == SEND {
-                Some(self.to_be_sent(args).await?)
+                Some(self.to_be_sent(args).await?.0)
             } else {
                 None
             };
@@ -154,12 +169,17 @@ impl McpServer {
                 }
             }
 
-            match draft {
-                None => return Ok(()),
-                Some(shown) if self.to_be_sent(args).await? == shown => return Ok(()),
-                // Changed since it was shown: what was allowed is not this.
-                Some(_) => {}
+            let Some(shown) = draft else {
+                return Ok(None);
+            };
+            let (now, version) = self.to_be_sent(args).await?;
+            if now == shown {
+                // Read without a version, it could be sent changed: no.
+                return version.map(Some).ok_or_else(|| {
+                    format!("`{SEND}` was not run: the draft's version could not be read.")
+                });
             }
+            // Changed since it was shown: what was allowed is not this.
         }
 
         Err(format!(
@@ -169,8 +189,9 @@ impl McpServer {
 
     /// The draft a send would send, as the person is to be shown it: who
     /// it is from and to, what it says and what is attached. Nothing here
-    /// changes unless what would be sent does.
-    async fn to_be_sent(&self, args: &Value) -> Result<Value, String> {
+    /// changes unless what would be sent does. Beside it, the draft's
+    /// version as the same read gave it.
+    async fn to_be_sent(&self, args: &Value) -> Result<(Value, Option<String>), String> {
         let unreadable = |why: &str| {
             format!(
                 "`{SEND}` was not run: the draft could not be read to show the user what would be sent. {why}"
@@ -212,7 +233,12 @@ impl McpServer {
             );
         }
 
-        Ok(Value::Object(shown))
+        let version = draft
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+
+        Ok((Value::Object(shown), version))
     }
 
     /// The address of the account a command is for: the one named, or the

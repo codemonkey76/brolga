@@ -56,6 +56,15 @@ struct One {
 }
 
 #[derive(Deserialize)]
+struct ToSend {
+    account_id: Option<String>,
+    draft_id: String,
+    /// The draft's `version` as it was approved. Sent only if it is still
+    /// that draft.
+    expected_version: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct AddFile {
     account_id: Option<String>,
     draft_id: String,
@@ -722,9 +731,20 @@ async fn edit(mailboxes: Arc<Mailboxes>, args: Edit) -> Result<Value, CommandErr
 
 async fn get(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    // The version is read before the rest, so a change made while it is
+    // read shows in what is read after it, and a send at this version is
+    // refused. Read the other way round, the version could be of a draft
+    // newer than the one shown.
+    let version = mailbox.db.draft_version(&args.draft_id).map_err(failed)?;
     let draft = mailbox.db.draft(&args.draft_id).map_err(failed)?;
 
-    Ok(json!({ "draft": draft.as_ref().map(|d| shown(&mailbox, d)) }))
+    Ok(json!({
+        "draft": draft.as_ref().map(|d| {
+            let mut shown = shown(&mailbox, d);
+            shown["version"] = json!(version);
+            shown
+        })
+    }))
 }
 
 async fn list(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, CommandError> {
@@ -984,8 +1004,25 @@ async fn pictures(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, Command
     Ok(json!({ "pictures": pictures }))
 }
 
-async fn send(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandError> {
+async fn send(mailboxes: Arc<Mailboxes>, args: ToSend) -> Result<Value, CommandError> {
     let (mailbox, _) = open(&mailboxes, args.account_id.as_deref()).await?;
+    let changed = || {
+        failed(
+            "The draft has changed since that version of it. Nothing was sent: read it again with mail.drafts.get and send the version read.",
+        )
+    };
+    // Read at the version expected, so the recipients checked below are the
+    // ones that will be sent to.
+    if let Some(expected) = &args.expected_version
+        && mailbox
+            .db
+            .draft_version(&args.draft_id)
+            .map_err(failed)?
+            .as_ref()
+            != Some(expected)
+    {
+        return Err(changed());
+    }
     let draft = mailbox
         .db
         .draft(&args.draft_id)
@@ -1009,7 +1046,21 @@ async fn send(mailboxes: Arc<Mailboxes>, args: One) -> Result<Value, CommandErro
         return Err(failed("Add at least one recipient before sending."));
     }
 
-    mailbox.db.queue_draft(&draft.id).map_err(failed)?;
+    match &args.expected_version {
+        // Checked again as it is queued: nothing may change it in between.
+        Some(expected) => {
+            if !mailbox
+                .db
+                .queue_draft_at(&draft.id, expected)
+                .map_err(failed)?
+            {
+                return Err(changed());
+            }
+        }
+        None => {
+            mailbox.db.queue_draft(&draft.id).map_err(failed)?;
+        }
+    }
     let sending = mailbox.clone();
     tokio::spawn(async move {
         let _ = sending.outbox.drain().await;
@@ -1078,7 +1129,8 @@ fn draft_schema() -> Value {
             "updated_at": { "type": "integer", "description": "Seconds since 1970." },
             "on_server": { "type": "boolean", "description": "It has a copy in the mailbox's Drafts folder, so other mail programs show it." },
             "files": { "type": "array", "items": file_schema(), "description": "The files attached, without their contents." },
-            "web_pictures_left_out": { "type": "integer", "description": "On a draft written in another mail program: how many pictures kept on the web its body had. They are not in `body`, and are gone from the draft for good once it is changed here." }
+            "web_pictures_left_out": { "type": "integer", "description": "On a draft written in another mail program: how many pictures kept on the web its body had. They are not in `body`, and are gone from the draft for good once it is changed here." },
+            "version": { "type": ["string", "null"], "description": "From mail.drafts.get: changes whenever anything that would be sent does. Give it to mail.drafts.send as `expected_version` to send this draft as read and no later one." }
         },
         "required": ["id", "kind", "to", "cc", "bcc", "subject", "body", "state"]
     })
@@ -1497,13 +1549,23 @@ pub(crate) fn register(
             title: "Send a message".to_owned(),
             description: "Send a draft. It is queued and sent in the background, at once if Microsoft 365 can be reached and otherwise when it can, \
                           and it is sent once however many times that takes. It needs at least one recipient. \
+                          With `expected_version`, the `version` mail.drafts.get gave, it is sent only if nothing about it has changed since that read; otherwise nothing is sent. \
                           If Microsoft 365 will not send it, it comes back as a draft with `state` failed and the reason. This cannot be undone once it has gone."
                 .to_owned(),
             kind: CommandKind::Action,
             // It reaches other people and cannot be taken back.
             consequential: true,
             mcp_tool: None,
-            args_schema: one_args(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id(),
+                    "draft_id": { "type": "string" },
+                    "expected_version": { "type": "string", "description": "The draft's `version` from mail.drafts.get. If it has changed since, nothing is sent." }
+                },
+                "required": ["draft_id"],
+                "additionalProperties": false
+            }),
             result_schema: json!({
                 "type": "object",
                 "properties": { "queued": { "type": "boolean" } },
