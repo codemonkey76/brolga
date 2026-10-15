@@ -1074,10 +1074,10 @@ async fn taking_the_day_off_a_flag_reaches_the_server() {
 }
 
 #[tokio::test]
-async fn a_flags_day_is_sent_as_that_day_where_its_writer_is() {
+async fn a_flags_day_is_sent_as_midnight_utc_so_other_mail_programs_show_that_day() {
     let f = fixture().await;
     let one = &f.ids[..1];
-    let client = || {
+    let outbox = Outbox::new(
         Arc::new(
             GraphClient::new(
                 f.graph.base_url(),
@@ -1085,30 +1085,23 @@ async fn a_flags_day_is_sent_as_that_day_where_its_writer_is() {
                 RetryPolicy::impatient(),
             )
             .unwrap(),
-        )
-    };
+        ),
+        f.db.clone(),
+    );
     f.db.queue_edit("a", one, &MessageEdit::Flag("flagged".to_owned()))
         .unwrap();
     f.db.queue_edit("a", one, &MessageEdit::FlagDue("2026-10-20".to_owned()))
         .unwrap();
+    outbox.drain().await.unwrap();
 
-    // Ten hours ahead of UTC all year: the day begins the evening before.
-    let brisbane = Outbox::new(client(), f.db.clone()).in_zone("Australia/Brisbane");
-    brisbane.drain().await.unwrap();
+    // Outlook shows a flag as due on the day its time is in UTC. Sent as
+    // midnight in Brisbane, the 20th was 14:00 UTC on the 19th, and Outlook
+    // on the web said "Due Monday October 19" (TKT-01179).
     assert_eq!(
         f.graph.flag_due_at(&f.ids[0]).as_deref(),
-        Some("2026-10-19T14:00:00Z")
+        Some("2026-10-20T00:00:00Z")
     );
-
-    // Four hours behind in October: it begins in the small hours.
-    f.db.queue_edit("b", one, &MessageEdit::FlagDue("2026-10-21".to_owned()))
-        .unwrap();
-    let new_york = Outbox::new(client(), f.db.clone()).in_zone("America/New_York");
-    new_york.drain().await.unwrap();
-    assert_eq!(
-        f.graph.flag_due_at(&f.ids[0]).as_deref(),
-        Some("2026-10-21T04:00:00Z")
-    );
+    assert_eq!(f.graph.flag_due(&f.ids[0]).as_deref(), Some("2026-10-20"));
 }
 
 #[tokio::test]
