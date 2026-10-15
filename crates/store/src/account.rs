@@ -1137,6 +1137,30 @@ impl AccountDb {
         Ok(rows)
     }
 
+    /// Every message of these conversations that is in one folder: what a
+    /// conversation's line in that folder stands for. Copies elsewhere, such
+    /// as replies in Sent Items, are not among them. Newest first within each
+    /// conversation, the conversations in the order asked for.
+    pub fn conversations_in_folder(
+        &self,
+        folder_id: &str,
+        conversation_ids: &[String],
+    ) -> Result<Vec<MessageRow>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(&format!(
+            "SELECT {COLUMNS} FROM messages WHERE folder_id = ?1 AND conversation_id = ?2
+             ORDER BY received_at DESC, id DESC"
+        ))?;
+        let mut rows = Vec::new();
+        for conversation_id in conversation_ids {
+            for row in statement.query_map(params![folder_id, conversation_id], read_message)? {
+                rows.push(row?);
+            }
+        }
+
+        Ok(rows)
+    }
+
     pub fn message_count(&self, folder_id: &str) -> Result<u32, StoreError> {
         Ok(self.connection().query_row(
             "SELECT count(*) FROM messages WHERE folder_id = ?1",
@@ -2115,6 +2139,23 @@ mod tests {
                 .collect::<Vec<_>>()),
             ["4"]
         );
+    }
+
+    #[test]
+    fn a_conversations_messages_in_one_folder_are_those_alone_newest_first() {
+        let db = with_mail();
+        let asked = ["lunch".to_owned(), "no-such-conversation".to_owned()];
+
+        // The reply in Sent is the same conversation but not the inbox's.
+        assert_eq!(
+            ids(&db.conversations_in_folder("inbox", &asked).unwrap()),
+            ["5", "3", "1"]
+        );
+        assert_eq!(
+            ids(&db.conversations_in_folder("sent", &asked).unwrap()),
+            ["6"]
+        );
+        assert!(db.conversations_in_folder("inbox", &[]).unwrap().is_empty());
     }
 
     #[test]

@@ -2,7 +2,7 @@
     import { Archive, FilePen, Folder as FolderIcon, Inbox, OctagonAlert, Send, Star, Trash, X } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { type Asked, chooseSavePath, say } from "./commands";
-    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, SEARCH_MOST, canHold, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveFolder, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
+    import { type Attachment, type Category, type Draft, type Edited, type FlagStatus, type Folder, type Message, type Opened, type Sort, type Starting, type View, SEARCH_MOST, canHold, createDraft, deletePermanently, editDraft, dismissRefused, flushOutbox, dueSaid, getConversation, conversationsInFolder, listAttachments, listCategories, listDrafts, listFolders, listMessages, moveFolder, moveMessages, openDraft, openLink, openMessage, refusedChanges, saveAttachment, searchMail, setCategories, setFavourite, setFlag, setRead, setTrustedSender, syncNow, undo } from "./mail";
     import Compose from "./Compose.svelte";
     import MessageList from "./MessageList.svelte";
     import MoveFolder from "./MoveFolder.svelte";
@@ -120,8 +120,65 @@
         return { changed, undos, reached, failed: false, failure: null };
     }
 
-    /** What was done, and to how many when it was more than one. */
-    const counted = (said: string, count: number) => (count > 1 ? `${said}: ${count.toLocaleString()} messages` : said);
+    /**
+     * What was done, and to how many when it was more than one. Done to whole
+     * conversations, it says how many conversations as well as messages.
+     */
+    const counted = (said: string, count: number, conversations = 0) =>
+        conversations > 0 && count > conversations
+            ? `${said}: ${conversations === 1 ? "1 conversation" : `${conversations.toLocaleString()} conversations`} (${count.toLocaleString()} messages)`
+            : count > 1
+              ? `${said}: ${count.toLocaleString()} messages`
+              : said;
+
+    /**
+     * Which of these ids are lines of the conversation view: each stands for
+     * every message of its conversation in this folder (TKT-01065). A message
+     * opened within a conversation has no line of its own, and stands for
+     * itself. Outside conversation view, and in a search, nothing is a line.
+     */
+    const linesOf = (ids: string[]) => {
+        if (!view.conversations || searching) return [];
+        const asked = new Set(ids);
+        return rows.filter((row): row is Message => !!row && asked.has(row.id) && !!row.conversation_id);
+    };
+
+    /** How many conversations and messages an action on these lines covers, from the lines' own counts; null where none is a line. */
+    const coverOf = (ids: string[]) => {
+        const lines = linesOf(ids);
+        if (lines.length === 0) return null;
+        const messages = ids.length - lines.length + lines.reduce((sum, line) => sum + (line.conversation?.count ?? 1), 0);
+        return { conversations: lines.length, messages };
+    };
+    /** What an action now would cover, for the toolbar to say before deleting for good. */
+    const covers = $derived(coverOf(targets));
+
+    /**
+     * The messages an action on these ids is for, and how many conversations
+     * that is. A line of the conversation view is every message of its
+     * conversation in this folder, newest first; copies in other folders, such
+     * as replies in Sent Items, are left alone. `flagged` keeps only those
+     * with a flag, for clearing or completing one.
+     */
+    async function resolve(ids: string[], only: "all" | "flagged" = "all"): Promise<{ messages: Message[]; conversations: number }> {
+        const known = (id: string) => rows.find((row) => row?.id === id) ?? thread.find((each) => each.id === id) ?? (opened?.message.id === id ? opened.message : undefined);
+        const lines = linesOf(ids);
+        const asLines = new Set(lines.map((line) => line.id));
+        const messages: Message[] = ids.filter((id) => !asLines.has(id)).map((id) => known(id) ?? ({ id } as Message));
+        const whole: Message[] = [];
+        if (accountId && lines.length > 0) {
+            const byFolder = new Map<string, string[]>();
+            for (const line of lines) byFolder.set(line.folder_id, [...(byFolder.get(line.folder_id) ?? []), line.conversation_id as string]);
+            for (const [folderId, conversations] of byFolder) {
+                for (let at = 0; at < conversations.length; at += MOST) {
+                    whole.push(...(await conversationsInFolder(accountId, folderId, conversations.slice(at, at + MOST))));
+                }
+            }
+        }
+        // Of a whole conversation, only those with a flag have one to take off; a message asked for by itself is as asked.
+        const found = [...messages, ...(only === "flagged" ? whole.filter((each) => each.flag_status === "flagged") : whole)];
+        return { messages: [...new Map(found.map((each) => [each.id, each])).values()], conversations: lines.length };
+    }
     /** Why something stopped, and how far it had got if it had got anywhere. */
     const stopped = (failure: unknown, reached: number, of: number) =>
         reached > 0 ? `${reached.toLocaleString()} of ${of.toLocaleString()} messages were done before this went wrong. ${say(failure)}` : say(failure);
@@ -283,22 +340,23 @@
 
     /** Give the messages a category, or take it from them. Each keeps whatever others it had. */
     async function categorise(name: string, on: boolean) {
-        const of = many ? chosen : current ? [current] : [];
-        if (!accountId || of.length === 0) return;
+        if (!accountId || targets.length === 0) return;
         const account = accountId;
-        // The core sets a message's categories whole, so those that end up alike are sent together.
-        const alike = new Map<string, { names: string[]; ids: string[] }>();
-        const now = new Map<string, string[]>();
-        for (const each of of) {
-            const had = each.categories ?? [];
-            if (had.includes(name) === on) continue;
-            const names = on ? [...had, name] : had.filter((n) => n !== name);
-            now.set(each.id, names);
-            const key = JSON.stringify(names);
-            alike.set(key, { names, ids: [...(alike.get(key)?.ids ?? []), each.id] });
-        }
-        if (now.size === 0) return;
+        const asked = targets;
         await alone(async () => {
+            const { messages: of, conversations } = await resolve(asked);
+            // The core sets a message's categories whole, so those that end up alike are sent together.
+            const alike = new Map<string, { names: string[]; ids: string[] }>();
+            const now = new Map<string, string[]>();
+            for (const each of of) {
+                const had = each.categories ?? [];
+                if (had.includes(name) === on) continue;
+                const names = on ? [...had, name] : had.filter((n) => n !== name);
+                now.set(each.id, names);
+                const key = JSON.stringify(names);
+                alike.set(key, { names, ids: [...(alike.get(key)?.ids ?? []), each.id] });
+            }
+            if (now.size === 0) return;
             const undos: string[] = [];
             /** Those it was done to, which is all of them unless a part failed. */
             const did = new Map<string, string[]>();
@@ -321,7 +379,7 @@
                 why ??= say(failure);
             }
             const cleared = [...did.values()].every((names) => names.length === 0);
-            if (undos.length > 0) offerUndo(counted(cleared ? "Categories cleared" : "Categories changed", did.size), undos);
+            if (undos.length > 0) offerUndo(counted(cleared ? "Categories cleared" : "Categories changed", did.size, why ? 0 : conversations), undos);
             if (why) problem = why;
         });
     }
@@ -353,6 +411,13 @@
         if (!accountId || ids.length === 0) return;
         const account = accountId;
         const make = async () => {
+            // A flag goes on a conversation's newest message, which is its line: one flag to a conversation.
+            // Read state, and taking a flag off or marking it complete, is for the whole conversation.
+            const setting = "flag_status" in what && what.flag_status === "flagged";
+            const quiet = !said;
+            const whole = setting || quiet ? { messages: ids.map((id) => ({ id }) as Message), conversations: 0 } : await resolve(ids, "is_read" in what ? "all" : "flagged");
+            ids = whole.messages.map((each) => each.id);
+            if (ids.length === 0) return;
             const done = await inBatches(ids, (some) => ("is_read" in what ? setRead(account, some, what.is_read) : setFlag(account, some, what.flag_status, what.due)));
             let why = done.failed ? stopped(done.failure, done.reached, ids.length) : null;
             // Drawn again even when a part failed, to show those it did reach.
@@ -368,7 +433,7 @@
             } catch (failure) {
                 why ??= say(failure);
             }
-            if (said && done.changed > 0) offerUndo(counted(said, did.length), done.undos);
+            if (said && done.changed > 0) offerUndo(counted(said, did.length, done.failed ? 0 : whole.conversations), done.undos);
             if (why) problem = why;
         };
         if (said) await alone(make);
@@ -441,14 +506,16 @@
         const account = accountId;
         await alone(async () => {
             const at = place(ids);
-            const done = await inBatches(ids, (some) => moveMessages(account, some, destination));
-            let why = done.failed ? stopped(done.failure, done.reached, ids.length) : null;
+            const { messages, conversations } = await resolve(ids);
+            const all = messages.map((each) => each.id);
+            const done = await inBatches(all, (some) => moveMessages(account, some, destination));
+            let why = done.failed ? stopped(done.failure, done.reached, all.length) : null;
             try {
-                await gone(ids.slice(0, done.reached), at);
+                await gone(all.slice(0, done.reached), at);
             } catch (failure) {
                 why ??= say(failure);
             }
-            if (done.changed > 0) offerUndo(counted(said, done.reached), done.undos);
+            if (done.changed > 0) offerUndo(counted(said, done.reached, done.failed ? 0 : conversations), done.undos);
             if (why) problem = why;
         });
     }
@@ -508,11 +575,13 @@
 
     /** Delete for good the lines chosen, or the message being read. There is no undo, so there is no offer of one. */
     async function purge() {
-        const ids = targets;
-        if (!accountId || ids.length === 0) return;
+        const asked = targets;
+        if (!accountId || asked.length === 0) return;
         const account = accountId;
         await alone(async () => {
-            const at = place(ids);
+            const at = place(asked);
+            const { messages, conversations } = await resolve(asked);
+            const ids = messages.map((each) => each.id);
             let reached = 0;
             let why: string | null = null;
             for (let from = 0; from < ids.length && !why; from += MOST) {
@@ -530,6 +599,7 @@
                 why ??= say(failure);
             }
             if (why) problem = why;
+            else if (conversations > 0 && ids.length > conversations) tell(`${counted("Deleted permanently", ids.length, conversations)}.`);
             else tell(ids.length > 1 ? `${ids.length.toLocaleString()} messages deleted permanently.` : "Deleted permanently.");
         });
     }
@@ -1333,6 +1403,7 @@
 <Toolbar
     message={writing || many ? null : current}
     several={writing ? [] : chosen}
+    {covers}
     {folders}
     {within}
     {categories}

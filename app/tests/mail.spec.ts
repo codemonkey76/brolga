@@ -2268,6 +2268,77 @@ test("deleting one message of an open conversation leaves the conversation open 
     await expect(body(page).getByText("Booked for four of us.")).toBeVisible();
 });
 
+/** The messages each run of a command was for, in order. */
+const sentTo = async (page: Page, command: string) =>
+    (await ran(page)).filter((r) => r.command === command).map((r) => [...(r.args.message_ids as string[])].sort());
+
+test("as conversations, deleting a line moves its whole conversation in this folder, and Undo brings it all back", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...lunch] });
+    await page.getByRole("checkbox", { name: "Conversations" }).check();
+    const rows = messages(page).getByRole("option");
+    await expect(rows).toHaveCount(5);
+    await rows.filter({ hasText: "Lunch on Friday?" }).click();
+    await expect(body(page).getByText("Booked for four of us.")).toBeVisible();
+
+    await page.keyboard.press("Delete");
+
+    // Both of the inbox's messages go; the answer in Sent Items is not the inbox's to move.
+    await expect(page.getByText("Moved to Deleted Items: 1 conversation (2 messages)")).toBeVisible();
+    expect(await sentTo(page, "mail.messages.move")).toEqual([["c1", "c3"]]);
+    await expect(rows).toHaveCount(4);
+    await expect(rows.filter({ hasText: "Lunch on Friday?" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(rows).toHaveCount(5);
+    await expect(rows.filter({ hasText: "Lunch on Friday?" }).getByLabel("2 messages")).toBeVisible();
+});
+
+test("as conversations, read and categories are for the whole conversation, and a flag for its newest message", async ({ page }) => {
+    await withCore(page, { accounts: [robin], mail: [...inbox, ...lunch] });
+    await page.getByRole("checkbox", { name: "Conversations" }).check();
+    const line = messages(page).getByRole("option").filter({ hasText: "Lunch on Friday?" });
+    const toolbar = page.getByRole("toolbar");
+    const thread = page.getByRole("region", { name: "Message" }).getByRole("list", { name: "Conversation" }).getByRole("button");
+
+    // The older message, opened within the conversation, is flagged by itself.
+    await line.click();
+    await thread.first().click();
+    await expect(body(page).getByText("The place by the harbour has reopened.")).toBeVisible();
+    await toolbar.getByRole("button", { name: "Flag", exact: true }).click();
+    await expect.poll(() => sentTo(page, "mail.messages.set_flag")).toEqual([["c1"]]);
+
+    // From the line, a flag goes on the newest message alone: one flag to a conversation.
+    await thread.last().click();
+    await expect(body(page).getByText("Booked for four of us.")).toBeVisible();
+    await toolbar.getByRole("button", { name: "Flag", exact: true }).click();
+    await expect.poll(() => sentTo(page, "mail.messages.set_flag")).toEqual([["c1"], ["c3"]]);
+    await expect(page.getByText("Flagged", { exact: true })).toBeVisible();
+
+    // Cleared from the line, every flag in the conversation goes.
+    await toolbar.getByRole("button", { name: "Clear flag" }).click();
+    await expect.poll(() => sentTo(page, "mail.messages.set_flag")).toEqual([["c1"], ["c3"], ["c1", "c3"]]);
+    await expect(page.getByText("Flag cleared: 1 conversation (2 messages)")).toBeVisible();
+
+    // Marked unread from the line: both of the inbox's messages, not the answer in Sent Items.
+    await toolbar.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(page.getByText("Marked as unread: 1 conversation (2 messages)")).toBeVisible();
+    expect((await sentTo(page, "mail.messages.set_read")).at(-1)).toEqual(["c1", "c3"]);
+});
+
+test("as conversations, deleting a conversation for good says how many messages it is", async ({ page }) => {
+    const binned = [...inbox, ...lunch].map((m) => (m.folder_id === "inbox" ? { ...m, folder_id: "deleted" } : m));
+    await withCore(page, { accounts: [robin], mail: binned });
+    await folder(page, "Deleted Items").click();
+    await page.getByRole("checkbox", { name: "Conversations" }).check();
+    await messages(page).getByRole("option").filter({ hasText: "Lunch on Friday?" }).click();
+
+    await page.getByRole("toolbar").getByRole("button", { name: "Delete permanently" }).click();
+    await page.getByRole("button", { name: /Delete this conversation \(2 messages\) for good\?/ }).click();
+
+    await expect(page.getByText("Deleted permanently: 1 conversation (2 messages).")).toBeVisible();
+    expect(await sentTo(page, "mail.messages.delete_permanently")).toEqual([["c1", "c3"]]);
+});
+
 test("Ctrl with a click in another folder chooses that line alone, not also the one left behind", async ({ page }) => {
     await withCore(page, { accounts: [robin], mail: [...inbox, ...bulk(3)] });
     const rows = messages(page).getByRole("option");

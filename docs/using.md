@@ -53,6 +53,23 @@ Enter.
 
 On macOS, Cmd takes the place of Ctrl.
 
+## Conversations
+
+Tick **Conversations** above the list to show each conversation in a folder
+as one line, with its newest message.
+
+- Something done to a line is done to the whole conversation in that folder:
+  deleting, archiving, moving, junk, read or unread, categories, and
+  deleting for good. Copies elsewhere, such as your replies in Sent Items,
+  are left where they are.
+- A flag goes on the conversation's newest message, so a conversation is
+  flagged once. Clearing a flag or marking it complete from the line does it
+  to every message of the conversation that has one.
+- To act on one message of a conversation, open the conversation and choose
+  that message in it first.
+- Undo puts the whole change back, and the notice says how many
+  conversations and messages it was.
+
 ## What Brolga does to keep you safe
 
 - **Remote pictures stay out** until you ask for them, so a sender cannot

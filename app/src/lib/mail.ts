@@ -201,6 +201,10 @@ export const listMessages = (account_id: string, folder_id: string, offset: numb
 export const getConversation = async (account_id: string, conversation_id: string) =>
     (await execute<{ messages: Message[] }>("mail.conversations.get", { account_id, conversation_id })).messages;
 
+/** Every message of these conversations in one folder, newest first within each: what their lines in that folder stand for. At most 500 at a time. */
+export const conversationsInFolder = async (account_id: string, folder_id: string, conversation_ids: string[]) =>
+    (await execute<{ messages: Message[] }>("mail.conversations.in_folder", { account_id, folder_id, conversation_ids })).messages;
+
 export const openMessage = (account_id: string, message_id: string, allow_remote_content: boolean, plain: boolean) =>
     execute<Opened>("mail.messages.get", {
         account_id,

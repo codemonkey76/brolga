@@ -149,6 +149,17 @@ struct Conversation {
 }
 
 #[derive(Deserialize)]
+struct ConversationsInFolder {
+    account_id: Option<String>,
+    folder_id: String,
+    conversation_ids: Vec<String>,
+}
+
+/// The most conversations asked about at once, as many as the commands
+/// that act on messages take.
+const MOST_CONVERSATIONS: usize = 500;
+
+#[derive(Deserialize)]
 struct GetMessage {
     account_id: Option<String>,
     message_id: String,
@@ -736,6 +747,27 @@ async fn conversation(context: Context, args: Conversation) -> Result<Value, Com
     let rows = mailbox
         .db
         .conversation(&args.conversation_id)
+        .map_err(failed)?;
+
+    Ok(json!({ "messages": rows.iter().map(shown).collect::<Vec<_>>(), "note": UNTRUSTED }))
+}
+
+async fn conversations_in_folder(
+    context: Context,
+    args: ConversationsInFolder,
+) -> Result<Value, CommandError> {
+    if args.conversation_ids.len() > MOST_CONVERSATIONS {
+        return Err(failed(format!(
+            "Ask about at most {MOST_CONVERSATIONS} conversations at a time."
+        )));
+    }
+    let account = context
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = context.open(&account).await.map_err(failed)?;
+    let rows = mailbox
+        .db
+        .conversations_in_folder(&args.folder_id, &args.conversation_ids)
         .map_err(failed)?;
 
     Ok(json!({ "messages": rows.iter().map(shown).collect::<Vec<_>>(), "note": UNTRUSTED }))
@@ -1636,6 +1668,40 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
             examples: vec![json!({ "conversation_id": "conversation-message-000008" })],
         },
         handler(&context, conversation),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.conversations.in_folder".to_owned(),
+            title: "List the messages of conversations in one folder".to_owned(),
+            description: "Every message of these conversations that is in one folder, newest first within each, without their bodies: \
+                          what a conversation's line in that folder's conversation view stands for. Copies in other folders, such as replies in Sent Items, \
+                          are left out. To act on whole conversations, act on these messages' ids. At most 500 conversations at a time."
+                .to_owned(),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id_property(),
+                    "folder_id": { "type": "string" },
+                    "conversation_ids": { "type": "array", "items": { "type": "string" }, "maxItems": MOST_CONVERSATIONS }
+                },
+                "required": ["folder_id", "conversation_ids"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "messages": { "type": "array", "items": message_schema() },
+                    "note": { "type": "string" }
+                },
+                "required": ["messages", "note"]
+            }),
+            examples: vec![json!({ "folder_id": "no-such-folder", "conversation_ids": ["conversation-message-000008"] })],
+        },
+        handler(&context, conversations_in_folder),
     )?;
 
     registry.register(

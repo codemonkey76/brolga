@@ -27,6 +27,8 @@
         message: Message | null;
         /** The messages chosen together, when there is more than one. The actions that can be are for all of them. */
         several: Message[];
+        /** In conversation view, how many conversations and messages an action on the lines chosen covers. */
+        covers?: { conversations: number; messages: number } | null;
         /** Every folder, to move the message to one. */
         folders: Folder[];
         /** The standard folder the message is in, or several are all in, if it is one. */
@@ -51,7 +53,7 @@
         onSync: () => void;
     }
 
-    let { message, several, folders, within, categories, syncing, working, onWrite, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onSetRead, onSetFlag, onCategorise, onSync }: Props =
+    let { message, several, covers = null, folders, within, categories, syncing, working, onWrite, onDelete, onPurge, onJunk, onNotJunk, onArchive, onMove, onSetRead, onSetFlag, onCategorise, onSync }: Props =
         $props();
 
     /** The message being asked about, once "Delete permanently" has been pressed once. */
@@ -120,7 +122,11 @@
     {#if within !== "deleteditems"}
         <button type="button" disabled={off} aria-label="Delete" title="Delete (Del)" onclick={onDelete}><Trash size={SIZE} aria-hidden="true" /></button>
     {:else if asking && sureOf === asking}
-        <button type="button" class="danger words" onclick={() => ((sureOf = null), onPurge())}>{several.length > 1 ? `Delete ${several.length.toLocaleString()} for good?` : "Delete for good?"} It cannot be undone</button>
+        <button type="button" class="danger words" onclick={() => ((sureOf = null), onPurge())}>{covers && covers.messages > covers.conversations
+                ? `Delete ${covers.conversations === 1 ? "this conversation" : `${covers.conversations.toLocaleString()} conversations`} (${covers.messages.toLocaleString()} messages) for good?`
+                : several.length > 1
+                  ? `Delete ${several.length.toLocaleString()} for good?`
+                  : "Delete for good?"} It cannot be undone</button>
         <button type="button" aria-label="Keep" title="Keep it" onclick={() => (sureOf = null)}><X size={SIZE} aria-hidden="true" /></button>
     {:else}
         <button type="button" disabled={off} aria-label="Delete permanently" title="Delete permanently" onclick={() => (sureOf = asking)}><Shredder size={SIZE} aria-hidden="true" /></button>
