@@ -303,30 +303,43 @@ test("a message is shown as it was laid out: on a white page, or darkened to sui
     };
     await withCore(page, { accounts: [robin], mail: [report, inbox[2]] });
     const pane = page.getByRole("region", { name: "Message" });
-    const look = (selector: string, what: string) => body(page).locator(selector).first().evaluate((node, what) => getComputedStyle(node).getPropertyValue(what), what);
-    /** How light a colour is, from 0 to 255. */
+    // The frame is drawn again when the desktop or the choice of colours
+    // changes. A look that lands while it is being replaced sees nothing
+    // yet, rather than failing: expect.poll tries again on an answer that
+    // does not match, but not on an error (TKT-01113).
+    const look = (selector: string, what: string) =>
+        body(page)
+            .locator(selector)
+            .first()
+            .evaluate((node, what) => getComputedStyle(node).getPropertyValue(what), what)
+            .catch((error: Error) => {
+                if (/Execution context was destroyed|Frame was detached/.test(error.message)) return "";
+                throw error;
+            });
+    /** How light a colour is, from 0 to 255; not a number while the frame is being drawn again. */
     const light = async (selector: string, what: string) => {
-        const [r, g, b] = (await look(selector, what)).match(/[\d.]+/g)!.map(Number);
+        const [r, g, b] = ((await look(selector, what)).match(/[\d.]+/g) ?? []).map(Number);
         return (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
     };
 
+    // Every look into the frame is polled, so it waits out a redraw.
     await messages(page).getByRole("option").first().click();
     await expect(body(page).getByRole("heading", { name: "Customer Balances" })).toBeVisible();
-    expect(await look(".header", "background-color")).toBe("rgb(233, 213, 255)");
-    expect(await look("td.r", "text-align")).toBe("right");
-    expect(await look("td.r", "font-weight")).toBe("700");
-    expect(await look("body", "background-color")).toBe("rgb(243, 244, 246)");
+    await expect.poll(() => look(".header", "background-color")).toBe("rgb(233, 213, 255)");
+    await expect.poll(() => look("td.r", "text-align")).toBe("right");
+    await expect.poll(() => look("td.r", "font-weight")).toBe("700");
+    await expect.poll(() => look("body", "background-color")).toBe("rgb(243, 244, 246)");
     await expect(pane.getByRole("button", { name: "Show it as written" })).toHaveCount(0);
 
     // Dark: grounds go dark and dark words go light; white words stay white, and the layout is the same.
     await page.emulateMedia({ colorScheme: "dark" });
     await expect.poll(() => light("body", "background-color")).toBeLessThan(70);
-    expect(await light(".wrapper", "background-color")).toBeLessThan(70);
-    expect(await light(".header", "background-color")).toBeLessThan(90);
-    expect(await look(".header h1", "color")).toBe("rgb(255, 255, 255)");
-    expect(await light("td", "color")).toBeGreaterThan(170);
-    expect(await light("td.r", "color")).toBeGreaterThan(170);
-    expect(await look("td.r", "text-align")).toBe("right");
+    await expect.poll(() => light(".wrapper", "background-color")).toBeLessThan(70);
+    await expect.poll(() => light(".header", "background-color")).toBeLessThan(90);
+    await expect.poll(() => look(".header h1", "color")).toBe("rgb(255, 255, 255)");
+    await expect.poll(() => light("td", "color")).toBeGreaterThan(170);
+    await expect.poll(() => light("td.r", "color")).toBeGreaterThan(170);
+    await expect.poll(() => look("td.r", "text-align")).toBe("right");
     await picture(page, "styled-message");
 
     await pane.getByRole("button", { name: "Show it as written" }).click();
