@@ -3,7 +3,8 @@
 Brolga is a desktop client for Microsoft 365 mail, calendar and contacts, built
 for Linux first, with Windows and macOS from the same code. The build spec is
 [docs/build-spec.pdf](docs/build-spec.pdf). Its Requirements sections are the
-contract; read it before writing code.
+contract; read it before writing code. Addenda in `docs/spec-*.md` add to it
+with the same standing.
 
 These rules apply to people and to coding agents alike.
 
