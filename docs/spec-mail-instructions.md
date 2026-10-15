@@ -224,14 +224,13 @@ editing from other devices and is an owner decision before it is used.
 10. Each new command is in the registry with a schema and an example, and is
     reachable over CLI and MCP with a test.
 
-## Open decisions
+## Decisions
 
-1. **Mail folders other than the Inbox** for arrivals processing, e.g. mail
-   the server rules have already moved. Proposed: Inbox only in this version.
-
-Settled: "create a reminder" is a To Do task with a reminder (owner,
+None open. Settled: "create a reminder" is a To Do task with a reminder (owner,
 2026-10-16). Outside tool calls ask first by default, and the owner switches an
 instruction to run unattended once satisfied with it (owner, 2026-10-16).
 Calls can be approved from any device signed in to the mailbox, not only the
 processing device (owner, 2026-10-16). The default Anthropic model is
-`claude-haiku-5-5` (owner, 2026-10-16).
+`claude-haiku-5-5` (owner, 2026-10-16). Arrivals processing covers the Inbox
+only in this version; other folders are reached by a run over existing mail
+(owner, 2026-10-16).
