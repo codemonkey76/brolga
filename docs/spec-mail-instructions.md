@@ -87,14 +87,14 @@ refused.
 
 | Item | Requirement | Priority |
 |---|---|---|
-| Scope | A run covers one folder, with an optional date range on received time, and optionally its subfolders. | P0 |
+| Scope | A run covers one folder, with an optional date range on received time, and optionally its subfolders. It takes the messages Brolga holds, so it is refused until each folder has been fetched in full. | P0 |
 | Preview first | A run starts as a preview: it decides what it would do for each message and shows the totals ("move 212, flag 9, no change 1,480") and a list that can be read message by message. Nothing is changed until the user applies it. | P0 |
 | Apply | Applying carries out the previewed actions as they were shown. A message changed on the server since the preview is skipped and listed. | P0 |
 | Progress and cancel | A run shows its progress and can be cancelled. Cancelling keeps what was already done; nothing is left half-applied on one message. A run survives a restart and resumes. | P0 |
 | Marked messages | A run includes messages that already carry the processed mark, so instructions changed later can be applied to old mail. | P0 |
 | Outside tools | A run leaves out outside tool calls and task creation unless they are switched on for that run. When they are, the preview lists each call with its inputs, and applying the run is the approval for those calls. | P0 |
 | On the processing device | Runs happen on the processing device. Starting one from another device is not in this version. | P0 |
-| Commands | `mail.instructions.run.preview`, `.apply`, `.status`, `.cancel`. Apply is consequential. | P0 |
+| Commands | `mail.instructions.run.estimate`, `.preview`, `.status`, `.items` (a page of the run's messages and what was decided for each), `.apply`, `.cancel`, `.undo`. Apply and undo are consequential. | P0 |
 
 ### Models
 
@@ -108,7 +108,7 @@ refused.
 | What is sent | For each message: sender, recipients, subject, received time, folder, attachment names and the plain-text body cut to a limit (default 8,000 characters). Never attachment contents, never other messages. | P0 |
 | Settings commands | `mail.instructions.model.get`, `.set`, `.test` (sends a fixed test message and reports whether a valid answer came back), `.ollama_models`, and `.set_key`, which only the window may run. An agent may not set `cloud_consent` or `ollama_address`. `mail.instructions.process` deals with arrived mail now, `.status` says whether processing can run and why not, and `.log` lists what was done. | P0 |
 | Failure | If the model cannot be reached, answers in a form that does not match the schema, or refuses, the message is left unmarked and retried later with back-off. Brolga does not guess an action. A message whose answer could not be used is tried again after 5 minutes, doubling, and left for the person after 5 tries; a model or mailbox that cannot be reached stops the pass, and a request to slow down pauses it for as long as asked. After a run of failures the mailbox shows why. | P0 |
-| Cost guard | A per-mailbox cap on messages sent to a cloud model per day (default 500). Arrivals over the cap wait until the next day. A run over existing mail shows the count, and the estimated cost for Anthropic, before the preview starts. | P1 |
+| Cost guard | A per-mailbox cap on messages sent to a cloud model per day (default 500). Arrivals over the cap wait until the next day. A run over existing mail shows the count, the estimated cost for Anthropic and the estimated time before the preview starts, and is not held to the cap or counted in it (owner, 2026-10-16). | P1 |
 
 ### Tasks
 
@@ -155,7 +155,7 @@ for the model to use.
 | Untrusted input | The message is passed to the model as data (JSON in the user turn), clearly marked as written by an outsider. The answer's schema names only the enabled instructions, the actions they allow, and the folders and categories they name; Deleted Items, Junk Email, Drafts and Outbox are never among them. The instructions come only from the mailbox's list. Text in an email cannot add actions, folders, categories, lists, tools or fixed inputs beyond what an instruction allows: every chosen action is checked against the instruction that named it before it is carried out. | P0 |
 | What leaves | Inputs the model fills for an outside tool can carry text from the email to that service. The instruction editor says so where a tool is added. | P0 |
 | Record | Every action is written to the agent log (`app.agent_log`) with the mailbox, message, instruction, action, model, time and, for an outside tool, its inputs and result. It is listed with the message in the window. | P0 |
-| Undo | Each Brolga action keeps its undo id. A whole run over existing mail can be undone in one step. Outside tool calls are the exception above. | P0 |
+| Undo | Each Brolga action keeps its undo id. A whole run over existing mail can be undone in one step for three days after it is applied (owner, 2026-10-16); other actions, for a day. A message changed since is left as it is. Outside tool calls are the exception above. | P0 |
 | Trusted senders | Being a trusted sender (TKT-01062) has no effect on instructions. | P0 |
 
 ## Where it lives

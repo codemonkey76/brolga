@@ -418,6 +418,52 @@ const STEPS: &[&str] = &[
         PRIMARY KEY (day, provider)
     ) STRICT;
 ",
+    "
+    -- A run of the mail instructions over mail already in the mailbox:
+    -- previewed first, then applied as previewed (docs/spec-mail-instructions.md,
+    -- \"Running over existing mail\"). state: previewing, previewed, applying,
+    -- applied, cancelled or undone.
+    CREATE TABLE instruction_runs (
+        id TEXT PRIMARY KEY NOT NULL,
+        folder_id TEXT NOT NULL,
+        subfolders INTEGER NOT NULL DEFAULT 0,
+        received_from TEXT,
+        received_to TEXT,
+        state TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        list_version INTEGER NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        applied_at INTEGER,
+        error TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+
+    -- Each message in a run. state: pending (not asked yet), decided (asked;
+    -- decisions holds what is to be done), nothing (asked, and nothing is
+    -- to be done), failed (could
+    -- not be asked), applied, skipped (changed since the preview) or
+    -- unapplied (its actions did not all work). snapshot is how the message
+    -- stood when it was previewed.
+    CREATE TABLE instruction_run_items (
+        run_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending',
+        snapshot TEXT NOT NULL DEFAULT '',
+        decisions TEXT NOT NULL DEFAULT '[]',
+        refused TEXT NOT NULL DEFAULT '[]',
+        undo_ids TEXT NOT NULL DEFAULT '[]',
+        error TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (run_id, message_id)
+    ) STRICT;
+    CREATE INDEX instruction_run_items_by_position ON instruction_run_items (run_id, position);
+
+    -- Actions whose undo is kept longer than a day: a run's, for three days.
+    CREATE TABLE kept_undo (
+        group_id TEXT PRIMARY KEY NOT NULL,
+        until INTEGER NOT NULL
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

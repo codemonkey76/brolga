@@ -31,6 +31,8 @@ pub(crate) struct Mailbox {
     pub syncing: Mutex<()>,
     /// One pass of its mail instructions at a time.
     pub processing: Mutex<()>,
+    /// One run of its mail instructions over existing mail at a time.
+    pub running: Mutex<()>,
     /// Which part of a sync is running, while one is.
     stage: std::sync::Mutex<Option<&'static str>>,
     /// The file that says so to other copies of Brolga on this computer.
@@ -512,6 +514,7 @@ impl Mailboxes {
             shared,
             syncing: Mutex::new(()),
             processing: Mutex::new(()),
+            running: Mutex::new(()),
             stage: std::sync::Mutex::new(None),
             lock_file: path.map(|path| path.with_extension("sync-lock")),
         });

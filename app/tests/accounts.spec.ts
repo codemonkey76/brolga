@@ -579,6 +579,48 @@ test("the model is chosen, agreed to and tried, and what the instructions did ca
     expect((await ran(page)).find((r) => r.command === "mail.undo")?.args).toMatchObject({ undo_id: "undo-1" });
 });
 
+test("a run over existing mail is sized up, previewed, applied after asking, and undone", async ({ page }) => {
+    const instructions = [{ id: "i-1", name: "Telstra", text: "Bills from Telstra go in Accounts/Telstra.", enabled: true, actions: ["move"] }];
+    await withCore(page, {
+        accounts: [robin],
+        mail: inbox,
+        instructions,
+        instructionsModel: { provider: "anthropic", model: "claude-haiku-5-5", cloud_consent: true },
+        instructionsProcessor: { device_id: "device-here", device_name: "titan", since: "2026-10-15T08:00:00Z" },
+    });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+    const section = page.getByRole("region", { name: "Mail instructions for robin@example.test" });
+    // The key is on this computer, so processing is ready.
+    await section.getByLabel("Model", { exact: true }).getByRole("button", { name: "Change the model" }).click();
+    await section.getByRole("textbox", { name: "API key" }).fill("sk-ant-mine");
+    await section.getByRole("button", { name: "Save" }).click();
+    const runs = section.getByRole("region", { name: "Run over existing mail" });
+
+    await runs.getByLabel("Received from").fill("2026-01-01");
+    await runs.getByRole("button", { name: "See how many" }).click();
+    await expect(runs).toContainText("1480 messages, about US$0.31 at Anthropic, about 19 minutes.");
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.run.estimate")?.args).toMatchObject({ folder_id: "inbox", received_from: "2026-01-01" });
+    await runs.getByRole("button", { name: "Preview" }).click();
+    await expect(runs).toContainText("The preview would move 2; 1478 left as they are.");
+    const list = runs.getByRole("list", { name: "What the run does" });
+    await expect(list.getByRole("listitem")).toHaveCount(2);
+    await expect(list.getByRole("listitem").nth(0)).toContainText("Move to Accounts/Telstra");
+    await picture(page, "instructions-run");
+
+    // Applying asks first.
+    await runs.getByRole("button", { name: "Apply", exact: true }).click();
+    expect((await ran(page)).some((r) => r.command === "mail.instructions.run.apply")).toBe(false);
+    await runs.getByRole("button", { name: "Yes, apply it" }).click();
+    await expect(runs).toContainText("Applied to 2 messages.");
+    await expect(runs).toContainText("It can be undone until");
+
+    await runs.getByRole("button", { name: "Undo the run" }).click();
+    await runs.getByRole("button", { name: "Undo the run" }).click();
+    await expect(runs).toContainText("The last run was undone.");
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.run.undo")?.args).toMatchObject({ run_id: "run-1" });
+});
+
 test("mail instructions that cannot be read say why", async ({ page }) => {
     await withCore(page, { accounts: [robin], offline: true });
     await page.getByRole("button", { name: "Settings" }).click();

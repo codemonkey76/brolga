@@ -50,11 +50,11 @@ pub(crate) enum Readiness {
     NotReady(String),
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     jiff::Timestamp::now().as_second()
 }
 
-fn today() -> (String, String) {
+pub(crate) fn today() -> (String, String) {
     let zone = jiff::tz::TimeZone::system();
     let now = jiff::Timestamp::now().to_zoned(zone.clone());
     (
@@ -278,7 +278,7 @@ async fn run(
 
 /// The mailbox's own categories, from Microsoft 365 when it can be
 /// reached, and otherwise as last kept.
-async fn categories(mailbox: &Mailbox) -> Vec<String> {
+pub(crate) async fn categories(mailbox: &Mailbox) -> Vec<String> {
     if let Ok(list) = mailbox.graph.master_categories().await {
         return list.into_iter().map(|(_, name, _)| name).collect();
     }
@@ -350,7 +350,7 @@ async fn one(
     };
     let ask = plan.ask(message, &body, &attachments, day, zone);
 
-    let answer = match brolga_ai::ask(http, provider, &ask).await {
+    let answer = match timed_ask(mailboxes.global(), http, provider, &ask).await {
         Ok(answer) => {
             let _ = mailbox.db.count_instruction_request(
                 day,
@@ -449,7 +449,11 @@ async fn one(
     Ok(Outcome::Done)
 }
 
-fn command_for(account_id: &str, message: &MessageRow, step: &Step) -> (&'static str, Value) {
+pub(crate) fn command_for(
+    account_id: &str,
+    message: &MessageRow,
+    step: &Step,
+) -> (&'static str, Value) {
     let ids = json!([message.id]);
     match step {
         Step::Move { folder_id, .. } => (
@@ -487,7 +491,7 @@ fn command_for(account_id: &str, message: &MessageRow, step: &Step) -> (&'static
 
 /// Write what was done, or not, to the agent log ("Record").
 #[allow(clippy::too_many_arguments)]
-fn record(
+pub(crate) fn record(
     global: &brolga_store::GlobalDb,
     account_id: &str,
     message: &MessageRow,
@@ -570,7 +574,7 @@ fn log(global: &brolga_store::GlobalDb, line: &LogLine) {
 }
 
 /// A message's text: as kept, or fetched and kept.
-async fn body_text(mailbox: &Mailbox, id: &str) -> Result<String, String> {
+pub(crate) async fn body_text(mailbox: &Mailbox, id: &str) -> Result<String, String> {
     let body = match mailbox.db.body(id).map_err(|e| e.to_string())? {
         Some(body) => body,
         None => {
@@ -601,7 +605,7 @@ fn as_text(body: &Body) -> String {
 }
 
 /// The names of a message's attachments, never their contents.
-async fn attachment_names(mailbox: &Mailbox, id: &str) -> Vec<String> {
+pub(crate) async fn attachment_names(mailbox: &Mailbox, id: &str) -> Vec<String> {
     if let Ok(Some(kept)) = mailbox.db.attachments(id) {
         return kept.into_iter().map(|a| a.name).collect();
     }
@@ -617,6 +621,49 @@ fn shown_time(secs: i64) -> String {
     jiff::Timestamp::from_second(secs)
         .map(|at| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
         .unwrap_or_default()
+}
+
+/// Ask, and keep a running average of how long the model takes to
+/// answer, for saying how long a run would take.
+pub(crate) async fn timed_ask(
+    global: &brolga_store::GlobalDb,
+    http: &reqwest::Client,
+    provider: &Provider,
+    ask: &brolga_ai::Ask,
+) -> Result<brolga_ai::Answer, AiError> {
+    let started = std::time::Instant::now();
+    let answer = brolga_ai::ask(http, provider, ask).await;
+    if answer.is_ok() {
+        let key = speed_key(provider.name(), provider.model());
+        let took = started.elapsed().as_secs_f64();
+        let average = global
+            .setting(&key)
+            .ok()
+            .flatten()
+            .and_then(|kept| kept.parse::<f64>().ok())
+            .map_or(took, |kept| kept * 0.8 + took * 0.2);
+        let _ = global.set_setting(&key, &format!("{average:.3}"));
+    }
+
+    answer
+}
+
+fn speed_key(provider: &str, model: &str) -> String {
+    format!("instructions.seconds:{provider}:{model}")
+}
+
+/// How long the model has taken to answer, on average, in seconds, where
+/// it has been asked before.
+pub(crate) fn seconds_per_answer(
+    global: &brolga_store::GlobalDb,
+    provider: &str,
+    model: &str,
+) -> Option<f64> {
+    global
+        .setting(&speed_key(provider, model))
+        .ok()
+        .flatten()
+        .and_then(|kept| kept.parse().ok())
 }
 
 /// Where the mailbox's processing stands, for the window and for agents.

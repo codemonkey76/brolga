@@ -199,8 +199,16 @@ subject, its text (up to 8,000 characters) and the names of its
 attachments, never their contents. After each sync, the chosen computer
 deals with mail that arrived in the Inbox since the instructions were first
 switched on. What it did is listed in the same place, with an Undo for
-each. Running the instructions over mail already there comes in a later
-version.
+each.
+
+To put the instructions to mail already in a folder, use **Run over mail
+already here** on the same screen, on the computer that carries them out.
+Choose the folder, and dates if you like, and it says how many messages
+that is and roughly what it would cost and how long it would take. The
+preview asks the model about each message and changes nothing; it lists
+what would be done. Apply does exactly that, skipping any message changed
+since the preview, and the whole run can be undone for three days. A run
+carries on after Brolga is restarted, and can be cancelled at any point.
 
 ## AI agents
 

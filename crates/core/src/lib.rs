@@ -25,6 +25,7 @@ mod processing;
 mod remote_images;
 mod reply_commands;
 mod rule_commands;
+mod runs;
 mod saving;
 mod shared_commands;
 mod sharing_commands;

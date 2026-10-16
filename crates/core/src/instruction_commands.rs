@@ -16,6 +16,7 @@ use crate::instructions::{
 };
 use crate::mailboxes::{Mailbox, Mailboxes};
 use crate::processing;
+use crate::runs;
 
 fn failed(reason: impl std::fmt::Display) -> CommandError {
     CommandError::Failed(reason.to_string())
@@ -467,7 +468,7 @@ async fn model_test(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, C
         "UTC",
     );
     let started = std::time::Instant::now();
-    match brolga_ai::ask(&http, &provider, &ask).await {
+    match processing::timed_ask(mailboxes.global(), &http, &provider, &ask).await {
         Ok(answer) => Ok(json!({
             "ok": true, "provider": provider.name(), "model": answer.model,
             "seconds": started.elapsed().as_secs_f64(), "answer": answer.value, "error": null
@@ -568,6 +569,128 @@ async fn log(mailboxes: Arc<Mailboxes>, args: Log) -> Result<Value, CommandError
         .collect();
 
     Ok(json!({ "entries": entries }))
+}
+
+#[derive(Deserialize)]
+struct RunScope {
+    account_id: Option<String>,
+    folder_id: String,
+    subfolders: Option<bool>,
+    received_from: Option<String>,
+    received_to: Option<String>,
+}
+
+impl RunScope {
+    fn scope(&self) -> Result<runs::Scope, CommandError> {
+        for day in [&self.received_from, &self.received_to]
+            .into_iter()
+            .flatten()
+        {
+            if day.parse::<jiff::civil::Date>().is_err() {
+                return Err(failed(format!(
+                    "`{day}` is not a day, written as 2026-10-20."
+                )));
+            }
+        }
+        Ok(runs::Scope {
+            folder_id: self.folder_id.clone(),
+            subfolders: self.subfolders.unwrap_or(false),
+            from: self.received_from.clone(),
+            to: self.received_to.clone(),
+        })
+    }
+}
+
+async fn run_estimate(mailboxes: Arc<Mailboxes>, args: RunScope) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    runs::estimate(&mailboxes, &mailbox, &args.scope()?)
+        .await
+        .map_err(failed)
+}
+
+async fn run_preview(mailboxes: Arc<Mailboxes>, args: RunScope) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let device = this_device(&mailboxes)?;
+    let run = runs::preview(&mailboxes, &account.id, &mailbox, &device, &args.scope()?)
+        .await
+        .map_err(failed)?;
+
+    Ok(json!({ "run": runs::shown(&mailbox, &run) }))
+}
+
+#[derive(Deserialize)]
+struct RunId {
+    account_id: Option<String>,
+    run_id: Option<String>,
+}
+
+async fn run_status(mailboxes: Arc<Mailboxes>, args: RunId) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let run = match &args.run_id {
+        Some(id) => mailbox.db.run(id).map_err(failed)?,
+        None => mailbox.db.latest_run().map_err(failed)?,
+    };
+
+    Ok(json!({ "run": run.map(|run| runs::shown(&mailbox, &run)) }))
+}
+
+#[derive(Deserialize)]
+struct RunItems {
+    account_id: Option<String>,
+    run_id: String,
+    filter: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+}
+
+async fn run_items(mailboxes: Arc<Mailboxes>, args: RunItems) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    runs::items(
+        &mailbox,
+        &args.run_id,
+        args.filter.as_deref(),
+        args.offset.unwrap_or(0),
+        args.limit.unwrap_or(50).min(500),
+    )
+    .map_err(failed)
+}
+
+#[derive(Deserialize)]
+struct RunOne {
+    account_id: Option<String>,
+    run_id: String,
+}
+
+async fn run_apply(mailboxes: Arc<Mailboxes>, args: RunOne) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    let device = this_device(&mailboxes)?;
+    let run =
+        runs::apply(&mailboxes, &account.id, &mailbox, &device, &args.run_id).map_err(failed)?;
+
+    Ok(json!({ "run": runs::shown(&mailbox, &run) }))
+}
+
+async fn run_cancel(mailboxes: Arc<Mailboxes>, args: RunOne) -> Result<Value, CommandError> {
+    let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
+    let run = runs::cancel(&mailbox, &args.run_id).map_err(failed)?;
+
+    Ok(json!({ "run": runs::shown(&mailbox, &run) }))
+}
+
+async fn run_undo(mailboxes: Arc<Mailboxes>, args: RunOne) -> Result<Value, CommandError> {
+    let account = mailboxes
+        .account(args.account_id.as_deref())
+        .map_err(failed)?;
+    let mailbox = mailboxes.open(&account).await.map_err(failed)?;
+    runs::undo(&mailboxes, &account.id, &mailbox, &args.run_id)
+        .await
+        .map_err(failed)
 }
 
 /// A key of the right shape for the example, which works nowhere.
@@ -1085,6 +1208,161 @@ pub(crate) fn register(
             examples: vec![json!({ "limit": 20 })],
         },
         handler(&mailboxes, log),
+    )?;
+
+    let scope = |properties: &mut serde_json::Map<String, Value>| {
+        properties.insert("folder_id".to_owned(), json!({ "type": "string", "description": "The folder, by id from mail.folders.list or by a well-known name such as inbox or archive." }));
+        properties.insert(
+            "subfolders".to_owned(),
+            json!({ "type": "boolean", "description": "The folders inside it too." }),
+        );
+        properties.insert("received_from".to_owned(), json!({ "type": "string", "description": "Messages received on or after this day, 2026-01-31." }));
+        properties.insert(
+            "received_to".to_owned(),
+            json!({ "type": "string", "description": "Messages received on or before this day." }),
+        );
+    };
+    let mut scoped = serde_json::Map::new();
+    scoped.insert("account_id".to_owned(), account_id.clone());
+    scope(&mut scoped);
+    let scoped = json!({ "type": "object", "properties": scoped, "required": ["folder_id"], "additionalProperties": false });
+    let run = json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string" },
+            "state": { "type": "string", "enum": ["previewing", "previewed", "applying", "applied", "cancelled", "undone"] },
+            "total": { "type": "integer" },
+            "counts": { "type": "object", "description": "Messages by where each stands: pending, decided (something to do), nothing, failed, applied, skipped (changed since the preview), unapplied." },
+            "actions": { "type": "object", "description": "What the preview would do, by action: move, set_categories, flag, set_read." },
+            "undo_until": { "type": ["string", "null"] },
+            "error": { "type": ["string", "null"] }
+        },
+        "required": ["id", "state", "total", "counts", "actions"]
+    });
+    let one_run = json!({ "type": "object", "properties": { "run": run }, "required": ["run"] });
+    let run_id = json!({ "type": "string", "description": "From mail.instructions.run.status or .preview." });
+    const RUNS: &str = "A run puts the mailbox's instructions to the mail already in a folder: it is previewed first, and nothing is changed until it is applied. \
+        It happens on the processing device, and carries on where it was after a restart.";
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.run.estimate".to_owned(),
+            title: "How big a run over existing mail would be".to_owned(),
+            description: format!("How many messages a run over a folder would put to the model, and roughly what it would cost at Anthropic and how long it would take, before anything is sent. Folders not yet fetched in full are named. {RUNS}"),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: scoped.clone(),
+            result_schema: json!({
+                "type": "object",
+                "properties": {
+                    "messages": { "type": "integer" }, "estimated_cost_usd": { "type": ["number", "null"] },
+                    "estimated_minutes": { "type": ["number", "null"] }, "not_synced": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["messages", "estimated_cost_usd", "estimated_minutes", "not_synced"]
+            }),
+            examples: vec![json!({ "folder_id": "inbox" })],
+        },
+        handler(&mailboxes, run_estimate),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.run.preview".to_owned(),
+            title: "Preview the instructions over existing mail".to_owned(),
+            description: format!("Start a run over a folder's mail, as a preview: the model decides what it would do with each message, and nothing is changed. Its progress and what it found are in mail.instructions.run.status and .items. {RUNS}"),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: scoped,
+            result_schema: one_run.clone(),
+            examples: vec![json!({ "folder_id": "inbox", "received_from": "2026-10-01" })],
+        },
+        handler(&mailboxes, run_preview),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.run.status".to_owned(),
+            title: "Where a run over existing mail stands".to_owned(),
+            description: format!("A run's state and progress: how many messages stand where, and what the preview would do, by action. The latest run if none is named. {RUNS}"),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id, "run_id": run_id }, "additionalProperties": false }),
+            result_schema: json!({ "type": "object", "properties": { "run": { "type": ["object", "null"] } }, "required": ["run"] }),
+            examples: vec![json!({})],
+        },
+        handler(&mailboxes, run_status),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.run.items".to_owned(),
+            title: "The messages in a run over existing mail".to_owned(),
+            description: format!("A page of a run's messages in order, each with what was decided for it and where it stands. `filter`: all, changes (those with something to do), or one state. {RUNS}"),
+            kind: CommandKind::Query,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": account_id, "run_id": run_id,
+                    "filter": { "type": "string", "enum": ["all", "changes", "pending", "decided", "nothing", "failed", "applied", "skipped", "unapplied"] },
+                    "offset": { "type": "integer", "minimum": 0 }, "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+                },
+                "required": ["run_id"],
+                "additionalProperties": false
+            }),
+            result_schema: json!({ "type": "object", "properties": { "items": { "type": "array", "items": { "type": "object" } } }, "required": ["items"] }),
+            examples: vec![json!({ "run_id": "run-000000000000", "filter": "changes" })],
+        },
+        handler(&mailboxes, run_items),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.run.apply".to_owned(),
+            title: "Apply a run over existing mail".to_owned(),
+            description: format!("Carry out a finished preview, as it was shown. A message changed since its preview is skipped and listed. Everything it does can be undone together, for three days, with mail.instructions.run.undo. {RUNS}"),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id, "run_id": run_id }, "required": ["run_id"], "additionalProperties": false }),
+            result_schema: one_run.clone(),
+            examples: vec![json!({ "run_id": "run-000000000000" })],
+        },
+        handler(&mailboxes, run_apply),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.run.cancel".to_owned(),
+            title: "Cancel a run over existing mail".to_owned(),
+            description: format!("Stop a run being previewed or applied, or set aside one that was previewed. What was already done stays done; no message is left half done. {RUNS}"),
+            kind: CommandKind::Action,
+            consequential: false,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id, "run_id": run_id }, "required": ["run_id"], "additionalProperties": false }),
+            result_schema: one_run,
+            examples: vec![json!({ "run_id": "run-000000000000" })],
+        },
+        handler(&mailboxes, run_cancel),
+    )?;
+
+    registry.register(
+        CommandSpec {
+            id: "mail.instructions.run.undo".to_owned(),
+            title: "Undo a run over existing mail".to_owned(),
+            description: format!("Take back everything an applied run did, within three days of its being applied. A message changed since is left as it now is. {RUNS}"),
+            kind: CommandKind::Action,
+            consequential: true,
+            mcp_tool: None,
+            args_schema: json!({ "type": "object", "properties": { "account_id": account_id, "run_id": run_id }, "required": ["run_id"], "additionalProperties": false }),
+            result_schema: json!({ "type": "object", "properties": { "undone": { "type": "integer" } }, "required": ["undone"] }),
+            examples: vec![json!({ "run_id": "run-000000000000" })],
+        },
+        handler(&mailboxes, run_undo),
     )?;
 
     registry.register(
