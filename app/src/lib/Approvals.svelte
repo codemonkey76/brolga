@@ -8,6 +8,20 @@
         lastActive: string | null;
     }
 
+    interface Step {
+        server: string;
+        tool: string;
+        inputs: Record<string, unknown>;
+    }
+
+    interface Looked {
+        server: string;
+        tool: string;
+        inputs: Record<string, unknown>;
+        ok: boolean;
+        result: string;
+    }
+
     interface Approval {
         id: string;
         state: "waiting" | "approved" | "rejected";
@@ -17,9 +31,8 @@
         subject: string | null;
         from: string | null;
         instruction: string | null;
-        server: string | null;
-        tool: string | null;
-        inputs: Record<string, unknown>;
+        steps: Step[];
+        looked: Looked[] | null;
         reason: string | null;
         outcome: { state: string; text: string } | null;
     }
@@ -59,7 +72,15 @@
 
     const waiting = $derived(approvals.filter((a) => a.state === "waiting"));
     const decided = $derived(approvals.filter((a) => a.state !== "waiting"));
-    const shown = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
+    /** An input that stands for what an earlier step returns. */
+    const fromStep = (value: unknown): { from_step: number; field: string } | null =>
+        value && typeof value === "object" && "from_step" in value && "field" in value ? (value as { from_step: number; field: string }) : null;
+    const shown = (value: unknown) => {
+        const from = fromStep(value);
+        if (from) return `what step ${from.from_step} returns (${from.field})`;
+        return typeof value === "string" ? value : JSON.stringify(value);
+    };
+    const called = (a: Approval) => a.steps.map((s) => `${s.server} ${s.tool}`).join(", then ");
     const seen = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "never");
     const came = (a: Approval) =>
         a.state === "rejected"
@@ -77,16 +98,36 @@
         <p><strong>{waiting.length === 1 ? "A call waits" : `${waiting.length} calls wait`} for your approval.</strong> What a call holds was filled in from the email: check it before approving.</p>
         <ul>
             {#each waiting as each (each.id)}
-                <li aria-label={`${each.server} ${each.tool} for ${each.subject ?? "a message"}`}>
-                    <span><strong>{each.server} {each.tool}</strong> for “{each.subject ?? ""}”{each.from ? `, from ${each.from}` : ""}</span>
+                <li aria-label={`${called(each)} for ${each.subject ?? "a message"}`}>
+                    <span><strong>{called(each)}</strong> for “{each.subject ?? ""}”{each.from ? `, from ${each.from}` : ""}</span>
                     <span class="muted">{each.instruction}{each.reason ? `: ${each.reason}` : ""}</span>
                     {#if each.note}<span class="warning">{each.note}</span>{/if}
-                    <dl>
-                        {#each Object.entries(each.inputs ?? {}) as [name, value] (name)}
-                            <dt>{name}</dt>
-                            <dd>{shown(value)}</dd>
+                    <ol class="steps" aria-label="Steps">
+                        {#each each.steps as step, n (n)}
+                            <li>
+                                <span>{each.steps.length > 1 ? `${n + 1}. ` : ""}{step.server} {step.tool}</span>
+                                <dl>
+                                    {#each Object.entries(step.inputs ?? {}) as [name, value] (name)}
+                                        <dt>{name}</dt>
+                                        <dd class:from={fromStep(value)}>{shown(value)}</dd>
+                                    {/each}
+                                </dl>
+                            </li>
                         {/each}
-                    </dl>
+                    </ol>
+                    {#if each.looked?.length}
+                        <details>
+                            <summary>Looked up first ({each.looked.length})</summary>
+                            <ul class="looked" aria-label="Looked up first">
+                                {#each each.looked as l, n (n)}
+                                    <li>
+                                        <span>{l.server} {l.tool} {JSON.stringify(l.inputs)}{l.ok ? "" : " (did not work)"}</span>
+                                        <pre>{l.result}</pre>
+                                    </li>
+                                {/each}
+                            </ul>
+                        </details>
+                    {/if}
                     <div class="buttons">
                         <button type="button" class="primary" disabled={deciding !== null} onclick={() => decide([each], true)}>Approve</button>
                         <button type="button" disabled={deciding !== null} onclick={() => decide([each], false)}>Reject</button>
@@ -108,7 +149,7 @@
         <ul aria-label="Calls decided">
             {#each decided as each (each.id)}
                 <li>
-                    <span>{each.server} {each.tool} for “{each.subject ?? ""}”</span>
+                    <span>{called(each)} for “{each.subject ?? ""}”</span>
                     <span class="muted">{came(each)}{each.decided_by ? ` · decided on ${each.decided_by}` : ""}</span>
                 </li>
             {/each}
@@ -152,6 +193,32 @@
         grid-template-columns: max-content 1fr;
         gap: 0.1rem 0.6rem;
         font-size: 0.8rem;
+    }
+
+    .steps,
+    .looked {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .steps li,
+    .looked li {
+        border: 0;
+        padding: 0.2rem 0;
+    }
+
+    dd.from {
+        font-style: italic;
+    }
+
+    pre {
+        margin: 0;
+        font-size: 0.75rem;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 8rem;
+        overflow: auto;
     }
 
     dt {

@@ -601,9 +601,12 @@ async fn a_tool_call_waits_for_approval_from_any_device_and_is_made_once() {
     let waiting = approvals(&laptop).await;
     assert_eq!(waiting.len(), 1);
     assert_eq!(waiting[0]["state"], "waiting");
-    assert_eq!(waiting[0]["tool"], "create_ticket");
-    assert_eq!(waiting[0]["inputs"]["client_id"], 7);
-    assert_eq!(waiting[0]["inputs"]["subject"], "Printer jammed");
+    assert_eq!(waiting[0]["steps"][0]["tool"], "create_ticket");
+    assert_eq!(waiting[0]["steps"][0]["inputs"]["client_id"], 7);
+    assert_eq!(
+        waiting[0]["steps"][0]["inputs"]["subject"],
+        "Printer jammed"
+    );
 
     // An agent cannot approve it: only the person, in the window.
     assert!(
@@ -680,7 +683,7 @@ async fn a_rejected_call_or_one_changed_in_the_mailbox_is_not_made() {
     let id = waiting[1]["id"].as_str().unwrap();
     let mut changed: Value =
         serde_json::from_str(&f.graph.message_property(id, CALL).unwrap()).unwrap();
-    changed["inputs"]["client_id"] = json!(99);
+    changed["steps"][0]["inputs"]["client_id"] = json!(99);
     f.graph.set_message_property(id, CALL, &changed.to_string());
     run(
         &f.titan,
@@ -787,4 +790,318 @@ async fn an_approved_call_the_instruction_no_longer_allows_is_not_made() {
     f.sync_and_process().await;
     assert!(mcp.calls().is_empty());
     assert_eq!(approvals(&f.titan).await[0]["outcome"]["state"], "changed");
+}
+
+/// Titan with a helpdesk whose client list is a lookup, and an instruction
+/// that turns a request into a ticket under whoever wrote, making their
+/// client and contact first where the helpdesk has neither.
+async fn with_lookups(f: &Fixture) -> brolga_fake_mcp::FakeMcp {
+    let mcp = brolga_fake_mcp::FakeMcp::start().await.unwrap();
+    mcp.helpdesk_tools();
+    mcp.accept_token("pat-1");
+    let server = run(
+        &f.titan,
+        "mcp_servers.add",
+        json!({ "name": "Helpdesk", "url": mcp.url() }),
+    )
+    .await["server"]["id"]
+        .clone();
+    run(
+        &f.titan,
+        "mcp_servers.set_token",
+        json!({ "server_id": server, "token": "pat-1" }),
+    )
+    .await;
+    run(
+        &f.titan,
+        "mcp_servers.tools",
+        json!({ "server_id": server }),
+    )
+    .await;
+    let made = run(&f.titan, "mail.instructions.set", json!({
+        "name": "Support", "text": "A request for support becomes a helpdesk ticket, under the client and contact who wrote, made if the helpdesk has neither.",
+        "actions": ["call_tool"],
+        "tools": [
+            { "server_id": server, "tool": "list_clients" },
+            { "server_id": server, "tool": "create_client" },
+            { "server_id": server, "tool": "create_client_user" },
+            { "server_id": server, "tool": "create_ticket", "fixed": { "assigned_agent_id": 2 } }
+        ]
+    }))
+    .await;
+    let lookup = json!({ "instruction_id": made["instruction"]["id"], "server_id": server, "tool": "list_clients", "lookup": true });
+    // Only the person makes a tool a lookup: it then runs without asking.
+    assert!(
+        f.titan
+            .execute("mail.instructions.tools.set_unattended", lookup.clone())
+            .await
+            .is_err()
+    );
+    run(&f.titan, "mail.instructions.tools.set_unattended", lookup).await;
+
+    mcp
+}
+
+fn support_id(asked: &brolga_fake_ai::Asked) -> Value {
+    asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone()
+}
+
+fn call(id: &Value, tool: &str, inputs: Value) -> Value {
+    json!({
+        "instruction_id": id, "action": "call_tool", "folder": "", "categories": [], "flag_due": "", "read": false,
+        "task_title": "", "task_list": "", "task_due": "", "task_reminder": "",
+        "tool": format!("Helpdesk/{tool}"), "tool_inputs": inputs.to_string(), "reason": "A support request."
+    })
+}
+
+/// Looks the sender up first; then makes a ticket under the client and
+/// contact found, or makes the client and contact first.
+fn helpdesk_brain(asked: &brolga_fake_ai::Asked) -> Reply {
+    let id = support_id(asked);
+    if !asked.user.contains("The lookups made so far") {
+        return Reply::Answer(json!({ "actions": [], "lookups": [
+            { "instruction_id": id, "tool": "Helpdesk/list_clients", "tool_inputs": r#"{"contact_email":"sam@example.test"}"# }
+        ]}));
+    }
+    let ticket = |client: Value, user: Value| {
+        call(
+            &id,
+            "create_ticket",
+            json!({ "client_id": client, "user_id": user, "subject": "Printer jammed", "description": "Sam's printer is jammed." }),
+        )
+    };
+    if asked.user.contains("CarCoop") {
+        Reply::Answer(json!({ "lookups": [], "actions": [ticket(json!(5), json!(10))] }))
+    } else {
+        Reply::Answer(json!({ "lookups": [], "actions": [
+            call(&id, "create_client", json!({ "name": "NewCo" })),
+            call(&id, "create_client_user", json!({ "client_id": { "from_step": 1, "field": "id" }, "name": "Sam", "email": "sam@example.test" })),
+            ticket(json!({ "from_step": 1, "field": "id" }), json!({ "from_step": 2, "field": "id" }))
+        ]}))
+    }
+}
+
+const KNOWN: &str = r#"{"data":[{"id":5,"name":"CarCoop","users":[{"id":10,"name":"Sam","email":"sam@example.test"}]}]}"#;
+
+#[tokio::test]
+async fn a_known_sender_is_looked_up_and_one_approval_makes_their_ticket() {
+    let f = Fixture::set_up().await;
+    let mcp = with_lookups(&f).await;
+    mcp.answer("list_clients", serde_json::from_str(KNOWN).unwrap());
+    f.ai.answer_with(helpdesk_brain);
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+
+    f.sync_and_process().await;
+    // The lookup ran without asking; nothing else has.
+    assert_eq!(
+        mcp.calls(),
+        vec![(
+            "list_clients".to_owned(),
+            json!({ "contact_email": "sam@example.test" })
+        )]
+    );
+    assert_eq!(f.ai.asked().len(), 2);
+    let waiting = approvals(&f.titan).await;
+    assert_eq!(waiting.len(), 1);
+    let steps = waiting[0]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(
+        steps[0]["inputs"],
+        json!({ "client_id": 5, "user_id": 10, "subject": "Printer jammed", "description": "Sam's printer is jammed.", "assigned_agent_id": 2 })
+    );
+    assert!(
+        waiting[0]["looked"][0]["result"]
+            .as_str()
+            .unwrap()
+            .contains("CarCoop")
+    );
+    assert!(
+        f.log()
+            .await
+            .iter()
+            .any(|e| e["command"] == "tools.lookup" && e["outcome"] == "ok")
+    );
+
+    run(
+        &f.titan,
+        "mail.instructions.approvals.decide",
+        json!({ "approval_id": waiting[0]["id"], "approve": true }),
+    )
+    .await;
+    f.sync_and_process().await;
+    let calls = mcp.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].0, "create_ticket");
+    assert_eq!(calls[1].1["client_id"], 5);
+    assert_eq!(calls[1].1["user_id"], 10);
+}
+
+#[tokio::test]
+async fn a_new_company_gets_its_client_contact_and_ticket_made_in_order_from_one_approval() {
+    let f = Fixture::set_up().await;
+    let mcp = with_lookups(&f).await;
+    mcp.answer("list_clients", json!({ "data": [] }));
+    mcp.answer(
+        "create_client",
+        json!({ "data": { "id": 77, "name": "NewCo" } }),
+    );
+    mcp.answer(
+        "create_client_user",
+        json!({ "data": { "id": 88, "name": "Sam" } }),
+    );
+    f.ai.answer_with(helpdesk_brain);
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+
+    f.sync_and_process().await;
+    let waiting = approvals(&f.titan).await;
+    let steps = waiting[0]["steps"].as_array().unwrap();
+    let tools: Vec<&str> = steps.iter().map(|s| s["tool"].as_str().unwrap()).collect();
+    assert_eq!(
+        tools,
+        ["create_client", "create_client_user", "create_ticket"]
+    );
+    assert_eq!(
+        steps[1]["inputs"]["client_id"],
+        json!({ "from_step": 1, "field": "id" })
+    );
+    assert_eq!(mcp.calls().len(), 1);
+
+    run(
+        &f.titan,
+        "mail.instructions.approvals.decide",
+        json!({ "approval_id": waiting[0]["id"], "approve": true }),
+    )
+    .await;
+    f.sync_and_process().await;
+    let calls = mcp.calls();
+    let made: Vec<&str> = calls.iter().map(|(tool, _)| tool.as_str()).collect();
+    assert_eq!(
+        made,
+        [
+            "list_clients",
+            "create_client",
+            "create_client_user",
+            "create_ticket"
+        ]
+    );
+    assert_eq!(
+        calls[2].1,
+        json!({ "client_id": 77, "name": "Sam", "email": "sam@example.test" })
+    );
+    assert_eq!(calls[3].1["client_id"], 77);
+    assert_eq!(calls[3].1["user_id"], 88);
+    let done = approvals(&f.titan).await;
+    assert_eq!(done[0]["outcome"]["state"], "done");
+    // Made once: a later sync makes nothing more.
+    f.sync_and_process().await;
+    assert_eq!(mcp.calls().len(), 4);
+}
+
+#[tokio::test]
+async fn a_step_that_fails_stops_the_plan_and_says_where() {
+    let f = Fixture::set_up().await;
+    let mcp = with_lookups(&f).await;
+    mcp.answer("list_clients", json!({ "data": [] }));
+    mcp.answer("create_client", json!({ "data": { "id": 77 } }));
+    mcp.fail(
+        "create_client_user",
+        "That email address is already a contact of another client.",
+    );
+    f.ai.answer_with(helpdesk_brain);
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+    f.sync_and_process().await;
+    let waiting = approvals(&f.titan).await;
+    run(
+        &f.titan,
+        "mail.instructions.approvals.decide",
+        json!({ "approval_id": waiting[0]["id"], "approve": true }),
+    )
+    .await;
+
+    f.sync_and_process().await;
+    let made: Vec<String> = mcp.calls().into_iter().map(|(tool, _)| tool).collect();
+    assert_eq!(
+        made,
+        ["list_clients", "create_client", "create_client_user"]
+    );
+    let outcome = &approvals(&f.titan).await[0]["outcome"];
+    assert_eq!(outcome["state"], "failed");
+    let text = outcome["text"].as_str().unwrap();
+    assert!(text.contains("1. create_client"), "{text}");
+    assert!(
+        text.contains("Step 2 (create_client_user) failed: That email address"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn lookups_are_few_and_only_a_tool_the_person_made_a_lookup_runs_without_asking() {
+    let f = Fixture::set_up().await;
+    let mcp = with_lookups(&f).await;
+    mcp.answer("list_clients", json!({ "data": [] }));
+    // A model that never stops looking. A tool not made a lookup cannot
+    // even be named as one: the answer's form leaves it out.
+    f.ai.answer_with(|asked| {
+        let lookups = &asked.schema["properties"]["lookups"]["items"]["properties"]["tool"]["enum"];
+        assert_eq!(lookups, &json!(["Helpdesk/list_clients"]));
+        let id = support_id(asked);
+        let one = json!({ "instruction_id": id, "tool": "Helpdesk/list_clients", "tool_inputs": r#"{"search":"NewCo"}"# });
+        Reply::Answer(json!({ "actions": [], "lookups": [one.clone(), one] }))
+    });
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+
+    f.sync_and_process().await;
+    let made: Vec<String> = mcp.calls().into_iter().map(|(tool, _)| tool).collect();
+    assert_eq!(made, ["list_clients", "list_clients", "list_clients"]);
+    assert_eq!(f.ai.asked().len(), 3);
+    assert!(f.ai.asked()[2].system.contains("none, so decide now"));
+    assert!(approvals(&f.titan).await.is_empty());
+    assert!(f.log().await.iter().any(|e| {
+        e["outcome"] == "refused"
+            && e["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no more lookups")
+    }));
+}
+
+#[tokio::test]
+async fn a_plan_runs_unattended_only_if_every_step_may() {
+    let f = Fixture::set_up().await;
+    let mcp = with_lookups(&f).await;
+    let list = run(&f.titan, "mail.instructions.list", json!({})).await;
+    let support = list["instructions"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    // Making a client and a ticket may go unasked; making a contact may not.
+    for tool in ["create_client", "create_ticket"] {
+        run(&f.titan, "mail.instructions.tools.set_unattended", json!({
+            "instruction_id": support["id"], "server_id": support["tools"][0]["server_id"], "tool": tool, "unattended": true
+        }))
+        .await;
+    }
+    f.ai.answer_with(helpdesk_brain);
+
+    // A known contact: only the ticket, which may go unasked.
+    mcp.answer("list_clients", serde_json::from_str(KNOWN).unwrap());
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+    f.sync_and_process().await;
+    assert_eq!(mcp.calls().last().unwrap().0, "create_ticket");
+    assert!(approvals(&f.titan).await.is_empty());
+
+    // A new company: the plan makes a contact too, so the whole of it asks
+    // first, and nothing is made, the client either.
+    mcp.answer("list_clients", json!({ "data": [] }));
+    f.arrives("Help again", "Sam", "The printer is jammed again.", AFTER);
+    f.sync_and_process().await;
+    assert_eq!(mcp.calls().last().unwrap().0, "list_clients");
+    assert_eq!(approvals(&f.titan).await.len(), 1);
 }

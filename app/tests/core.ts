@@ -1083,7 +1083,10 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 const was = instructions.list.find((each) => each.id === args.instruction_id);
                 const given = args.tools as { server_id: string; tool: string; fixed?: Record<string, unknown> }[] | undefined;
                 const tools = given
-                    ? given.map((t) => ({ server_id: t.server_id, server: String(mcpServers.find((s) => s.id === t.server_id)?.name ?? ""), tool: t.tool, fixed: t.fixed ?? {}, unattended: Boolean(was?.tools?.find((w) => w.server_id === t.server_id && w.tool === t.tool)?.unattended) }))
+                    ? given.map((t) => {
+                          const kept = was?.tools?.find((w) => w.server_id === t.server_id && w.tool === t.tool);
+                          return { server_id: t.server_id, server: String(mcpServers.find((s) => s.id === t.server_id)?.name ?? ""), tool: t.tool, fixed: t.fixed ?? {}, unattended: Boolean(kept?.unattended), lookup: Boolean(kept?.lookup) };
+                      })
                     : (was?.tools ?? []);
                 const made = { id: String(args.instruction_id ?? `i-${instructions.list.length + 1}`), name: String(args.name), text: String(args.text), enabled: args.enabled !== false, actions: args.actions as string[], tools };
                 instruct(args, () => {
@@ -1138,7 +1141,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
             "mail.instructions.tools.set_unattended": (args) =>
                 instruct(args, () => {
                     const tool = instructions.list.find((each) => each.id === args.instruction_id)?.tools?.find((t) => t.server_id === args.server_id && t.tool === args.tool);
-                    if (tool) tool.unattended = Boolean(args.unattended);
+                    if (tool && args.unattended !== undefined) tool.unattended = Boolean(args.unattended);
+                    if (tool && args.lookup !== undefined) tool.lookup = Boolean(args.lookup);
                 }),
             "mail.instructions.approvals.list": () => ({ approvals }),
             "mail.instructions.approvals.decide": (args) => {

@@ -137,7 +137,8 @@ async fn set(mailboxes: Arc<Mailboxes>, args: Set) -> Result<Value, CommandError
         }
     }
     // A tool is named by a server set up on this computer; whether it runs
-    // unattended is not given here, and stays as the person set it.
+    // unattended, or is a lookup, is not given here, and stays as the
+    // person set it: both let it run without asking.
     let tools: Option<Vec<ToolUse>> = match args.tools {
         Some(given) => Some(
             given
@@ -156,6 +157,7 @@ async fn set(mailboxes: Arc<Mailboxes>, args: Set) -> Result<Value, CommandError
                         tool: t.tool,
                         fixed: t.fixed.unwrap_or_default(),
                         unattended: false,
+                        lookup: false,
                     })
                 })
                 .collect::<Result<_, CommandError>>()?,
@@ -179,9 +181,14 @@ async fn set(mailboxes: Arc<Mailboxes>, args: Set) -> Result<Value, CommandError
                     Some(given) => given
                         .into_iter()
                         .map(|mut t| {
-                            t.unattended = each.tools.iter().any(|was| {
-                                was.server_id == t.server_id && was.tool == t.tool && was.unattended
-                            });
+                            if let Some(was) = each
+                                .tools
+                                .iter()
+                                .find(|was| was.server_id == t.server_id && was.tool == t.tool)
+                            {
+                                t.unattended = was.unattended;
+                                t.lookup = was.lookup;
+                            }
                             t
                         })
                         .collect(),
@@ -520,6 +527,8 @@ async fn model_test(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, C
         &[],
         "2026-10-16",
         "UTC",
+        &[],
+        0,
     );
     let started = std::time::Instant::now();
     match processing::timed_ask(mailboxes.global(), &http, &provider, &ask).await {
@@ -784,7 +793,8 @@ struct Unattended {
     instruction_id: String,
     server_id: String,
     tool: String,
-    unattended: bool,
+    unattended: Option<bool>,
+    lookup: Option<bool>,
     version: Option<u64>,
 }
 
@@ -799,9 +809,15 @@ async fn set_unattended(
         server_id,
         tool,
         unattended,
+        lookup,
         version,
         ..
     } = args;
+    if unattended.is_none() && lookup.is_none() {
+        return Err(failed(
+            "Say whether it runs unattended, or is a lookup, or both.",
+        ));
+    }
     let list = instructions::change_list(&mailbox, &device, version, move |list| {
         let use_ = list
             .instructions
@@ -813,7 +829,12 @@ async fn set_unattended(
                     .find(|t| t.server_id == server_id && t.tool == tool)
             })
             .ok_or("That instruction names no such tool.")?;
-        use_.unattended = unattended;
+        if let Some(unattended) = unattended {
+            use_.unattended = unattended;
+        }
+        if let Some(lookup) = lookup {
+            use_.lookup = lookup;
+        }
         Ok(())
     })
     .await
@@ -992,8 +1013,8 @@ pub(crate) fn register(
                     "actions": actions,
                     "tools": {
                         "type": "array",
-                        "maxItems": 5,
-                        "description": "The outside tools it may call, from mcp_servers.tools on the processing device, each with the inputs the instruction fixes, which the model cannot change. Left out, those it has stay. A tool added asks before each call until the person, in Brolga's window, lets it run unattended.",
+                        "maxItems": 8,
+                        "description": "The outside tools it may call, from mcp_servers.tools on the processing device, each with the inputs the instruction fixes, which the model cannot change. Left out, those it has stay. A tool added asks before each call until the person, in Brolga's window, lets it run unattended or makes it a lookup (mail.instructions.tools.set_unattended).",
                         "items": {
                             "type": "object",
                             "properties": { "server_id": { "type": "string" }, "tool": { "type": "string" }, "fixed": { "type": "object" } },
@@ -1560,7 +1581,8 @@ pub(crate) fn register(
             id: "mail.instructions.tools.set_unattended".to_owned(),
             title: "Let an instruction call a tool without asking".to_owned(),
             description: format!(
-                "Let one instruction call one of its tools without asking first, or make it ask again. Only the person can do this, in Brolga's window: an agent never can. {WHAT}"
+                "Let one instruction call one of its tools without asking first, or make it ask again (`unattended`); or make the tool a lookup (`lookup`): one that only reads, \
+                 which the model may call before it decides, without asking, and see what it returns. Only the person can do either, in Brolga's window: an agent never can. {WHAT}"
             ),
             kind: CommandKind::Action,
             consequential: true,
@@ -1569,9 +1591,9 @@ pub(crate) fn register(
                 "type": "object",
                 "properties": {
                     "account_id": account_id, "instruction_id": { "type": "string" }, "server_id": { "type": "string" },
-                    "tool": { "type": "string" }, "unattended": { "type": "boolean" }, "version": version
+                    "tool": { "type": "string" }, "unattended": { "type": "boolean" }, "lookup": { "type": "boolean" }, "version": version
                 },
-                "required": ["instruction_id", "server_id", "tool", "unattended"],
+                "required": ["instruction_id", "server_id", "tool"],
                 "additionalProperties": false
             }),
             result_schema: list_shown(json!({})),

@@ -23,9 +23,11 @@ pub struct ToolCallRow {
     pub outcome: String,
     pub run_id: Option<String>,
     pub changed_at: i64,
+    /// JSON: what each step made so far returned.
+    pub progress: String,
 }
 
-const COLUMNS: &str = "id, approval_id, message_id, server_id, tool, call, state, attempts, next_try, outcome, run_id, changed_at";
+const COLUMNS: &str = "id, approval_id, message_id, server_id, tool, call, state, attempts, next_try, outcome, run_id, changed_at, progress";
 
 fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolCallRow> {
     Ok(ToolCallRow {
@@ -41,16 +43,17 @@ fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolCallRow> {
         outcome: row.get(9)?,
         run_id: row.get(10)?,
         changed_at: row.get(11)?,
+        progress: row.get(12)?,
     })
 }
 
 impl AccountDb {
     pub fn add_tool_call(&self, call: &ToolCallRow) -> Result<(), StoreError> {
         self.connection().execute(
-            &format!("INSERT INTO tool_calls ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())"),
+            &format!("INSERT INTO tool_calls ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch(), ?12)"),
             params![
                 call.id, call.approval_id, call.message_id, call.server_id, call.tool, call.call, call.state,
-                call.attempts, call.next_try, call.outcome, call.run_id
+                call.attempts, call.next_try, call.outcome, call.run_id, call.progress
             ],
         )?;
         Ok(())
@@ -115,6 +118,15 @@ impl AccountDb {
         Ok(())
     }
 
+    /// What the steps made so far returned: written as each is made.
+    pub fn set_tool_call_progress(&self, id: &str, progress: &str) -> Result<(), StoreError> {
+        self.connection().execute(
+            "UPDATE tool_calls SET progress = ?2, changed_at = unixepoch() WHERE id = ?1",
+            [id, progress],
+        )?;
+        Ok(())
+    }
+
     pub fn set_tool_call_approval(&self, id: &str, approval_id: &str) -> Result<(), StoreError> {
         self.connection().execute(
             "UPDATE tool_calls SET approval_id = ?2, changed_at = unixepoch() WHERE id = ?1",
@@ -158,8 +170,15 @@ mod tests {
             outcome: String::new(),
             run_id: None,
             changed_at: 0,
+            progress: "[]".to_owned(),
         })
         .unwrap();
+        db.set_tool_call_progress("c1", r#"[{"text":"made"}]"#)
+            .unwrap();
+        assert_eq!(
+            db.tool_call("c1").unwrap().unwrap().progress,
+            r#"[{"text":"made"}]"#
+        );
         db.set_tool_call_approval("c1", "a1").unwrap();
         assert_eq!(db.tool_call_by_approval("a1").unwrap().unwrap().id, "c1");
         db.tool_call_calling("c1").unwrap();

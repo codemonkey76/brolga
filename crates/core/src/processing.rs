@@ -15,7 +15,7 @@ use brolga_ai::{AiError, Provider};
 use brolga_store::{AgentLogEntry, Body, MessageRow};
 use serde_json::{Value, json};
 
-use crate::deciding::{Decided, NotDone, Plan, Step};
+use crate::deciding::{Decided, Looked, MOST_LOOKUPS, NotDone, Plan, Step};
 use crate::device::Device;
 use crate::instructions::{self, ModelChoice, Settings, Trouble};
 use crate::mailboxes::{Mailbox, Mailboxes};
@@ -357,18 +357,28 @@ async fn one(
     } else {
         Vec::new()
     };
-    let ask = plan.ask(message, &body, &attachments, day, zone);
-
-    let answer = match timed_ask(mailboxes.global(), http, provider, &ask).await {
-        Ok(answer) => {
+    let asked = ask_looking(
+        mailboxes,
+        account_id,
+        http,
+        provider,
+        plan,
+        message,
+        &body,
+        &attachments,
+        (day, zone),
+        |answer| {
             let _ = mailbox.db.count_instruction_request(
                 day,
                 provider.name(),
                 i64::try_from(answer.input_tokens).unwrap_or(i64::MAX),
                 i64::try_from(answer.output_tokens).unwrap_or(i64::MAX),
             );
-            answer
-        }
+        },
+    )
+    .await;
+    let (answer, looked, lookups_refused) = match asked {
+        Ok(asked) => asked,
         Err(AiError::Busy { retry_after }) => {
             let until = now_secs() + i64::try_from(retry_after.unwrap_or(60)).unwrap_or(60);
             let _ = mailbox.db.set_setting(PAUSED_UNTIL, &until.to_string());
@@ -410,7 +420,8 @@ async fn one(
         }
     };
 
-    let (decided, not_done) = plan.decide(&answer.value);
+    let (decided, mut not_done) = plan.decide(&answer.value, &looked);
+    not_done.extend(lookups_refused);
     for each in &not_done {
         refused(mailboxes.global(), account_id, message, provider, each);
     }
@@ -421,21 +432,17 @@ async fn one(
     for each in steps {
         // An outside tool is called, or put up for approval, by itself.
         if let Step::CallTool {
-            server_id,
-            server,
-            tool,
-            inputs,
+            calls,
             unattended,
+            looked,
         } = &each.step
         {
             let proposal = crate::calls::Proposal {
                 message,
                 instruction_id: &each.instruction_id,
                 instruction: &each.instruction,
-                server_id,
-                server,
-                tool,
-                inputs,
+                calls,
+                looked,
                 unattended: *unattended,
                 reason: &each.reason,
                 run_id: None,
@@ -723,6 +730,43 @@ fn shown_time(secs: i64) -> String {
 
 /// Ask, and keep a running average of how long the model takes to
 /// answer, for saying how long a run would take.
+/// Ask about one message, letting the model look things up first: each
+/// lookup it asks for that its instruction allows is made here, without
+/// asking, and the model is asked again with what it returned, until it
+/// asks for none or `MOST_LOOKUPS` have been made. Each answer is passed to
+/// `counted`. Gives back the last answer, the lookups made, and those
+/// refused.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ask_looking(
+    mailboxes: &Mailboxes,
+    account_id: &str,
+    http: &reqwest::Client,
+    provider: &Provider,
+    plan: &Plan,
+    message: &MessageRow,
+    body: &str,
+    attachments: &[String],
+    (day, zone): (&str, &str),
+    mut counted: impl FnMut(&brolga_ai::Answer),
+) -> Result<(brolga_ai::Answer, Vec<Looked>, Vec<NotDone>), AiError> {
+    let mut looked: Vec<Looked> = Vec::new();
+    let mut refused = Vec::new();
+    loop {
+        let left = MOST_LOOKUPS.saturating_sub(looked.len());
+        let ask = plan.ask(message, body, attachments, day, zone, &looked, left);
+        let answer = timed_ask(mailboxes.global(), http, provider, &ask).await?;
+        counted(&answer);
+        let (wanted, not) = plan.lookups(&answer.value, left);
+        refused.extend(not);
+        if wanted.is_empty() {
+            return Ok((answer, looked, refused));
+        }
+        for each in &wanted {
+            looked.push(crate::calls::lookup(mailboxes, account_id, message, each).await);
+        }
+    }
+}
+
 pub(crate) async fn timed_ask(
     global: &brolga_store::GlobalDb,
     http: &reqwest::Client,

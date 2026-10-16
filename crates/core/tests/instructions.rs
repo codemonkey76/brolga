@@ -311,7 +311,7 @@ async fn a_list_written_by_a_newer_brolga_is_neither_read_nor_written_over() {
     let f = Fixture::two_devices().await;
     run(&f.titan, "mail.instructions.set", telstra()).await;
     let settings = f.settings();
-    let newer = r#"{"format":3,"version":9,"enabled":true,"instructions":[],"tools":[]}"#;
+    let newer = r#"{"format":4,"version":9,"enabled":true,"instructions":[],"tools":[]}"#;
     f.graph.set_message_property(&settings, INSTRUCTIONS, newer);
 
     let error = refused(&f.laptop, "mail.instructions.list", json!({})).await;

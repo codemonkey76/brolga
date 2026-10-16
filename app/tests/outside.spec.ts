@@ -35,7 +35,7 @@ test("an outside tool server is added, signed in to with the browser or a token,
 const helpdesk = { id: "mcp-1", name: "Helpdesk", url: "https://helpdesk.example.com/mcp/helpdesk", signed_in: "token", tools: 2, tools_read_at: null };
 const processor = { device_id: "device-here", device_name: "titan", since: "2026-10-15T08:00:00Z" };
 
-test("an instruction is given a tool with an input fixed, and is let run unattended only by a click", async ({ page }) => {
+test("an instruction is given a tool with an input fixed, and how it uses the tool is chosen in the window", async ({ page }) => {
     const instructions = [{ id: "i-1", name: "Support", text: "A support request becomes a helpdesk ticket.", enabled: true, actions: ["set_read"] }];
     await withCore(page, { accounts: [robin], instructions, instructionsProcessor: processor, mcpServers: [helpdesk] });
     await page.getByRole("button", { name: "Settings" }).click();
@@ -60,16 +60,20 @@ test("an instruction is given a tool with an input fixed, and is let run unatten
     });
 
     const row = section.getByRole("listitem").filter({ hasText: "Support" });
-    await expect(row).toContainText("Helpdesk create_ticket: asks first");
-    await row.getByRole("button", { name: "Let it run unattended" }).click();
-    await expect(row).toContainText("Helpdesk create_ticket: called without asking");
-    expect((await ran(page)).find((r) => r.command === "mail.instructions.tools.set_unattended")?.args).toMatchObject({ instruction_id: "i-1", server_id: "mcp-1", tool: "create_ticket", unattended: true });
+    const use = row.getByRole("combobox", { name: "How Support uses create_ticket" });
+    await expect(use).toHaveValue("ask");
+    await use.selectOption("unattended");
+    await expect(use).toHaveValue("unattended");
+    expect((await ran(page)).filter((r) => r.command === "mail.instructions.tools.set_unattended").at(-1)?.args).toMatchObject({ instruction_id: "i-1", server_id: "mcp-1", tool: "create_ticket", unattended: true, lookup: false });
+    await use.selectOption("lookup");
+    await expect(use).toHaveValue("lookup");
+    expect((await ran(page)).filter((r) => r.command === "mail.instructions.tools.set_unattended").at(-1)?.args).toMatchObject({ unattended: false, lookup: true });
 });
 
 test("a call waiting for approval is shown with what it would send, and approved or rejected", async ({ page }) => {
     const call = (id: string, subject: string) => ({
         id, state: "waiting", note: null, decided_by: null, decided_at: null, subject, from: "sam@example.test", message_id: "m-1",
-        instruction: "Support", server: "Helpdesk", tool: "create_ticket", inputs: { client_id: 7, subject }, reason: "A support request.", outcome: null,
+        instruction: "Support", steps: [{ server: "Helpdesk", tool: "create_ticket", inputs: { client_id: 7, subject } }], looked: [], reason: "A support request.", outcome: null,
     });
     const instructions = [{ id: "i-1", name: "Support", text: "A support request becomes a helpdesk ticket.", enabled: true, actions: ["call_tool"] }];
     // On a computer that does not carry out the instructions: approvals are made from any.
@@ -81,6 +85,7 @@ test("a call waiting for approval is shown with what it would send, and approved
     const printer = waiting.getByRole("listitem", { name: "Helpdesk create_ticket for Printer jammed" });
     await expect(printer).toContainText("client_id 7");
 
+
     await expect(waiting.getByRole("button", { name: "Approve all" })).toBeVisible();
     await printer.getByRole("button", { name: "Approve", exact: true }).click();
     await waiting.getByRole("listitem", { name: "Helpdesk create_ticket for Free phones" }).getByRole("button", { name: "Reject", exact: true }).click();
@@ -90,4 +95,31 @@ test("a call waiting for approval is shown with what it would send, and approved
     await page.getByText("Calls decided").click();
     await expect(page.getByRole("list", { name: "Calls decided" })).toContainText("Approved, waiting for laptop");
     await expect(page.getByRole("list", { name: "Calls decided" })).toContainText("Rejected");
+});
+
+test("a plan of calls is shown step by step, with what was looked up first and where a step takes an earlier one's value", async ({ page }) => {
+    const from = (step: number) => ({ from_step: step, field: "id" });
+    const plan = {
+        id: "a-1", state: "waiting", note: null, decided_by: null, decided_at: null, subject: "Help", from: "sam@newco.example", message_id: "m-1",
+        instruction: "Support", reason: "A support request.", outcome: null,
+        steps: [
+            { server: "Helpdesk", tool: "create_client", inputs: { name: "NewCo" } },
+            { server: "Helpdesk", tool: "create_client_user", inputs: { client_id: from(1), name: "Sam", email: "sam@newco.example" } },
+            { server: "Helpdesk", tool: "create_ticket", inputs: { client_id: from(1), user_id: from(2), subject: "Printer jammed" } },
+        ],
+        looked: [{ server: "Helpdesk", tool: "list_clients", inputs: { contact_email: "sam@newco.example" }, ok: true, result: '{"data":[]}' }],
+    };
+    const instructions = [{ id: "i-1", name: "Support", text: "Requests become tickets.", enabled: true, actions: ["call_tool"] }];
+    await withCore(page, { accounts: [robin], instructions, instructionsProcessor: processor, approvals: [plan] });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+    const item = page.getByRole("listitem", { name: "Helpdesk create_client, then Helpdesk create_client_user, then Helpdesk create_ticket for Help" });
+    const steps = item.getByRole("list", { name: "Steps" }).getByRole("listitem");
+    await expect(steps).toHaveCount(3);
+    await expect(steps.nth(1)).toContainText("client_id what step 1 returns (id)");
+    await expect(steps.nth(2)).toContainText("user_id what step 2 returns (id)");
+    await item.getByText("Looked up first (1)").click();
+    await expect(item.getByRole("list", { name: "Looked up first" })).toContainText('list_clients {"contact_email":"sam@newco.example"}');
+    await item.getByRole("button", { name: "Approve", exact: true }).click();
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.approvals.decide")?.args).toMatchObject({ approval_id: "a-1", approve: true });
 });

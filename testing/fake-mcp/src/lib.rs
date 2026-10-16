@@ -34,6 +34,10 @@ struct Inner {
     refreshed: u32,
     /// Give out tokens that are good for so many seconds.
     lifetime: Option<u64>,
+    /// What a tool answers, as JSON, in place of the usual line.
+    answers: HashMap<String, Value>,
+    /// Tools that say they failed, with what they say.
+    failing: HashMap<String, String>,
 }
 
 #[derive(Clone, Default)]
@@ -119,6 +123,44 @@ impl FakeMcp {
         lock(&self.shared).tokens.clear();
     }
 
+    /// Offer these tools in place of the two it starts with.
+    pub fn set_tools(&self, tools: Vec<Value>) {
+        lock(&self.shared).tools = tools;
+    }
+
+    /// The four tools a helpdesk has for making a ticket for whoever wrote:
+    /// find a client and its contacts, make a client, make a contact, make
+    /// a ticket.
+    pub fn helpdesk_tools(&self) {
+        self.set_tools(vec![
+            json!({ "name": "list_clients", "description": "List clients with their contacts.",
+                "inputSchema": { "type": "object", "properties": { "contact_email": { "type": "string" }, "search": { "type": "string" } } } }),
+            json!({ "name": "create_client", "description": "Make a client.",
+                "inputSchema": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"] } }),
+            json!({ "name": "create_client_user", "description": "Make a contact of a client.",
+                "inputSchema": { "type": "object", "properties": {
+                    "client_id": { "type": "integer" }, "name": { "type": "string" }, "email": { "type": "string" }
+                }, "required": ["client_id", "name", "email"] } }),
+            json!({ "name": "create_ticket", "description": "Open a ticket.",
+                "inputSchema": { "type": "object", "properties": {
+                    "client_id": { "type": "integer" }, "user_id": { "type": "integer" }, "subject": { "type": "string" },
+                    "description": { "type": "string" }, "assigned_agent_id": { "type": "integer" }
+                }, "required": ["client_id", "user_id", "subject", "description"] } }),
+        ]);
+    }
+
+    /// Have a tool answer with this, as JSON text.
+    pub fn answer(&self, tool: &str, answer: Value) {
+        lock(&self.shared).answers.insert(tool.to_owned(), answer);
+    }
+
+    /// Have a tool say it failed, with this.
+    pub fn fail(&self, tool: &str, said: &str) {
+        lock(&self.shared)
+            .failing
+            .insert(tool.to_owned(), said.to_owned());
+    }
+
     /// The tool calls made: name and arguments.
     pub fn calls(&self) -> Vec<(String, Value)> {
         lock(&self.shared).calls.clone()
@@ -194,7 +236,14 @@ async fn mcp(
             let name = body["params"]["name"].as_str().unwrap_or_default().to_owned();
             let arguments = body["params"]["arguments"].clone();
             inner.calls.push((name.clone(), arguments));
-            answer(json!({ "content": [{ "type": "text", "text": format!("{name} done: TKT-01234") }], "isError": false }))
+            if let Some(said) = inner.failing.get(&name) {
+                return answer(json!({ "content": [{ "type": "text", "text": said }], "isError": true }));
+            }
+            let text = match inner.answers.get(&name) {
+                Some(given) => given.to_string(),
+                None => format!("{name} done: TKT-01234"),
+            };
+            answer(json!({ "content": [{ "type": "text", "text": text }], "isError": false }))
         }
         // An older server has no `server/discover`.
         _ => axum::Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "Method not found" } }))

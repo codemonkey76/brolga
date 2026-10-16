@@ -14,6 +14,7 @@ use std::sync::Arc;
 use brolga_store::{MessageRow, ToolCallRow};
 use serde_json::{Value, json};
 
+use crate::deciding::{Looked, Lookup, ToolStep, reference, resolve};
 use crate::device::Device;
 use crate::instructions::{self, property};
 use crate::mailboxes::{Mailbox, Mailboxes};
@@ -54,22 +55,21 @@ fn secs() -> i64 {
     jiff::Timestamp::now().as_second()
 }
 
-/// A call an instruction's answer asks for.
+/// A plan of calls an instruction's answer asks for.
 pub(crate) struct Proposal<'a> {
     pub message: &'a MessageRow,
     pub instruction_id: &'a str,
     pub instruction: &'a str,
-    pub server_id: &'a str,
-    pub server: &'a str,
-    pub tool: &'a str,
-    pub inputs: &'a serde_json::Map<String, Value>,
+    pub calls: &'a [ToolStep],
+    /// The lookups made before it was decided, shown with it.
+    pub looked: &'a [Looked],
     pub unattended: bool,
     pub reason: &'a str,
     /// A run over existing mail being applied, which is its approval.
     pub run_id: Option<&'a str>,
 }
 
-/// The call as it is put up, and kept: all a person needs to judge it.
+/// The plan as it is put up, and kept: all a person needs to judge it.
 fn call_json(account_id: &str, p: &Proposal<'_>) -> String {
     json!({
         "mailbox": account_id,
@@ -78,16 +78,28 @@ fn call_json(account_id: &str, p: &Proposal<'_>) -> String {
         "from": p.message.from_address,
         "instruction_id": p.instruction_id,
         "instruction": p.instruction,
-        "server_id": p.server_id,
-        "server": p.server,
-        "tool": p.tool,
-        "inputs": p.inputs,
+        "steps": p.calls,
+        "looked": p.looked,
         "reason": p.reason,
     })
     .to_string()
 }
 
-/// Put a call up, or make it where it need not ask. Gives back what
+/// The steps of a plan as it was put up. One put up by Brolga 0.1.21 is
+/// a single call.
+fn steps_of(call: &Value) -> Vec<ToolStep> {
+    match serde_json::from_value::<Vec<ToolStep>>(call["steps"].clone()) {
+        Ok(steps) => steps,
+        Err(_) => vec![ToolStep {
+            server_id: call["server_id"].as_str().unwrap_or_default().to_owned(),
+            server: call["server"].as_str().unwrap_or_default().to_owned(),
+            tool: call["tool"].as_str().unwrap_or_default().to_owned(),
+            inputs: call["inputs"].as_object().cloned().unwrap_or_default(),
+        }],
+    }
+}
+
+/// Put a plan up, or make it where it need not ask. Gives back what
 /// became of it: `waiting`, or what making it came to.
 pub(crate) async fn propose(
     mailboxes: &Mailboxes,
@@ -96,12 +108,13 @@ pub(crate) async fn propose(
     p: &Proposal<'_>,
 ) -> Result<String, String> {
     let local = |e: brolga_store::StoreError| e.to_string();
+    let first = p.calls.first().ok_or("A plan with no calls.")?;
     let row = ToolCallRow {
         id: format!("call-{}", crate::device::random_id(8)?),
         approval_id: String::new(),
         message_id: p.message.id.clone(),
-        server_id: p.server_id.to_owned(),
-        tool: p.tool.to_owned(),
+        server_id: first.server_id.clone(),
+        tool: first.tool.clone(),
         call: call_json(account_id, p),
         state: "waiting".to_owned(),
         attempts: 0,
@@ -109,6 +122,7 @@ pub(crate) async fn propose(
         outcome: String::new(),
         run_id: p.run_id.map(str::to_owned),
         changed_at: 0,
+        progress: "[]".to_owned(),
     };
     mailbox.db.add_tool_call(&row).map_err(local)?;
     if p.unattended || p.run_id.is_some() {
@@ -121,6 +135,63 @@ pub(crate) async fn propose(
         .map_err(local)?;
 
     Ok("waiting".to_owned())
+}
+
+/// Make a lookup the model asked for, without asking: it only reads. What
+/// it returned goes back to the model.
+pub(crate) async fn lookup(
+    mailboxes: &Mailboxes,
+    account_id: &str,
+    message: &MessageRow,
+    wanted: &Lookup,
+) -> Looked {
+    let server = crate::tool_commands::all_servers(mailboxes)
+        .into_iter()
+        .find(|s| s.id == wanted.server_id);
+    let (ok, result) = match server {
+        None => (
+            false,
+            format!(
+                "The server {} is not set up on this computer.",
+                wanted.server
+            ),
+        ),
+        Some(server) => match brolga_tools::call(
+            mailboxes.ai.secrets.clone(),
+            &server,
+            &wanted.tool,
+            wanted.inputs.clone(),
+        )
+        .await
+        {
+            Ok(called) => (called.ok, called.text),
+            Err(e) => (false, e.to_string()),
+        },
+    };
+    let args = json!({
+        "mailbox": account_id, "message_id": message.id, "subject": message.subject, "from": message.from_address,
+        "instruction_id": wanted.instruction_id, "server": wanted.server, "tool": wanted.tool, "inputs": wanted.inputs,
+        "undo_command": null,
+    });
+    let _ = mailboxes
+        .global()
+        .log_agent_command(&brolga_store::AgentLogEntry {
+            at: String::new(),
+            client: crate::processing::CLIENT.to_owned(),
+            command: "tools.lookup".to_owned(),
+            args: args.to_string(),
+            outcome: if ok { "ok" } else { "failed" }.to_owned(),
+            detail: result.chars().take(2_000).collect(),
+        });
+
+    Looked {
+        instruction_id: wanted.instruction_id.clone(),
+        server: wanted.server.clone(),
+        tool: wanted.tool.clone(),
+        inputs: wanted.inputs.clone(),
+        ok,
+        result,
+    }
 }
 
 /// The approvals folder, found or made.
@@ -163,7 +234,7 @@ async fn put_up(mailbox: &Mailbox, call: &str, decision: Value) -> Result<String
         .create_message_in(
             &folder,
             &json!({
-                "subject": format!("Brolga: {} {} waits for approval", shown["server"].as_str().unwrap_or_default(), shown["tool"].as_str().unwrap_or_default()),
+                "subject": format!("Brolga: {} waits for approval", steps_of(&shown).iter().map(|s| format!("{} {}", s.server, s.tool)).collect::<Vec<_>>().join(", then ")),
                 "body": { "contentType": "text", "content": EXPLAINED },
                 "singleValueExtendedProperties": [
                     { "id": call_property(), "value": call },
@@ -177,48 +248,118 @@ async fn put_up(mailbox: &Mailbox, call: &str, decision: Value) -> Result<String
     Ok(made.id)
 }
 
-/// Make a call, written down first. Gives back what it came to.
+/// Make a plan's steps in order, each written down first, from the first
+/// not yet made, filling each input that stands for an earlier step's
+/// value from what that step returned. Gives back what it came to. A step
+/// that fails stops the plan: those after it are not made.
 async fn make(mailboxes: &Mailboxes, mailbox: &Mailbox, row: &ToolCallRow) -> String {
     let call: Value = serde_json::from_str(&row.call).unwrap_or(Value::Null);
-    let say = |state: &str, outcome: &str, next_try: i64| {
-        let _ = mailbox.db.set_tool_call(&row.id, state, outcome, next_try);
-    };
-    let Some(server) = crate::tool_commands::all_servers(mailboxes)
-        .into_iter()
-        .find(|s| s.id == row.server_id)
-    else {
-        let why = format!(
-            "The server {} is not set up on this computer.",
-            call["server"].as_str().unwrap_or_default()
-        );
-        say("failed", &why, 0);
-        record(mailboxes, &call, "failed", &why);
-        outcome(mailbox, row, "failed", &why).await;
-        return "failed".to_owned();
-    };
+    let steps = steps_of(&call);
+    let mut progress: Vec<Value> = serde_json::from_str(&row.progress).unwrap_or_default();
     if mailbox.db.tool_call_calling(&row.id).is_err() {
         return "failed".to_owned();
     }
-    let inputs = call["inputs"].as_object().cloned().unwrap_or_default();
-    let (state, text) =
-        match brolga_tools::call(mailboxes.ai.secrets.clone(), &server, &row.tool, inputs).await {
-            Ok(called) if called.ok => ("done", called.text),
-            Ok(called) => ("failed", called.text),
-            // Not reached: tried again later, a few times.
+    for (at, step) in steps.iter().enumerate().skip(progress.len()) {
+        let n = at + 1;
+        let Some(server) = crate::tool_commands::all_servers(mailboxes)
+            .into_iter()
+            .find(|s| s.id == step.server_id)
+        else {
+            let why = format!(
+                "Step {n}: the server {} is not set up on this computer.",
+                step.server
+            );
+            return finish(mailbox, row, &progress, "failed", &why).await;
+        };
+        let mut inputs = step.inputs.clone();
+        for (name, value) in &mut inputs {
+            if let Some((from, field)) = reference(value) {
+                match progress
+                    .get(from.wrapping_sub(1))
+                    .and_then(|p| resolve(&p["value"], field))
+                {
+                    Some(found) => *value = found,
+                    None => {
+                        let why = format!(
+                            "Step {n} ({}) needs `{name}` from what step {from} returned, as `{field}`, and it gave none, so it was not made.",
+                            step.tool
+                        );
+                        return finish(mailbox, row, &progress, "failed", &why).await;
+                    }
+                }
+            }
+        }
+        match brolga_tools::call(
+            mailboxes.ai.secrets.clone(),
+            &server,
+            &step.tool,
+            inputs.clone(),
+        )
+        .await
+        {
+            Ok(called) if called.ok => {
+                record(mailboxes, &call, step, &inputs, "ok", &called.text);
+                progress
+                    .push(json!({ "tool": step.tool, "text": called.text, "value": called.value }));
+                let _ = mailbox
+                    .db
+                    .set_tool_call_progress(&row.id, &Value::Array(progress.clone()).to_string());
+            }
+            Ok(called) => {
+                record(mailboxes, &call, step, &inputs, "failed", &called.text);
+                let why = format!("Step {n} ({}) failed: {}", step.tool, called.text);
+                return finish(mailbox, row, &progress, "failed", &why).await;
+            }
+            // Not reached: tried again later, a few times, from this step.
             Err(e) if e.is_transient() && row.attempts + 1 < TRIES => {
                 let wait = 300_i64 << row.attempts.min(6);
-                say("retry", &e.to_string(), secs() + wait);
+                let _ = mailbox
+                    .db
+                    .set_tool_call(&row.id, "retry", &e.to_string(), secs() + wait);
                 return "retry".to_owned();
             }
-            Err(e) => ("failed", e.to_string()),
-        };
-    say(state, &text, 0);
-    record(
-        mailboxes,
-        &call,
-        if state == "done" { "ok" } else { "failed" },
-        &text,
-    );
+            Err(e) => {
+                record(mailboxes, &call, step, &inputs, "failed", &e.to_string());
+                let why = format!("Step {n} ({}) failed: {e}", step.tool);
+                return finish(mailbox, row, &progress, "failed", &why).await;
+            }
+        }
+    }
+
+    finish(mailbox, row, &progress, "done", "").await
+}
+
+/// What a plan came to, kept here and written on its item: what each step
+/// made returned, and why it stopped where it did.
+async fn finish(
+    mailbox: &Mailbox,
+    row: &ToolCallRow,
+    progress: &[Value],
+    state: &str,
+    why: &str,
+) -> String {
+    let mut text: Vec<String> = progress
+        .iter()
+        .enumerate()
+        .map(|(at, p)| {
+            format!(
+                "{}. {}: {}",
+                at + 1,
+                p["tool"].as_str().unwrap_or_default(),
+                p["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(600)
+                    .collect::<String>()
+            )
+        })
+        .collect();
+    if !why.is_empty() {
+        text.push(why.to_owned());
+    }
+    let text = text.join("\n");
+    let _ = mailbox.db.set_tool_call(&row.id, state, &text, 0);
     outcome(mailbox, row, state, &text).await;
 
     state.to_owned()
@@ -236,12 +377,19 @@ async fn outcome(mailbox: &Mailbox, row: &ToolCallRow, state: &str, text: &str) 
         .await;
 }
 
-/// Write a call to the agent log.
-fn record(mailboxes: &Mailboxes, call: &Value, outcome: &str, detail: &str) {
+/// Write a step of a plan to the agent log, with the inputs it was made with.
+fn record(
+    mailboxes: &Mailboxes,
+    call: &Value,
+    step: &ToolStep,
+    inputs: &serde_json::Map<String, Value>,
+    outcome: &str,
+    detail: &str,
+) {
     let args = json!({
         "mailbox": call["mailbox"], "message_id": call["message_id"], "subject": call["subject"], "from": call["from"],
         "instruction_id": call["instruction_id"], "instruction": call["instruction"],
-        "server": call["server"], "tool": call["tool"], "inputs": call["inputs"],
+        "server": step.server, "tool": step.tool, "inputs": inputs,
         "undo_command": null,
     });
     let _ = mailboxes
@@ -256,8 +404,9 @@ fn record(mailboxes: &Mailboxes, call: &Value, outcome: &str, detail: &str) {
         });
 }
 
-/// Whether the instruction that put a call up still names its tool, on,
-/// with the inputs it fixes as the call has them.
+/// Whether the instruction that put a plan up still names each of its
+/// tools, on and not as a lookup, with the inputs it fixes as the plan has
+/// them.
 fn still_allowed(list: &instructions::List, call: &str) -> bool {
     let call: Value = serde_json::from_str(call).unwrap_or(Value::Null);
     let Some(instruction) = list
@@ -272,12 +421,13 @@ fn still_allowed(list: &instructions::List, call: &str) -> bool {
         && instruction
             .actions
             .contains(&instructions::Action::CallTool)
-        && instruction.tools.iter().any(|t| {
-            call["server_id"].as_str() == Some(t.server_id.as_str())
-                && call["tool"].as_str() == Some(t.tool.as_str())
-                && t.fixed
-                    .iter()
-                    .all(|(k, v)| call["inputs"].get(k) == Some(v))
+        && steps_of(&call).iter().all(|step| {
+            instruction.tools.iter().any(|t| {
+                !t.lookup
+                    && step.server_id == t.server_id
+                    && step.tool == t.tool
+                    && t.fixed.iter().all(|(k, v)| step.inputs.get(k) == Some(v))
+            })
         })
 }
 
@@ -362,8 +512,8 @@ pub(crate) async fn list(mailbox: &Mailbox) -> Result<Vec<Value>, String> {
                 "decided_by": item.decision["by"],
                 "decided_at": item.decision["at"],
                 "subject": call["subject"], "from": call["from"], "message_id": call["message_id"],
-                "instruction": call["instruction"], "server": call["server"], "tool": call["tool"],
-                "inputs": call["inputs"], "reason": call["reason"],
+                "instruction": call["instruction"], "reason": call["reason"],
+                "steps": steps_of(&call), "looked": call["looked"],
                 "outcome": item.outcome,
             })
         })
