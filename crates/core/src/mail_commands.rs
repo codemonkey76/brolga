@@ -298,7 +298,10 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             if let Ok(device) = crate::device::this(context.mailboxes.global())
                 && let Ok(true) = crate::instructions::on_sync(&mailbox, &device).await
             {
-                // The mail that came is dealt with after, without holding the sync up.
+                // The mail that came is dealt with after, without holding the
+                // sync up; and a run over existing mail carries on, after a
+                // restart or a time out of reach.
+                crate::runs::soon(context.mailboxes.clone(), account.id.clone(), mailbox.clone(), device.clone());
                 crate::processing::soon(context.mailboxes.clone(), account.id.clone(), mailbox.clone(), device);
             }
             Ok::<_, String>(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts)))

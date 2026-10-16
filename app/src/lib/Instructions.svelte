@@ -1,5 +1,6 @@
 <script lang="ts">
     import { execute, say } from "./commands";
+    import InstructionRun from "./InstructionRun.svelte";
 
     interface Props {
         accountId: string;
@@ -302,7 +303,6 @@
     <p class="muted">
         Instructions are written in plain words, such as “Invoices from Telstra go in Accounts/Telstra”. An AI model reads each message arriving in the inbox and does what the instructions that fit it allow. They are kept in the mailbox, so every computer signed in to it shows the same list, and they are carried out by one computer you choose.
     </p>
-    <p class="muted">Running the instructions over mail already in the mailbox comes in a later version.</p>
     {#if problem}
         <p class="problem" role="alert">{problem}</p>
     {/if}
@@ -453,6 +453,10 @@
                     <button type="button" disabled={busy || !status.ready} onclick={processNow}>Deal with new mail now</button>
                 </div>
             </div>
+        {/if}
+
+        {#if listed.processing_here && status?.ready}
+            <InstructionRun {accountId} />
         {/if}
 
         {#if entries.length > 0}

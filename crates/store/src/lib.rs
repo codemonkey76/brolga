@@ -15,6 +15,7 @@ mod global;
 mod marks;
 mod migrate;
 mod ops;
+mod runs;
 
 pub use account::{
     AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, InlineImage,
@@ -27,6 +28,7 @@ pub use drafts::{Draft, DraftEdit, DraftFile};
 pub use global::{Account, AgentLogEntry, GlobalDb};
 pub use marks::{Mark, Usage};
 pub use ops::{FailedOp, MessageEdit, Op};
+pub use runs::{RunItemRow, RunRow};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

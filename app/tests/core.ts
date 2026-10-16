@@ -381,6 +381,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         let chosenModel: { provider: string | null; model: string | null; cloud_consent: boolean } = core.instructionsModel ?? { provider: null, model: null, cloud_consent: false };
         let keySaved = false;
         let ollamaAt = "http://localhost:11434";
+        /** The latest run over existing mail, as the core would keep it. */
+        let instructionRun: Record<string, unknown> | null = null;
+        const runItems = [
+            { message_id: "m-1", subject: "Your Telstra bill", from: { name: "Telstra", address: "bills@telstra.example" }, received_at: "2026-09-05T09:00:00Z", state: "decided", decisions: [{ action: "move", folder: "Accounts/Telstra", instruction: "Telstra", reason: "A Telstra bill." }], refused: [], error: null },
+            { message_id: "m-2", subject: "Telstra: payment received", from: { name: "Telstra", address: "bills@telstra.example" }, received_at: "2026-09-08T09:00:00Z", state: "decided", decisions: [{ action: "move", folder: "Accounts/Telstra", instruction: "Telstra", reason: "From Telstra." }], refused: [], error: null },
+        ];
         const modelShown = () => ({ ...chosenModel, key_saved: keySaved, ollama_address: ollamaAt, default_anthropic_model: "claude-haiku-5-5" });
         const instructed = () => ({
             enabled: instructions.enabled,
@@ -1097,6 +1103,25 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { ready, not_ready_because: ready ? null : "Sending this mailbox's mail to Anthropic has not been agreed to.", waiting: 0, failed: 0, today: { requests: 7 }, daily_cap: 500, last_error: null, last_pass: null, last_pass_at: null };
             },
             "mail.instructions.log": () => ({ entries: core.instructionsLog ?? [] }),
+            "mail.instructions.run.estimate": () => ({ messages: 1480, provider: "anthropic", model: "claude-haiku-5-5", estimated_cost_usd: 0.31, estimated_minutes: 19, not_synced: [] }),
+            "mail.instructions.run.preview": (args) => {
+                instructionRun = { id: "run-1", state: "previewed", folder_id: args.folder_id, total: 1480, counts: { decided: 2, nothing: 1478 }, actions: { move: 2 }, undo_until: null, error: null };
+                return { run: instructionRun };
+            },
+            "mail.instructions.run.status": () => ({ run: instructionRun }),
+            "mail.instructions.run.items": () => ({ items: runItems }),
+            "mail.instructions.run.apply": () => {
+                instructionRun = { ...instructionRun, state: "applied", counts: { applied: 2, nothing: 1478 }, undo_until: "2026-10-19T09:00:00Z" };
+                return { run: instructionRun };
+            },
+            "mail.instructions.run.cancel": () => {
+                instructionRun = { ...instructionRun, state: "cancelled" };
+                return { run: instructionRun };
+            },
+            "mail.instructions.run.undo": () => {
+                instructionRun = { ...instructionRun, state: "undone" };
+                return { undone: 2 };
+            },
             "app.device.rename": (args) => {
                 computer.name = String(args.name);
                 return { device: { ...computer } };

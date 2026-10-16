@@ -188,6 +188,40 @@ async fn every_command_is_described_and_its_examples_run() {
         .unwrap();
     registry.execute("mail.sync", json!({})).await.unwrap();
     let mut seen = 0;
+    // A run over existing mail, previewed, for the run examples to work on.
+    for (command, args) in [
+        (
+            "mail.instructions.model.set_key",
+            json!({ "key": brolga_fake_ai::KEY }),
+        ),
+        (
+            "mail.instructions.model.set",
+            json!({ "provider": "anthropic", "cloud_consent": true }),
+        ),
+        ("mail.instructions.processor.take", json!({})),
+    ] {
+        registry.execute_from_window(command, args).await.unwrap();
+    }
+    let run = registry
+        .execute_from_window(
+            "mail.instructions.run.preview",
+            json!({ "folder_id": "inbox" }),
+        )
+        .await
+        .unwrap()["run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for _ in 0..500 {
+        let status = registry
+            .execute("mail.instructions.run.status", json!({ "run_id": run }))
+            .await
+            .unwrap();
+        if status["run"]["state"] == "previewed" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     // A PST file, for `archives.import`.
     let archive = std::env::temp_dir().join(format!("brolga-gate-{}.pst", std::process::id()));
     let _ = std::fs::remove_file(&archive);
@@ -232,6 +266,9 @@ async fn every_command_is_described_and_its_examples_run() {
             let mut example = example.clone();
             if spec.id == "archives.import" {
                 example["path"] = json!(archive.to_string_lossy());
+            }
+            if example["run_id"] == "run-000000000000" {
+                example["run_id"] = json!(run);
             }
             let example = &example;
             // As the window, which may run every command there is.

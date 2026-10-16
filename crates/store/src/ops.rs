@@ -107,9 +107,12 @@ impl AccountDb {
     ) -> Result<u32, StoreError> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
-        // What was sent long enough ago is of no more use for undo.
+        // What was sent long enough ago is of no more use for undo, unless
+        // it is to be kept longer (a run of the mail instructions, say).
+        transaction.execute("DELETE FROM kept_undo WHERE until < unixepoch()", [])?;
         transaction.execute(
-            "DELETE FROM ops WHERE state = 'done' AND created_at < unixepoch() - 86400",
+            "DELETE FROM ops WHERE state = 'done' AND created_at < unixepoch() - 86400
+               AND group_id NOT IN (SELECT group_id FROM kept_undo)",
             [],
         )?;
 
@@ -120,6 +123,23 @@ impl AccountDb {
         transaction.commit()?;
 
         Ok(changed)
+    }
+
+    /// Keep what undoes these actions until `until`, in seconds since 1970,
+    /// rather than for the usual day.
+    pub fn keep_undo(&self, groups: &[String], until: i64) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        for group in groups {
+            transaction.execute(
+                "INSERT INTO kept_undo (group_id, until) VALUES (?1, ?2)
+                 ON CONFLICT (group_id) DO UPDATE SET until = max(until, ?2)",
+                params![group, until],
+            )?;
+        }
+        transaction.commit()?;
+
+        Ok(())
     }
 
     /// Count every waiting change as made. For mail with no server behind
@@ -455,6 +475,32 @@ mod tests {
 
     fn ids(ids: &[&str]) -> Vec<String> {
         ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_action_kept_for_longer_can_still_be_undone_after_a_day() {
+        let db = db();
+        db.queue_edit("everyday", &ids(&["1"]), &MessageEdit::Read(true))
+            .unwrap();
+        db.queue_edit("run", &ids(&["2"]), &MessageEdit::Read(true))
+            .unwrap();
+        db.settle_queued_ops().unwrap();
+        db.keep_undo(&ids(&["run"]), i64::MAX).unwrap();
+        // Two days on.
+        db.connection()
+            .execute("UPDATE ops SET created_at = created_at - 2 * 86400", [])
+            .unwrap();
+        // The next change is what clears what is too old.
+        db.queue_edit(
+            "later",
+            &ids(&["1"]),
+            &MessageEdit::Flag("flagged".to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(db.undo("everyday", "u1").unwrap(), 0);
+        assert_eq!(db.undo("run", "u2").unwrap(), 1);
+        assert!(!read(&db, "2"));
     }
 
     #[test]
