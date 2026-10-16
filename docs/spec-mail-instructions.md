@@ -114,16 +114,20 @@ refused.
 
 A Tasks section beside Mail, Calendar and Contacts, for Microsoft To Do through
 Graph (`/me/todo/lists`). It needs the `Tasks.ReadWrite` permission, so each
-account is asked to sign in again once when this ships.
+account is asked to sign in again once when this ships: an account To Do
+refuses is offered signing in again in the Tasks view. Built in two parts
+(owner, 2026-10-16): **3a**, this section; **3b**, the "create a task" action
+and its place in runs. Only an account's own To Do: a shared mailbox has none
+here, and a task an instruction makes for one goes in the account's own.
 
 | Item | Requirement | Priority |
 |---|---|---|
-| Lists | Shows the account's To Do lists, including the built-in Tasks list and Flagged email. Lists can be added, renamed and deleted (not the built-in ones). | P0 |
+| Lists | Shows the account's To Do lists, including the built-in Tasks list and Flagged email. Lists can be added, renamed and deleted (not the built-in ones). Flagged email is shown and not changed here: its tasks are the mail's own flags, and the To Do pages do not say what changing one does. Deleting a list cannot be undone. | P0 |
 | Tasks | A task has a title, notes, a due day, a reminder, importance and done/not done. Tasks can be added, edited, completed and deleted, and are shown due-first with done tasks hidden until asked for. | P0 |
-| Linked mail | A task made from a message links back to it (`linkedResources`), and opening the link opens the message in Brolga. | P0 |
+| Linked mail | A task made from a message links back to it (`linkedResources`: application Brolga, the message's id, its subject, and its Outlook on the web address where it can be had), and opening the link opens the message in Brolga. | P0 |
 | Reminders | A task's reminder fires as a desktop notification on devices running Brolga, as calendar reminders do. To Do fires it on the phone. | P1 |
-| Offline and sync | Tasks are kept locally, readable and editable offline, and synced by delta, with changes going through the outbox like other changes. | P0 |
-| Commands | `tasks.lists.list`, `tasks.lists.create`, `.rename`, `.delete`, `tasks.list`, `tasks.get`, `tasks.create`, `tasks.update`, `tasks.complete`, `tasks.delete`, in the registry with schemas and examples, reachable over CLI and MCP, with undo. | P0 |
+| Offline and sync | Tasks are kept locally, readable and editable offline, and synced by delta, with changes queued like mail's and sent in order: a list or task made offline has an id of its own until To Do gives it one, and one whose making is not heard of is looked for before it is made again. The To Do pages do not say how a deleted task is told of, so everything is read again from the beginning every six hours, and what that does not bring is gone. | P0 |
+| Commands | `tasks.lists.list`, `tasks.lists.create`, `.rename`, `.delete`, `tasks.list`, `tasks.get`, `tasks.create`, `tasks.update`, `tasks.complete`, `tasks.delete`, `tasks.undo` (within a day), and `tasks.reminders.due`, `.dismiss`, `.snooze`, in the registry with schemas and examples, reachable over CLI and MCP, with undo. Deletes are consequential. | P0 |
 
 ### Outside tools
 

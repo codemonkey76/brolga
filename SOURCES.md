@@ -101,6 +101,16 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | ID token claims reference | https://learn.microsoft.com/entra/identity-platform/id-token-claims-reference | `tid`, `oid`, `preferred_username` and `name`, to label an account |
 | Claims challenges, claims requests, and client capabilities | https://learn.microsoft.com/entra/identity-platform/claims-challenge | Reading a claims challenge from a 401's `WWW-Authenticate` header |
 
+## Microsoft To Do (Microsoft Learn)
+
+| Source | URL | Used for |
+|---|---|---|
+| todoTaskList resource type; List, Create, Update, Delete todoTaskList | https://learn.microsoft.com/graph/api/resources/todotasklist | `/me/todo/lists`, `Tasks.ReadWrite`. `wellknownListName` is `none`, `defaultList` (Tasks) or `flaggedEmails`; the built-in lists "cannot be renamed or deleted". Read 16 October 2026 (TKT-01184) |
+| todoTask resource type; Create, Update, Delete todoTask; List tasks | https://learn.microsoft.com/graph/api/resources/todotask | Title, body, `dueDateTime`, `reminderDateTime` with `isReminderOn`, `importance`, `status`, `linkedResources` given inline on create. A body is changed only as HTML. No `If-Match` is named. A due day is sent as midnight UTC, as To Do kept a flag's (TKT-01179); the pages do not say |
+| todoTaskList: delta; todoTask: delta | https://learn.microsoft.com/graph/api/todotask-delta | `/me/todo/lists/delta` and `/me/todo/lists/{id}/tasks/delta` with `$expand` given on the first request; the next and delta links used as given. The pages do not show a deleted item, so Brolga reads everything again every six hours |
+| linkedResource resource type | https://learn.microsoft.com/graph/api/resources/linkedresource | `applicationName`, `displayName`, `externalId` and `webUrl` (optional) for the email a task is made from. What To Do shows for one is not said |
+| message resource type | https://learn.microsoft.com/graph/api/resources/message | `webLink`: where a message opens in Outlook on the web, the `webUrl` of a task's link to it |
+
 ## Anthropic and Ollama
 
 | Source | URL | Used for |

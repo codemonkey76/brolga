@@ -35,6 +35,7 @@ unless your organisation has turned user consent off.
 | `Calendars.ReadWrite` | The person's calendars and events. |
 | `Calendars.ReadWrite.Shared` | Calendars other people have shared with them, and free and busy times. |
 | `Contacts.ReadWrite` | Their personal contacts. |
+| `Tasks.ReadWrite` | Their task lists and tasks in Microsoft To Do. Added in the version with Tasks; each person signs in again once to grant it. |
 | `People.Read`, `User.ReadBasic.All` | Finding colleagues by name when addressing a message. |
 | `Mail.ReadWrite.Shared`, `Mail.Send.Shared` | Shared mailboxes they have been given access to. Brolga cannot see a mailbox they have not. |
 

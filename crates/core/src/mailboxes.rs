@@ -27,6 +27,9 @@ pub(crate) struct Mailbox {
     pub archive: bool,
     /// Sends the changes made here to the server.
     pub outbox: Arc<brolga_ops::Outbox>,
+    /// Microsoft To Do: kept in step, and the changes made here sent.
+    pub tasks: brolga_sync::TaskSync,
+    pub task_outbox: Arc<brolga_ops::TaskOutbox>,
     /// One sync of an account at a time: two would fetch the same pages.
     pub syncing: Mutex<()>,
     /// One pass of its mail instructions at a time.
@@ -502,6 +505,8 @@ impl Mailboxes {
             calendars: brolga_sync::CalendarSync::new(graph.clone(), db.clone()),
             contacts: brolga_sync::ContactSync::new(graph.clone(), db.clone()),
             outbox: Arc::new(brolga_ops::Outbox::new(graph.clone(), db.clone())),
+            tasks: brolga_sync::TaskSync::new(graph.clone(), db.clone()),
+            task_outbox: Arc::new(brolga_ops::TaskOutbox::new(graph.clone(), db.clone())),
             db,
             graph,
             archive,

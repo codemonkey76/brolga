@@ -16,6 +16,7 @@ mod marks;
 mod migrate;
 mod ops;
 mod runs;
+mod tasks;
 
 pub use account::{
     AccountDb, AttachmentRow, Body, ConversationRow, Folder, FolderChange, InlineImage,
@@ -29,6 +30,7 @@ pub use global::{Account, AgentLogEntry, GlobalDb};
 pub use marks::{Mark, Usage};
 pub use ops::{FailedOp, MessageEdit, Op};
 pub use runs::{RunItemRow, RunRow};
+pub use tasks::{TaskListRow, TaskOp, TaskRow};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

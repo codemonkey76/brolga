@@ -22,9 +22,13 @@
         linked?: Asked | null;
         /** It has been started. */
         onLinked?: () => void;
+        /** A message to show, asked for elsewhere: a task made from it, say. */
+        reveal?: { account_id: string; message_id: string } | null;
+        /** It is being shown. */
+        onRevealed?: () => void;
     }
 
-    let { accounts, shown = true, onCalendar, linked = null, onLinked }: Props = $props();
+    let { accounts, shown = true, onCalendar, linked = null, onLinked, reveal = null, onRevealed }: Props = $props();
 
     const PAGE = 100;
     let accountId = $state<string | null>(null);
@@ -280,6 +284,23 @@
             starting = false;
         }
     }
+
+    // A message asked for elsewhere is shown in its folder, opened.
+    $effect(() => {
+        if (!reveal || !shown) return;
+        const { account_id, message_id } = reveal;
+        onRevealed?.();
+        untrack(async () => {
+            try {
+                if (accountId !== account_id) await chooseAccount(account_id);
+                const found = await openMessage(account_id, message_id, false, view.plain);
+                await showFolder(found.message.folder_id);
+                await open(found.message);
+            } catch (failure) {
+                problem = say(failure);
+            }
+        });
+    });
 
     // A mailto: link starts a new message with what it names filled in. The
     // words are put above the signature, as if they had been typed.

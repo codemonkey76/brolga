@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Bot, CalendarDays, Mail as MailIcon, Settings as SettingsIcon, Users } from "@lucide/svelte";
+    import { Bot, CalendarDays, ListTodo, Mail as MailIcon, Settings as SettingsIcon, Users } from "@lucide/svelte";
     import { type Account, type Archive, type SharedMailbox, listAccounts, listArchives, listShared, mailboxes } from "./lib/accounts";
     import Settings from "./lib/Settings.svelte";
     import { type Asked, nextRequest } from "./lib/commands";
@@ -12,10 +12,16 @@
     import StatusBar from "./lib/StatusBar.svelte";
     import Palette, { type Action } from "./lib/Palette.svelte";
     import People from "./lib/People.svelte";
+    import Tasks from "./lib/Tasks.svelte";
     import { inDialog } from "./lib/typing";
     import { tick } from "svelte";
 
-    type View = "mail" | "calendar" | "people" | "accounts" | "agents";
+    type View = "mail" | "calendar" | "people" | "tasks" | "accounts" | "agents";
+
+    /** A message to show in Mail, asked for from a task. */
+    let revealMessage = $state<{ account_id: string; message_id: string } | null>(null);
+    /** A task to show in Tasks, asked for from its reminder. */
+    let revealTask = $state<{ account_id: string; task_id: string } | null>(null);
 
     let accounts = $state<Account[]>([]);
     let view = $state<View>("accounts");
@@ -105,6 +111,7 @@
         { title: "Go to Mail", keys: "Ctrl+1", run: () => go("mail") },
         { title: "Go to Calendar", keys: "Ctrl+2", run: () => go("calendar") },
         { title: "Go to People (address book)", keys: "Ctrl+3 or Ctrl+Shift+B", run: () => go("people") },
+        { title: "Go to Tasks (To Do)", keys: "Ctrl+4", run: () => go("tasks") },
         { title: "Go to Settings", keys: "", run: () => go("accounts") },
         { title: "Go to Agents", keys: "", run: () => go("agents") },
         { title: "New message", keys: "Ctrl+N", run: press("mail", "n", { ctrl: true }) },
@@ -135,6 +142,7 @@
         else if (key === "1") go("mail");
         else if (key === "2") go("calendar");
         else if (key === "3" || (event.shiftKey && key === "b")) go("people");
+        else if (key === "4") go("tasks");
         else if (event.shiftKey && key === "q") meeting();
         else return;
         event.preventDefault();
@@ -147,7 +155,14 @@
     <Palette {actions} onClose={() => (palette = false)} />
 {/if}
 <Questions />
-<Reminders {accounts} onOpen={() => (view = "calendar")} />
+<Reminders
+    {accounts}
+    onOpen={() => (view = "calendar")}
+    onOpenTask={(account_id, task_id) => {
+        revealTask = { account_id, task_id };
+        view = "tasks";
+    }}
+/>
 <NewMail {accounts} fetched={view === "mail" || view === "calendar"} />
 
 <div class="shell">
@@ -163,6 +178,10 @@
         <button type="button" class:current={view === "people"} aria-current={view === "people"} disabled={accounts.length === 0} onclick={() => (view = "people")} title="People (Ctrl+3)">
             <Users size={20} aria-hidden="true" />
             <span>People</span>
+        </button>
+        <button type="button" class:current={view === "tasks"} aria-current={view === "tasks"} disabled={accounts.length === 0} onclick={() => (view = "tasks")} title="Tasks (Ctrl+4)">
+            <ListTodo size={20} aria-hidden="true" />
+            <span>Tasks</span>
         </button>
         <button type="button" class:current={view === "accounts"} aria-current={view === "accounts"} onclick={() => (view = "accounts")} title="Settings">
             <SettingsIcon size={20} aria-hidden="true" />
@@ -183,6 +202,8 @@
                 shown={view === "mail"}
                 linked={asked}
                 onLinked={() => (asked = null)}
+                reveal={revealMessage}
+                onRevealed={() => (revealMessage = null)}
                 onCalendar={(day) => {
                     calendarDay = day;
                     view = "calendar";
@@ -197,6 +218,16 @@
             <Calendar accounts={mailboxes(accounts, shared, true)} startOn={calendarDay} writing={newEvent} />
         {:else if view === "people" && accounts.length > 0}
             <People {accounts} />
+        {:else if view === "tasks" && accounts.length > 0}
+            <Tasks
+                {accounts}
+                reveal={revealTask}
+                onRevealed={() => (revealTask = null)}
+                onMessage={(account_id, message_id) => {
+                    revealMessage = { account_id, message_id };
+                    view = "mail";
+                }}
+            />
         {:else if view === "agents"}
             <div class="scroll"><Agents /></div>
         {:else}

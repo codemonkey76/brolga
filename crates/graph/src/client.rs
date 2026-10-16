@@ -285,6 +285,144 @@ impl GraphClient {
         read_page(&self.get(link.unwrap_or(&start), Some(page_size)).await?)
     }
 
+    /// Where a message opens in Outlook on the web (`webLink`, "message
+    /// resource type", SOURCES.md), for a task made from it to link back to.
+    pub async fn message_web_link(&self, message_id: &str) -> Result<Option<String>, GraphError> {
+        let message_id = seg(message_id)?;
+        let url = format!("{}/me/messages/{message_id}?$select=webLink", self.base);
+        let message: serde_json::Value = decode(&self.get(&url, None).await?)?;
+
+        Ok(message["webLink"].as_str().map(str::to_owned))
+    }
+
+    /// One page of changes to the person's To Do lists ("todoTaskList:
+    /// delta", SOURCES.md); without a link, from the beginning.
+    pub async fn todo_lists_delta(
+        &self,
+        link: Option<&str>,
+    ) -> Result<DeltaPage<serde_json::Value>, GraphError> {
+        let start = format!("{}/me/todo/lists/delta", self.base);
+
+        read_page(&self.get(link.unwrap_or(&start), Some(100)).await?)
+    }
+
+    /// One page of changes to the tasks in a To Do list ("todoTask: delta",
+    /// SOURCES.md), with the links back to what each was made from.
+    pub async fn todo_tasks_delta(
+        &self,
+        list_id: &str,
+        link: Option<&str>,
+    ) -> Result<DeltaPage<serde_json::Value>, GraphError> {
+        let list_id = seg(list_id)?;
+        let start = format!(
+            "{}/me/todo/lists/{list_id}/tasks/delta?$expand=linkedResources",
+            self.base
+        );
+
+        read_page(&self.get(link.unwrap_or(&start), Some(100)).await?)
+    }
+
+    /// Every task in a To Do list, as Graph has them now ("List tasks",
+    /// SOURCES.md): to find one whose making was never heard of.
+    pub async fn todo_tasks(&self, list_id: &str) -> Result<Vec<serde_json::Value>, GraphError> {
+        let list_id = seg(list_id)?;
+
+        self.list_values(format!("{}/me/todo/lists/{list_id}/tasks", self.base))
+            .await
+    }
+
+    /// Make a To Do list ("Create todoTaskList", SOURCES.md). Not safe to
+    /// repeat blindly: a second request makes a second list.
+    pub async fn create_todo_list(&self, name: &str) -> Result<serde_json::Value, GraphError> {
+        let url = format!("{}/me/todo/lists", self.base);
+        let body = serde_json::json!({ "displayName": name });
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(&body), false)
+                .await?,
+        )
+    }
+
+    /// Rename a To Do list ("Update todoTaskList", SOURCES.md). The
+    /// built-in lists cannot be renamed.
+    pub async fn rename_todo_list(&self, list_id: &str, name: &str) -> Result<(), GraphError> {
+        let list_id = seg(list_id)?;
+        let url = format!("{}/me/todo/lists/{list_id}", self.base);
+        let body = serde_json::json!({ "displayName": name });
+        self.send(reqwest::Method::PATCH, &url, None, Some(&body), true)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Delete a To Do list and its tasks ("Delete todoTaskList", SOURCES.md).
+    /// One already gone is as good as deleted.
+    pub async fn delete_todo_list(&self, list_id: &str) -> Result<(), GraphError> {
+        let list_id = seg(list_id)?;
+        let url = format!("{}/me/todo/lists/{list_id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Make a task in a To Do list, with any links given with it ("Create
+    /// todoTask", SOURCES.md). Not safe to repeat blindly.
+    pub async fn create_todo_task(
+        &self,
+        list_id: &str,
+        task: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let list_id = seg(list_id)?;
+        let url = format!("{}/me/todo/lists/{list_id}/tasks", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::POST, &url, None, Some(task), false)
+                .await?,
+        )
+    }
+
+    /// Change a task ("Update todoTask", SOURCES.md). Setting a property to
+    /// a value twice leaves it as setting it once does.
+    pub async fn update_todo_task(
+        &self,
+        list_id: &str,
+        task_id: &str,
+        changes: &serde_json::Value,
+    ) -> Result<serde_json::Value, GraphError> {
+        let list_id = seg(list_id)?;
+        let task_id = seg(task_id)?;
+        let url = format!("{}/me/todo/lists/{list_id}/tasks/{task_id}", self.base);
+
+        decode(
+            &self
+                .send(reqwest::Method::PATCH, &url, None, Some(changes), true)
+                .await?,
+        )
+    }
+
+    /// Delete a task ("Delete todoTask", SOURCES.md). One already gone is
+    /// as good as deleted.
+    pub async fn delete_todo_task(&self, list_id: &str, task_id: &str) -> Result<(), GraphError> {
+        let list_id = seg(list_id)?;
+        let task_id = seg(task_id)?;
+        let url = format!("{}/me/todo/lists/{list_id}/tasks/{task_id}", self.base);
+
+        match self
+            .send(reqwest::Method::DELETE, &url, None, None, true)
+            .await
+        {
+            Ok(_) | Err(GraphError::Refused { status: 404, .. }) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
     /// One page of the events of a calendar between two moments ("List
     /// calendarView"). Not a delta: Graph has one only for the default
     /// calendar, so any other is read whole.

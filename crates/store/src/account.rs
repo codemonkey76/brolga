@@ -464,6 +464,62 @@ const STEPS: &[&str] = &[
         until INTEGER NOT NULL
     ) STRICT;
 ",
+    "
+    -- Microsoft To Do (docs/spec-mail-instructions.md, \"Tasks\"): the lists,
+    -- their tasks as last synced or as changed here, and the changes made
+    -- here that are still to be sent. A list or task made here has an id
+    -- beginning `local-` until the server gives it its own.
+    CREATE TABLE task_lists (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        -- none, defaultList or flaggedEmails.
+        well_known TEXT NOT NULL DEFAULT 'none'
+    ) STRICT;
+
+    CREATE TABLE tasks (
+        id TEXT PRIMARY KEY NOT NULL,
+        list_id TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        -- The day it is due, YYYY-MM-DD, or empty.
+        due TEXT NOT NULL DEFAULT '',
+        -- When to be reminded, in UTC, or empty for no reminder.
+        reminder_at TEXT NOT NULL DEFAULT '',
+        importance TEXT NOT NULL DEFAULT 'normal',
+        -- notStarted, inProgress, completed, waitingOnOthers or deferred.
+        status TEXT NOT NULL DEFAULT 'notStarted',
+        completed_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT '',
+        modified_at TEXT NOT NULL DEFAULT '',
+        -- JSON: what it links to, an email it was made from say.
+        links TEXT NOT NULL DEFAULT '[]',
+        categories TEXT NOT NULL DEFAULT '[]'
+    ) STRICT;
+    CREATE INDEX tasks_by_list ON tasks (list_id, status, due);
+
+    -- kind: create_list, rename_list, delete_list, create, update or delete.
+    -- payload is what is sent; before, what undoes it.
+    CREATE TABLE task_ops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        list_id TEXT NOT NULL,
+        task_id TEXT NOT NULL DEFAULT '',
+        payload TEXT NOT NULL DEFAULT '{}',
+        before TEXT NOT NULL DEFAULT '',
+        -- queued, done or failed.
+        state TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    ) STRICT;
+
+    CREATE TABLE task_reminders (
+        task_id TEXT PRIMARY KEY NOT NULL,
+        dismissed INTEGER NOT NULL DEFAULT 0,
+        snoozed_until TEXT
+    ) STRICT;
+",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
