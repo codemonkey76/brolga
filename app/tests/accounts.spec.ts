@@ -570,6 +570,16 @@ test("the model is chosen, agreed to and tried, and what the instructions did ca
     await form.getByRole("button", { name: "Save" }).click();
     await expect(model).toContainText("qwen3 on Ollama reads the mail.");
 
+    // Going back to Anthropic brings back Anthropic's model, not the local one's name.
+    await model.getByRole("button", { name: "Change the model" }).click();
+    await expect(form.getByLabel("Model", { exact: true })).toHaveValue("qwen3");
+    await form.getByLabel("A model at Anthropic, with an API key").check();
+    await expect(form.getByLabel("Model", { exact: true })).toHaveValue("claude-haiku-5-5");
+    // And switching back and forth keeps what was chosen for each.
+    await form.getByLabel("A model on an Ollama server").check();
+    await expect(form.getByLabel("Model", { exact: true })).toHaveValue("qwen3");
+    await form.getByRole("button", { name: "Cancel" }).click();
+
     await section.getByText("What the instructions have done").click();
     const log = section.getByRole("list", { name: "What the instructions have done" });
     await expect(log.getByRole("listitem").nth(0)).toContainText("Moved: Your Telstra invoice");
