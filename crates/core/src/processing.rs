@@ -236,7 +236,8 @@ async fn run(
 
     let folders = mailbox.db.folders().map_err(local)?;
     let categories = categories(mailbox).await;
-    let Some(plan) = Plan::new(&settings.list, &folders, &categories) else {
+    let task_lists = task_lists(mailboxes, account_id).await;
+    let Some(plan) = Plan::new(&settings.list, &folders, &categories, &task_lists) else {
         return stopped("No instruction is on.");
     };
     let (day, zone) = today();
@@ -427,7 +428,7 @@ async fn one(
             provider,
             result,
             &detail,
-            json!({ "command": command, "args": args, "undo_id": undo_id }),
+            json!({ "command": command, "args": args, "undo_id": undo_id, "undo_command": undo_command(command) }),
         );
     }
 
@@ -486,6 +487,64 @@ pub(crate) fn command_for(
             "mail.messages.set_read",
             json!({ "account_id": account_id, "message_ids": ids, "is_read": read }),
         ),
+        // In the account's own To Do, whichever of its mailboxes the
+        // message is in, linked back to the message.
+        Step::CreateTask {
+            list_id,
+            title,
+            due,
+            reminder,
+            ..
+        } => {
+            let mut args = json!({
+                "account_id": owner(account_id), "list_id": list_id, "title": title,
+                "message_id": message.id, "message_account_id": account_id,
+            });
+            if let Some(due) = due {
+                args["due"] = json!(due);
+            }
+            if let Some(at) = reminder.as_deref().and_then(local_to_utc) {
+                args["reminder_at"] = json!(at);
+            }
+            ("tasks.create", args)
+        }
+    }
+}
+
+/// The command that undoes what a command did, by its undo id.
+pub(crate) fn undo_command(command: &str) -> &'static str {
+    if command.starts_with("tasks.") {
+        "tasks.undo"
+    } else {
+        "mail.undo"
+    }
+}
+
+/// The account a mailbox belongs to: itself, or the account a shared one
+/// was shared with.
+pub(crate) fn owner(account_id: &str) -> &str {
+    account_id.split('~').next().unwrap_or(account_id)
+}
+
+/// A time by the clock where this computer is, `2026-10-20T09:00`, as UTC.
+fn local_to_utc(at: &str) -> Option<String> {
+    let civil: jiff::civil::DateTime = at.parse().ok()?;
+    let zoned = civil.to_zoned(jiff::tz::TimeZone::system()).ok()?;
+    Some(zoned.timestamp().strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// The To Do lists of the account the mailbox belongs to, as kept here:
+/// none where To Do has not been read, and then no tasks are made.
+pub(crate) async fn task_lists(
+    mailboxes: &Mailboxes,
+    account_id: &str,
+) -> Vec<brolga_store::TaskListRow> {
+    let Ok(account) = mailboxes.account(Some(owner(account_id))) else {
+        return Vec::new();
+    };
+    match mailboxes.open(&account).await {
+        Ok(mailbox) => mailbox.db.task_lists().unwrap_or_default(),
+        Err(_) => Vec::new(),
     }
 }
 

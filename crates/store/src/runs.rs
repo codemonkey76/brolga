@@ -22,6 +22,8 @@ pub struct RunRow {
     pub created_at: i64,
     pub applied_at: Option<i64>,
     pub error: String,
+    /// The instructions' making of To Do tasks is part of it.
+    pub include_tasks: bool,
 }
 
 /// A message in a run, with what the list shows of it.
@@ -60,11 +62,12 @@ fn read_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         created_at: row.get(9)?,
         applied_at: row.get(10)?,
         error: row.get(11)?,
+        include_tasks: row.get(12)?,
     })
 }
 
 const RUN_COLUMNS: &str = "id, folder_id, subfolders, received_from, received_to, state, provider, model, \
-     list_version, created_at, applied_at, error";
+     list_version, created_at, applied_at, error, include_tasks";
 
 impl AccountDb {
     /// The messages in these folders, oldest first, received within the
@@ -104,14 +107,15 @@ impl AccountDb {
         provider: &str,
         model: &str,
         list_version: i64,
+        include_tasks: bool,
         message_ids: &[String],
     ) -> Result<(), StoreError> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
         transaction.execute(
-            "INSERT INTO instruction_runs (id, folder_id, subfolders, received_from, received_to, state, provider, model, list_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'previewing', ?6, ?7, ?8)",
-            params![id, folder_id, subfolders, from, to, provider, model, list_version],
+            "INSERT INTO instruction_runs (id, folder_id, subfolders, received_from, received_to, state, provider, model, list_version, include_tasks)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'previewing', ?6, ?7, ?8, ?9)",
+            params![id, folder_id, subfolders, from, to, provider, model, list_version, include_tasks],
         )?;
         {
             let mut insert = transaction.prepare(
@@ -413,8 +417,10 @@ mod tests {
     fn a_run_keeps_where_each_message_stands() {
         let db = db();
         let ids = ["a".to_owned(), "b".to_owned()];
-        db.create_run("r1", "inbox", false, None, None, "ollama", "llama", 3, &ids)
-            .unwrap();
+        db.create_run(
+            "r1", "inbox", false, None, None, "ollama", "llama", 3, false, &ids,
+        )
+        .unwrap();
         assert_eq!(db.active_run().unwrap().unwrap().state, "previewing");
         assert_eq!(db.run_items_in("r1", "pending", 10).unwrap(), ids);
 

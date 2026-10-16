@@ -621,6 +621,38 @@ test("a run over existing mail is sized up, previewed, applied after asking, and
     expect((await ran(page)).find((r) => r.command === "mail.instructions.run.undo")?.args).toMatchObject({ run_id: "run-1" });
 });
 
+test("a task an instruction made is undone in To Do, and a run makes tasks only when asked", async ({ page }) => {
+    const instructions = [{ id: "i-1", name: "Quotes", text: "A quote request becomes a task.", enabled: true, actions: ["create_task"] }];
+    const instructionsLog = [
+        { at: "2026-10-16T09:00:00Z", command: "tasks.create", outcome: "ok", detail: "A quote.", subject: "Quote please", instruction: "Quotes", undo_id: "tu-9", undo_command: "tasks.undo" },
+    ];
+    await withCore(page, {
+        accounts: [robin],
+        mail: inbox,
+        instructions,
+        instructionsLog,
+        instructionsModel: { provider: "ollama", model: "llama3.2", cloud_consent: false },
+        instructionsProcessor: { device_id: "device-here", device_name: "titan", since: "2026-10-15T08:00:00Z" },
+    });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+    const section = page.getByRole("region", { name: "Mail instructions for robin@example.test" });
+    await expect(section.getByRole("listitem").filter({ hasText: "Quotes" })).toContainText("make a to do task from it");
+
+    await section.getByText("What the instructions have done").click();
+    const log = section.getByRole("list", { name: "What the instructions have done" });
+    await expect(log.getByRole("listitem").nth(0)).toContainText("Made a task: Quote please");
+    await log.getByRole("button", { name: "Undo" }).click();
+    await expect.poll(async () => (await ran(page)).find((r) => r.command === "tasks.undo")?.args).toMatchObject({ undo_id: "tu-9" });
+    expect((await ran(page)).some((r) => r.command === "mail.undo")).toBe(false);
+
+    const runs = section.getByRole("region", { name: "Run over existing mail" });
+    await runs.getByLabel("Let instructions make To Do tasks too").check();
+    await runs.getByRole("button", { name: "See how many" }).click();
+    await runs.getByRole("button", { name: "Preview" }).click();
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.run.preview")?.args).toMatchObject({ include_tasks: true });
+});
+
 test("mail instructions that cannot be read say why", async ({ page }) => {
     await withCore(page, { accounts: [robin], offline: true });
     await page.getByRole("button", { name: "Settings" }).click();

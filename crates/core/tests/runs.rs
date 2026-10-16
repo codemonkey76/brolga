@@ -86,7 +86,7 @@ fn sensible(asked: &Asked) -> Reply {
         &asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"];
     if asked.user.contains("Telstra") {
         Reply::Answer(json!({ "actions": [
-            { "instruction_id": ids[0], "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "reason": "Telstra." }
+            { "instruction_id": ids[0], "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "Telstra." }
         ]}))
     } else {
         Reply::Answer(json!({ "actions": [] }))
@@ -416,4 +416,80 @@ async fn a_run_needs_the_processing_device_and_a_real_folder() {
     )
     .await;
     assert!(error.contains("does not carry out"), "{error}");
+}
+
+/// Telstra's mail becomes a task as well as a move, where tasks may be made.
+fn with_tasks(asked: &Asked) -> Reply {
+    let ids =
+        asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"]
+            .as_array()
+            .unwrap()
+            .clone();
+    let mut actions = vec![];
+    if asked.user.contains("Telstra") {
+        actions.push(json!({ "instruction_id": ids[0], "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false,
+            "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "Telstra." }));
+        // The Bills instruction is offered only where tasks may be made.
+        if ids.len() > 1 {
+            actions.push(json!({ "instruction_id": ids[1], "action": "create_task", "folder": "", "categories": [], "flag_due": "", "read": false,
+                "task_title": "Pay Telstra", "task_list": "", "task_due": "", "task_reminder": "", "reason": "A bill." }));
+        }
+    }
+    Reply::Answer(json!({ "actions": actions }))
+}
+
+#[tokio::test]
+async fn a_run_makes_tasks_only_when_asked_and_undoes_them_with_the_rest() {
+    let f = Fixture::set_up(None).await;
+    run(&f.titan, "mail.instructions.set", json!({
+        "name": "Bills", "text": "A bill from Telstra becomes a task.", "actions": ["create_task"]
+    }))
+    .await;
+    f.ai.answer_with(with_tasks);
+    let tasks_list = f.graph.todo_list("defaultList").unwrap();
+
+    // Not asked for: no task is offered the model, and none is made.
+    let started = run(
+        &f.titan,
+        "mail.instructions.run.preview",
+        json!({ "folder_id": "inbox" }),
+    )
+    .await;
+    let id = started["run"]["id"].as_str().unwrap().to_owned();
+    let without = f.until(&id, "previewed").await;
+    assert_eq!(without["actions"], json!({ "move": 3 }));
+    run(
+        &f.titan,
+        "mail.instructions.run.cancel",
+        json!({ "run_id": id }),
+    )
+    .await;
+
+    let started = run(
+        &f.titan,
+        "mail.instructions.run.preview",
+        json!({ "folder_id": "inbox", "include_tasks": true }),
+    )
+    .await;
+    let id = started["run"]["id"].as_str().unwrap().to_owned();
+    let with = f.until(&id, "previewed").await;
+    assert_eq!(with["actions"], json!({ "move": 3, "create_task": 3 }));
+    run(
+        &f.titan,
+        "mail.instructions.run.apply",
+        json!({ "run_id": id }),
+    )
+    .await;
+    f.until(&id, "applied").await;
+    run(&f.titan, "mail.sync", json!({})).await;
+    assert_eq!(f.graph.todo_tasks(&tasks_list).len(), 3);
+
+    run(
+        &f.titan,
+        "mail.instructions.run.undo",
+        json!({ "run_id": id }),
+    )
+    .await;
+    run(&f.titan, "mail.sync", json!({})).await;
+    assert!(f.graph.todo_tasks(&tasks_list).is_empty());
 }

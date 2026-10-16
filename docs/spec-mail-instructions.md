@@ -63,7 +63,7 @@ those already have.
 | Set categories | `mail.messages.set_categories` | Adds categories from the mailbox's master list that the instruction names. It never creates a category or takes one away. |
 | Flag, with an optional due date | `mail.messages.set_flag` | The due date is a whole day, as now. |
 | Mark read or unread | `mail.messages.set_read` | |
-| Create a task | `tasks.create` | In a To Do list named in the instruction (default: the default list), with a title, optional due day and reminder, and a link back to the message. The reminder fires in To Do on every device, the phone included. |
+| Create a task | `tasks.create` (3b) | In a To Do list named in the instruction (default: the default list), with a title, optional due day and reminder, and a link back to the message. The reminder fires in To Do on every device, the phone included. A shared mailbox's task goes in the To Do of the account it belongs to, linked to the message in the shared mailbox. Offered to the model only where To Do has been read, and in a run only where `include_tasks` asks for it. A list using it is read as written by a newer Brolga by one from before 3b, which then leaves it alone. |
 | Call an outside tool | the tool, on its MCP server | Only tools the instruction names. See "Outside tools". |
 
 Not allowed in this version: sending, replying, forwarding, deleting, moving to

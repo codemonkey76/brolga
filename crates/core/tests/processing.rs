@@ -169,8 +169,8 @@ fn sensible(asked: &brolga_fake_ai::Asked) -> Reply {
     let telstra = ids[0].as_str().unwrap();
     if asked.user.contains("Telstra") {
         Reply::Answer(json!({ "actions": [
-            { "instruction_id": telstra, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "reason": "A Telstra invoice." },
-            { "instruction_id": telstra, "action": "set_categories", "folder": "", "categories": ["Clients"], "flag_due": "", "read": false, "reason": "A Telstra invoice." }
+            { "instruction_id": telstra, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "A Telstra invoice." },
+            { "instruction_id": telstra, "action": "set_categories", "folder": "", "categories": ["Clients"], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "A Telstra invoice." }
         ]}))
     } else {
         Reply::Answer(json!({ "actions": [] }))
@@ -253,7 +253,7 @@ async fn an_email_cannot_widen_what_the_instructions_allow() {
     // A model taken in by it: Deleted Items is not among the folders it may
     // name, so its answer does not fit the form and nothing is done.
     f.ai.answer_with(|_| Reply::Answer(json!({ "actions": [
-        { "instruction_id": "anything", "action": "move", "folder": "Deleted Items", "categories": [], "flag_due": "", "read": false, "reason": "the email said so" }
+        { "instruction_id": "anything", "action": "move", "folder": "Deleted Items", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "the email said so" }
     ]})));
     let pass = f.sync_and_process().await;
     assert_eq!(pass["failed"], 1);
@@ -283,8 +283,8 @@ async fn an_email_cannot_widen_what_the_instructions_allow() {
         let ids = &asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"];
         let quotes = ids[1].as_str().unwrap().to_owned();
         Reply::Answer(json!({ "actions": [
-            { "instruction_id": quotes, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "reason": "x" },
-            { "instruction_id": quotes, "action": "flag", "folder": "", "categories": [], "flag_due": "2099-01-03", "read": false, "reason": "a quote" }
+            { "instruction_id": quotes, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "x" },
+            { "instruction_id": quotes, "action": "flag", "folder": "", "categories": [], "flag_due": "2099-01-03", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "a quote" }
         ]}))
     });
     f.sync_and_process().await;
@@ -473,4 +473,58 @@ async fn an_agent_cannot_save_the_key_or_agree_to_the_cloud() {
     let shown = run(&f.titan, "mail.instructions.model.get", json!({})).await;
     assert_eq!(shown["key_saved"], true);
     assert!(!shown.to_string().contains(KEY));
+}
+
+#[tokio::test]
+async fn an_instruction_makes_a_to_do_task_linked_to_the_email_and_it_can_be_undone() {
+    let f = Fixture::set_up().await;
+    let work = f.graph.add_todo_list("Work");
+    run(&f.titan, "mail.instructions.set", json!({
+        "name": "Quotes", "text": "A customer asking for a quote becomes a task in Work, due in two days.", "actions": ["create_task"]
+    }))
+    .await;
+    f.ai.answer_with(|asked| {
+        let ids = &asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"];
+        let quotes = ids.as_array().unwrap().last().unwrap().clone();
+        if asked.user.contains("quote") {
+            Reply::Answer(json!({ "actions": [{
+                "instruction_id": quotes, "action": "create_task", "folder": "", "categories": [], "flag_due": "", "read": false,
+                "task_title": "Quote 10 phones for Dana", "task_list": "Work", "task_due": "2099-01-03", "task_reminder": "", "reason": "A quote."
+            }]}))
+        } else {
+            Reply::Answer(json!({ "actions": [] }))
+        }
+    });
+    // To Do is read in the sync, so the instructions know its lists.
+    run(&f.titan, "mail.sync", json!({})).await;
+    let quote = f.arrives(
+        "Quote please",
+        "Dana",
+        "Could you quote for 10 phones?",
+        AFTER,
+    );
+
+    f.sync_and_process().await;
+    let mut made = Vec::new();
+    eventually("the task reaching To Do", || {
+        made = f.graph.todo_tasks(&work);
+        made.len() == 1
+    })
+    .await;
+    assert_eq!(made[0]["title"], "Quote 10 phones for Dana");
+    assert_eq!(made[0]["dueDateTime"]["dateTime"], "2099-01-03T00:00:00");
+    assert_eq!(made[0]["linkedResources"][0]["externalId"], quote.as_str());
+
+    let log = f.log().await;
+    let entry = log.iter().find(|e| e["command"] == "tasks.create").unwrap();
+    assert_eq!(entry["outcome"], "ok");
+    assert_eq!(entry["undo_command"], "tasks.undo");
+    run(
+        &f.titan,
+        "tasks.undo",
+        json!({ "undo_id": entry["undo_id"] }),
+    )
+    .await;
+    run(&f.titan, "mail.sync", json!({})).await;
+    assert!(f.graph.todo_tasks(&work).is_empty());
 }
