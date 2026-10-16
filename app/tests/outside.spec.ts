@@ -31,3 +31,63 @@ test("an outside tool server is added, signed in to with the browser or a token,
     await server.getByRole("button", { name: "Remove it?" }).click();
     await expect(section).toContainText("No servers yet.");
 });
+
+const helpdesk = { id: "mcp-1", name: "Helpdesk", url: "https://helpdesk.example.com/mcp/helpdesk", signed_in: "token", tools: 2, tools_read_at: null };
+const processor = { device_id: "device-here", device_name: "titan", since: "2026-10-15T08:00:00Z" };
+
+test("an instruction is given a tool with an input fixed, and is let run unattended only by a click", async ({ page }) => {
+    const instructions = [{ id: "i-1", name: "Support", text: "A support request becomes a helpdesk ticket.", enabled: true, actions: ["set_read"] }];
+    await withCore(page, { accounts: [robin], instructions, instructionsProcessor: processor, mcpServers: [helpdesk] });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+    const section = page.getByRole("region", { name: "Mail instructions for robin@example.test" });
+
+    await section.getByRole("button", { name: "Change Support" }).click();
+    const form = section.getByRole("form", { name: "Change instruction" });
+    await form.getByLabel("Call an outside tool it names").check();
+    const tools = form.getByRole("group", { name: "Tools it may call" });
+    await tools.getByRole("combobox", { name: "Tool to add" }).selectOption({ label: "Helpdesk create_ticket" });
+    await tools.getByRole("button", { name: "Add tool" }).click();
+    await tools.getByLabel("What create_ticket is always called with").fill("client 7");
+    await form.getByRole("button", { name: "Save instruction" }).click();
+    await expect(section.getByRole("alert")).toContainText("must be written as a JSON object");
+    await tools.getByLabel("What create_ticket is always called with").fill('{"client_id": 7}');
+    await form.getByRole("button", { name: "Save instruction" }).click();
+    await expect(form).toBeHidden();
+    expect((await ran(page)).filter((r) => r.command === "mail.instructions.set").at(-1)?.args).toMatchObject({
+        instruction_id: "i-1",
+        tools: [{ server_id: "mcp-1", tool: "create_ticket", fixed: { client_id: 7 } }],
+    });
+
+    const row = section.getByRole("listitem").filter({ hasText: "Support" });
+    await expect(row).toContainText("Helpdesk create_ticket: asks first");
+    await row.getByRole("button", { name: "Let it run unattended" }).click();
+    await expect(row).toContainText("Helpdesk create_ticket: called without asking");
+    expect((await ran(page)).find((r) => r.command === "mail.instructions.tools.set_unattended")?.args).toMatchObject({ instruction_id: "i-1", server_id: "mcp-1", tool: "create_ticket", unattended: true });
+});
+
+test("a call waiting for approval is shown with what it would send, and approved or rejected", async ({ page }) => {
+    const call = (id: string, subject: string) => ({
+        id, state: "waiting", note: null, decided_by: null, decided_at: null, subject, from: "sam@example.test", message_id: "m-1",
+        instruction: "Support", server: "Helpdesk", tool: "create_ticket", inputs: { client_id: 7, subject }, reason: "A support request.", outcome: null,
+    });
+    const instructions = [{ id: "i-1", name: "Support", text: "A support request becomes a helpdesk ticket.", enabled: true, actions: ["call_tool"] }];
+    // On a computer that does not carry out the instructions: approvals are made from any.
+    await withCore(page, { accounts: [robin], instructions, instructionsProcessor: { device_id: "device-laptop", device_name: "laptop", since: "2026-10-15T08:00:00Z" }, approvals: [call("a-1", "Printer jammed"), call("a-2", "Free phones")] });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Instructions" }).click();
+    const waiting = page.getByRole("region", { name: "Mail instructions for robin@example.test" }).getByLabel("Calls waiting for approval");
+    await expect(waiting).toContainText("2 calls wait for your approval");
+    const printer = waiting.getByRole("listitem", { name: "Helpdesk create_ticket for Printer jammed" });
+    await expect(printer).toContainText("client_id 7");
+
+    await expect(waiting.getByRole("button", { name: "Approve all" })).toBeVisible();
+    await printer.getByRole("button", { name: "Approve", exact: true }).click();
+    await waiting.getByRole("listitem", { name: "Helpdesk create_ticket for Free phones" }).getByRole("button", { name: "Reject", exact: true }).click();
+    await expect(waiting).toBeHidden();
+    const decided = (await ran(page)).filter((r) => r.command === "mail.instructions.approvals.decide").map((r) => r.args);
+    expect(decided).toMatchObject([{ approval_id: "a-1", approve: true }, { approval_id: "a-2", approve: false }]);
+    await page.getByText("Calls decided").click();
+    await expect(page.getByRole("list", { name: "Calls decided" })).toContainText("Approved, waiting for laptop");
+    await expect(page.getByRole("list", { name: "Calls decided" })).toContainText("Rejected");
+});

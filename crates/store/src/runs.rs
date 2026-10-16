@@ -24,6 +24,9 @@ pub struct RunRow {
     pub error: String,
     /// The instructions' making of To Do tasks is part of it.
     pub include_tasks: bool,
+    /// The instructions' calls to outside tools are part of it, and are
+    /// made when it is applied: applying it is the approval.
+    pub include_tools: bool,
 }
 
 /// A message in a run, with what the list shows of it.
@@ -63,11 +66,12 @@ fn read_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         applied_at: row.get(10)?,
         error: row.get(11)?,
         include_tasks: row.get(12)?,
+        include_tools: row.get(13)?,
     })
 }
 
 const RUN_COLUMNS: &str = "id, folder_id, subfolders, received_from, received_to, state, provider, model, \
-     list_version, created_at, applied_at, error, include_tasks";
+     list_version, created_at, applied_at, error, include_tasks, include_tools";
 
 impl AccountDb {
     /// The messages in these folders, oldest first, received within the
@@ -108,14 +112,15 @@ impl AccountDb {
         model: &str,
         list_version: i64,
         include_tasks: bool,
+        include_tools: bool,
         message_ids: &[String],
     ) -> Result<(), StoreError> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
         transaction.execute(
-            "INSERT INTO instruction_runs (id, folder_id, subfolders, received_from, received_to, state, provider, model, list_version, include_tasks)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'previewing', ?6, ?7, ?8, ?9)",
-            params![id, folder_id, subfolders, from, to, provider, model, list_version, include_tasks],
+            "INSERT INTO instruction_runs (id, folder_id, subfolders, received_from, received_to, state, provider, model, list_version, include_tasks, include_tools)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'previewing', ?6, ?7, ?8, ?9, ?10)",
+            params![id, folder_id, subfolders, from, to, provider, model, list_version, include_tasks, include_tools],
         )?;
         {
             let mut insert = transaction.prepare(
@@ -418,7 +423,7 @@ mod tests {
         let db = db();
         let ids = ["a".to_owned(), "b".to_owned()];
         db.create_run(
-            "r1", "inbox", false, None, None, "ollama", "llama", 3, false, &ids,
+            "r1", "inbox", false, None, None, "ollama", "llama", 3, false, false, &ids,
         )
         .unwrap();
         assert_eq!(db.active_run().unwrap().unwrap().state, "previewing");

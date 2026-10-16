@@ -177,12 +177,31 @@ async fn every_command_is_described_and_its_examples_run() {
             "format": 1, "version": 1, "enabled": true, "written_by": null, "written_at": null,
             "instructions": [
                 { "id": "i-newsletters", "name": "Newsletters", "text": "Newsletters are marked read.", "enabled": true, "actions": ["set_read"] },
-                { "id": "i-quotes", "name": "Quotes", "text": "A customer asking for a quote is flagged due in two days.", "enabled": true, "actions": ["flag"] }
+                { "id": "i-quotes", "name": "Quotes", "text": "A customer asking for a quote is flagged due in two days.", "enabled": true, "actions": ["flag"] },
+                { "id": "i-tools", "name": "Support", "text": "A support request becomes a helpdesk ticket.", "enabled": true, "actions": ["call_tool"] }
             ]
         })
         .to_string(),
     ));
     graph.add_message(&settings, kept);
+    // A call waiting for approval, for `mail.instructions.approvals.decide`.
+    let approvals = graph.add_hidden_folder("Brolga approvals");
+    let mut waiting = FakeMessage::new(
+        "Brolga: Fake helpdesk create_ticket waits for approval",
+        "Robin Example",
+        "robin@example.test",
+        "2026-10-02T09:00:00Z",
+    );
+    waiting.is_draft = true;
+    waiting.properties.push((
+        "String {4431b77f-55c6-4e5f-9693-e9ccc2a3f0fb} Name Call".to_owned(),
+        json!({ "server": "Fake helpdesk", "tool": "create_ticket", "inputs": { "subject": "Printer" } }).to_string(),
+    ));
+    waiting.properties.push((
+        "String {4431b77f-55c6-4e5f-9693-e9ccc2a3f0fb} Name Decision".to_owned(),
+        json!({ "state": "waiting" }).to_string(),
+    ));
+    let approval = graph.add_message(&approvals, waiting);
     // A stand-in for Anthropic, so that no example reaches the real one.
     let ai = brolga_fake_ai::FakeAi::start().await.unwrap();
     let registry = core_with_model(
@@ -246,6 +265,18 @@ async fn every_command_is_described_and_its_examples_run() {
         .execute_from_window(
             "mcp_servers.set_token",
             json!({ "server_id": mcp_server, "token": "pat-example" }),
+        )
+        .await
+        .unwrap();
+    // An instruction that names a tool, for
+    // `mail.instructions.tools.set_unattended`.
+    registry
+        .execute(
+            "mail.instructions.set",
+            json!({
+                "instruction_id": "i-tools", "name": "Support", "text": "A support request becomes a helpdesk ticket.",
+                "actions": ["call_tool"], "tools": [{ "server_id": mcp_server, "tool": "create_ticket", "fixed": { "client_id": 1 } }]
+            }),
         )
         .await
         .unwrap();
@@ -320,6 +351,9 @@ async fn every_command_is_described_and_its_examples_run() {
             }
             if example["server_id"] == "mcp-000000000000" {
                 example["server_id"] = json!(mcp_server);
+            }
+            if example["approval_id"] == "approval-000000000000" {
+                example["approval_id"] = json!(approval);
             }
             if example["server_id"] == "mcp-000000000001" {
                 example["server_id"] = json!(mcp_spare);

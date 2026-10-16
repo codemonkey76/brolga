@@ -653,6 +653,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "jiff",
+ "jsonschema",
  "outlook-pst-rw",
  "reqwest",
  "serde",

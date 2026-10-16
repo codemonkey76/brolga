@@ -9,6 +9,7 @@
 mod account;
 mod archive;
 mod calendar;
+mod calls;
 mod contacts;
 mod drafts;
 mod global;
@@ -24,6 +25,7 @@ pub use account::{
 };
 pub use archive::{ArchivedAttachment, ArchivedMessage};
 pub use calendar::{CalendarRow, EventRow};
+pub use calls::ToolCallRow;
 pub use contacts::ContactRow;
 pub use drafts::{Draft, DraftEdit, DraftFile};
 pub use global::{Account, AgentLogEntry, GlobalDb};

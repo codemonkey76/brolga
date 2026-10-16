@@ -64,6 +64,34 @@ fn server(mailboxes: &Mailboxes, id: &str) -> Result<Server, CommandError> {
         })
 }
 
+/// A server's name, where it is set up on this computer.
+pub(crate) fn server_name(mailboxes: &Mailboxes, id: &str) -> Option<String> {
+    servers(mailboxes)
+        .ok()?
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|s| s.name)
+}
+
+/// The servers set up on this computer.
+pub(crate) fn all_servers(mailboxes: &Mailboxes) -> Vec<Server> {
+    servers(mailboxes).unwrap_or_default()
+}
+
+/// The tools of each server on this computer, as last read: (server, tool).
+pub(crate) fn catalogue(mailboxes: &Mailboxes) -> Vec<(Server, ToolInfo)> {
+    all_servers(mailboxes)
+        .into_iter()
+        .flat_map(|server| {
+            kept_tools(mailboxes, &server.id)
+                .map(|(tools, _)| tools)
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |tool| (server.clone(), tool))
+        })
+        .collect()
+}
+
 fn kept_tools(mailboxes: &Mailboxes, id: &str) -> Option<(Vec<ToolInfo>, String)> {
     let kept: Value =
         serde_json::from_str(&mailboxes.global().setting(&tools_key(id)).ok()??).ok()?;

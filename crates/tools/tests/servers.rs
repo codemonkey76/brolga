@@ -104,3 +104,26 @@ async fn signing_in_through_the_browser_registers_brolga_and_keeps_and_refreshes
     brolga_tools::forget(secrets.as_ref(), &server).unwrap();
     assert_eq!(brolga_tools::signed_in(secrets.as_ref(), &server), None);
 }
+
+#[tokio::test]
+async fn a_tool_is_called_with_its_arguments() {
+    let fake = FakeMcp::start().await.unwrap();
+    fake.accept_token("pat-1");
+    let secrets: Arc<dyn SecretStore> = Arc::new(MemorySecrets::default());
+    let server = server(&fake);
+    brolga_tools::save_token(secrets.as_ref(), &server, "pat-1").unwrap();
+
+    let arguments =
+        serde_json::json!({ "client_id": 15, "subject": "Phones", "description": "Quote" });
+    let called = brolga_tools::call(
+        secrets,
+        &server,
+        "create_ticket",
+        arguments.as_object().unwrap().clone(),
+    )
+    .await
+    .unwrap();
+    assert!(called.ok);
+    assert_eq!(called.text, "create_ticket done: TKT-01234");
+    assert_eq!(fake.calls(), [("create_ticket".to_owned(), arguments)]);
+}

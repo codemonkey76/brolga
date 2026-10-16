@@ -24,6 +24,7 @@ brolga-search = { path = "../search" }
 brolga-store.workspace = true
 brolga-sync.workspace = true
 futures.workspace = true
+jsonschema.workspace = true
 getrandom.workspace = true
 reqwest.workspace = true
 serde.workspace = true

@@ -1,5 +1,6 @@
 <script lang="ts">
     import { execute, say } from "./commands";
+    import Approvals from "./Approvals.svelte";
     import InstructionRun from "./InstructionRun.svelte";
 
     interface Props {
@@ -7,7 +8,15 @@
         username: string;
     }
 
-    type Action = "move" | "set_categories" | "flag" | "set_read" | "create_task";
+    type Action = "move" | "set_categories" | "flag" | "set_read" | "create_task" | "call_tool";
+
+    interface ToolUse {
+        server_id: string;
+        server: string;
+        tool: string;
+        fixed: Record<string, unknown>;
+        unattended: boolean;
+    }
 
     interface Instruction {
         id: string;
@@ -15,6 +24,23 @@
         text: string;
         enabled: boolean;
         actions: Action[];
+        tools?: ToolUse[];
+    }
+
+    /** A tool as the form holds it: the fixed inputs as written. */
+    interface ToolForm {
+        server_id: string;
+        server: string;
+        tool: string;
+        fixed: string;
+    }
+
+    /** A tool on a server set up on this computer. */
+    interface Offered {
+        server_id: string;
+        server: string;
+        tool: string;
+        description: string | null;
     }
 
     interface Device {
@@ -41,6 +67,7 @@
         { id: "flag", name: "Flag it, with a due day if the instruction gives one" },
         { id: "set_read", name: "Mark it read or unread" },
         { id: "create_task", name: "Make a To Do task from it, in a list the instruction names or in Tasks" },
+        { id: "call_tool", name: "Call an outside tool it names, such as making a helpdesk ticket" },
     ];
     const LONGEST = 2000;
 
@@ -55,7 +82,40 @@
     /** This device's new name, while it is being renamed. */
     let naming = $state<string | null>(null);
 
-    const blank = () => ({ id: null as string | null, name: "", text: "", enabled: true, actions: [] as Action[] });
+    const blank = () => ({ id: null as string | null, name: "", text: "", enabled: true, actions: [] as Action[], tools: [] as ToolForm[] });
+    const toForm = (each: Instruction) => ({ ...each, actions: [...each.actions], tools: (each.tools ?? []).map((t) => ({ server_id: t.server_id, server: t.server, tool: t.tool, fixed: Object.keys(t.fixed).length ? JSON.stringify(t.fixed) : "" })) });
+    /** The tools on this computer's servers, once read. */
+    let offered = $state<Offered[] | null>(null);
+    let picking = $state("");
+
+    async function readOffered() {
+        try {
+            const { servers } = await execute<{ servers: { id: string; name: string; signed_in: string | null }[] }>("mcp_servers.list");
+            const all: Offered[] = [];
+            for (const server of servers.filter((s) => s.signed_in)) {
+                try {
+                    const { tools } = await execute<{ tools: { name: string; description: string | null }[] }>("mcp_servers.tools", { server_id: server.id });
+                    all.push(...tools.map((t) => ({ server_id: server.id, server: server.name, tool: t.name, description: t.description })));
+                } catch {
+                    // A server out of reach offers nothing for now.
+                }
+            }
+            offered = all;
+        } catch (failure) {
+            problem = say(failure);
+        }
+    }
+
+    function addTool() {
+        if (!form || !offered) return;
+        const chosen = offered.find((o) => `${o.server_id}/${o.tool}` === picking);
+        if (!chosen || form.tools.some((t) => t.server_id === chosen.server_id && t.tool === chosen.tool)) return;
+        form.tools = [...form.tools, { server_id: chosen.server_id, server: chosen.server, tool: chosen.tool, fixed: "" }];
+        picking = "";
+    }
+
+    const setUnattended = (each: Instruction, tool: ToolUse, unattended: boolean) =>
+        changing("mail.instructions.tools.set_unattended", { instruction_id: each.id, server_id: tool.server_id, tool: tool.tool, unattended });
     /** The instruction being written, while its form is open. */
     let form = $state<ReturnType<typeof blank> | null>(null);
 
@@ -94,7 +154,28 @@
             problem = "Choose at least one thing the instruction may do.";
             return;
         }
-        const args: Record<string, unknown> = { name: form.name.trim(), text: form.text.trim(), enabled: form.enabled, actions: form.actions };
+        const calls = form.actions.includes("call_tool");
+        if (calls && form.tools.length === 0) {
+            problem = "Choose the tools the instruction may call.";
+            return;
+        }
+        const tools = [];
+        for (const t of calls ? form.tools : []) {
+            let fixed: unknown = {};
+            if (t.fixed.trim()) {
+                try {
+                    fixed = JSON.parse(t.fixed);
+                } catch {
+                    fixed = null;
+                }
+                if (!fixed || typeof fixed !== "object" || Array.isArray(fixed)) {
+                    problem = `What ${t.tool} is always called with must be written as a JSON object, such as {"client_id": 7}.`;
+                    return;
+                }
+            }
+            tools.push({ server_id: t.server_id, tool: t.tool, fixed });
+        }
+        const args: Record<string, unknown> = { name: form.name.trim(), text: form.text.trim(), enabled: form.enabled, actions: form.actions, tools };
         if (form.id) args.instruction_id = form.id;
         // Refused because the list changed elsewhere, the form stays open with what was written.
         if (await changing("mail.instructions.set", args)) form = null;
@@ -103,6 +184,7 @@
     function allow(action: Action, on: boolean) {
         if (!form) return;
         form.actions = on ? [...form.actions.filter((each) => each !== action), action] : form.actions.filter((each) => each !== action);
+        if (action === "call_tool" && on && offered === null) readOffered();
     }
 
     const turn = (each: Instruction, on: boolean) => changing("mail.instructions.set", { instruction_id: each.id, name: each.name, text: each.text, enabled: on, actions: each.actions });
@@ -296,6 +378,7 @@
             "mail.messages.set_flag": "Flagged",
             "mail.messages.set_read": "Marked",
             "tasks.create": "Made a task",
+            "tools.call": "Called a tool",
         })[entry.command] ?? entry.command.replace(/^mail\.instructions\./, "Wanted to ");
 
     const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "never");
@@ -465,6 +548,10 @@
             <InstructionRun {accountId} />
         {/if}
 
+        {#if listed.set_up}
+            <Approvals {accountId} processor={listed.processor?.device_name ?? null} lastActive={listed.last_active} />
+        {/if}
+
         {#if entries.length > 0}
             <details class="log">
                 <summary>What the instructions have done</summary>
@@ -501,6 +588,12 @@
                         <span class="name">{each.name}</span>
                         <span class="text">{each.text}</span>
                         <span class="muted">May: {allowed(each)}.</span>
+                        {#each each.tools ?? [] as tool (`${tool.server_id}/${tool.tool}`)}
+                            <span class="tool">
+                                <span class="muted">{tool.server} {tool.tool}: {tool.unattended ? "called without asking" : "asks first"}</span>
+                                <button type="button" class="small" disabled={busy || listed.offline} onclick={() => setUnattended(each, tool, !tool.unattended)}>{tool.unattended ? "Ask first again" : "Let it run unattended"}</button>
+                            </span>
+                        {/each}
                     </span>
                     {#if deleting === each.id}
                         <button type="button" class="danger" disabled={busy} onclick={() => remove(each)}>Delete it?</button>
@@ -508,7 +601,7 @@
                     {:else}
                         <button type="button" aria-label={`Move ${each.name} up`} disabled={busy || listed.offline || at === 0} onclick={() => move(each, at)}>↑</button>
                         <button type="button" aria-label={`Move ${each.name} down`} disabled={busy || listed.offline || at === listed.instructions.length - 1} onclick={() => move(each, at + 2)}>↓</button>
-                        <button type="button" aria-label={`Change ${each.name}`} disabled={listed.offline} onclick={() => ((form = { ...each, actions: [...each.actions] }), (problem = null))}>Change</button>
+                        <button type="button" aria-label={`Change ${each.name}`} disabled={listed.offline} onclick={() => ((form = toForm(each)), (problem = null), form.actions.includes("call_tool") && offered === null && readOffered())}>Change</button>
                         <button type="button" aria-label={`Delete ${each.name}`} disabled={listed.offline} onclick={() => (deleting = each.id)}>Delete</button>
                     {/if}
                 </li>
@@ -530,6 +623,40 @@
                     {/each}
                     <p class="muted">The model can do nothing else, whatever a message says.</p>
                 </fieldset>
+                {#if form.actions.includes("call_tool")}
+                    <fieldset aria-label="Tools it may call">
+                        <legend>Tools it may call</legend>
+                        {#each form.tools as t, n (`${t.server_id}/${t.tool}`)}
+                            <div class="tool-form">
+                                <span>{t.server} {t.tool}</span>
+                                <label class="stacked">
+                                    Always called with (optional)
+                                    <input type="text" aria-label={`What ${t.tool} is always called with`} bind:value={form.tools[n].fixed} placeholder={'{"client_id": 7}'} />
+                                </label>
+                                <button type="button" onclick={() => form && (form.tools = form.tools.filter((_, at) => at !== n))}>Remove</button>
+                            </div>
+                        {/each}
+                        {#if offered === null}
+                            <p class="muted" role="status">Reading the tools…</p>
+                        {:else if offered.length === 0}
+                            <p class="muted">No tools are set up on this computer. Add a server under Outside tools, on the computer that carries out the instructions.</p>
+                        {:else if form.tools.length < 5}
+                            <div class="buttons">
+                                <select aria-label="Tool to add" bind:value={picking}>
+                                    <option value="">Choose a tool…</option>
+                                    {#each offered as o (`${o.server_id}/${o.tool}`)}
+                                        <option value={`${o.server_id}/${o.tool}`}>{o.server} {o.tool}</option>
+                                    {/each}
+                                </select>
+                                <button type="button" disabled={!picking} onclick={addTool}>Add tool</button>
+                            </div>
+                        {/if}
+                        <p class="muted">The model fills in the rest from the email, so what it fills in can carry the email's words to that service. Each call asks you first, here or on any computer signed in to this mailbox, until you let that tool run unattended.</p>
+                        {#if accountId.includes("~")}
+                            <p class="muted">This is a shared mailbox: anyone who can open it in Brolga can approve its calls.</p>
+                        {/if}
+                    </fieldset>
+                {/if}
                 <label><input type="checkbox" bind:checked={form.enabled} /> On</label>
                 <div class="buttons">
                     <button type="submit" class="primary" disabled={busy || !form.name.trim() || !form.text.trim()}>{busy ? "Saving…" : "Save instruction"}</button>
@@ -699,5 +826,23 @@
         padding: 0.5rem 0.75rem;
         background: color-mix(in srgb, var(--danger) 14%, var(--surface));
         font-size: 0.85rem;
+    }
+
+    .tool {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+    }
+
+    .tool-form {
+        display: flex;
+        gap: 0.5rem;
+        align-items: end;
+        flex-wrap: wrap;
+    }
+
+    button.small {
+        font-size: 0.75rem;
+        padding: 0.1rem 0.4rem;
     }
 </style>

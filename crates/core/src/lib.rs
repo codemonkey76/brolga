@@ -11,6 +11,7 @@ mod action_commands;
 mod agent_commands;
 mod archive_commands;
 mod calendar_commands;
+mod calls;
 mod contact_commands;
 mod deciding;
 mod device;

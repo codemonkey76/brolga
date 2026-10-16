@@ -170,6 +170,8 @@ pub(crate) async fn pass(
             ..Pass::default()
         });
     };
+    // Calls approved since the last pass are made first, whatever else.
+    crate::calls::on_sync(mailboxes, mailbox, device).await;
     let outcome = run(mailboxes, account_id, mailbox, device).await;
     let kept = match &outcome {
         Ok(pass) => json!({ "at": now_secs(), "pass": pass }),
@@ -237,7 +239,13 @@ async fn run(
     let folders = mailbox.db.folders().map_err(local)?;
     let categories = categories(mailbox).await;
     let task_lists = task_lists(mailboxes, account_id).await;
-    let Some(plan) = Plan::new(&settings.list, &folders, &categories, &task_lists) else {
+    let Some(plan) = Plan::new(
+        &settings.list,
+        &folders,
+        &categories,
+        &task_lists,
+        &crate::tool_commands::catalogue(mailboxes),
+    ) else {
         return stopped("No instruction is on.");
     };
     let (day, zone) = today();
@@ -411,6 +419,35 @@ async fn one(
     let mut steps: Vec<&Decided> = decided.iter().collect();
     steps.sort_by_key(|d| matches!(d.step, Step::Move { .. }));
     for each in steps {
+        // An outside tool is called, or put up for approval, by itself.
+        if let Step::CallTool {
+            server_id,
+            server,
+            tool,
+            inputs,
+            unattended,
+        } = &each.step
+        {
+            let proposal = crate::calls::Proposal {
+                message,
+                instruction_id: &each.instruction_id,
+                instruction: &each.instruction,
+                server_id,
+                server,
+                tool,
+                inputs,
+                unattended: *unattended,
+                reason: &each.reason,
+                run_id: None,
+            };
+            if crate::calls::propose(mailboxes, mailbox, account_id, &proposal)
+                .await
+                .is_ok()
+            {
+                acted += 1;
+            }
+            continue;
+        }
         let (command, args) = command_for(account_id, message, &each.step);
         let outcome = registry.execute(command, args.clone()).await;
         let (result, detail, undo_id) = match &outcome {
@@ -487,6 +524,8 @@ pub(crate) fn command_for(
             "mail.messages.set_read",
             json!({ "account_id": account_id, "message_ids": ids, "is_read": read }),
         ),
+        // Made by the calls, not by a command (crate::calls).
+        Step::CallTool { .. } => ("tools.call", Value::Null),
         // In the account's own To Do, whichever of its mailboxes the
         // message is in, linked back to the message.
         Step::CreateTask {

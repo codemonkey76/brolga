@@ -46,6 +46,9 @@ pub const WINDOW_ONLY: &[&str] = &[
     "mcp_servers.add",
     "mcp_servers.set_token",
     "mcp_servers.sign_in",
+    // Calls to outside tools: approving one, or letting one go unasked.
+    "mail.instructions.approvals.decide",
+    "mail.instructions.tools.set_unattended",
 ];
 
 /// Arguments only a person gives, by command: an agent that sets one is

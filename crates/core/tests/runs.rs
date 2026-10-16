@@ -86,7 +86,7 @@ fn sensible(asked: &Asked) -> Reply {
         &asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"];
     if asked.user.contains("Telstra") {
         Reply::Answer(json!({ "actions": [
-            { "instruction_id": ids[0], "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "Telstra." }
+            { "instruction_id": ids[0], "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "Telstra." }
         ]}))
     } else {
         Reply::Answer(json!({ "actions": [] }))
@@ -428,11 +428,11 @@ fn with_tasks(asked: &Asked) -> Reply {
     let mut actions = vec![];
     if asked.user.contains("Telstra") {
         actions.push(json!({ "instruction_id": ids[0], "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false,
-            "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "Telstra." }));
+            "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "Telstra." }));
         // The Bills instruction is offered only where tasks may be made.
         if ids.len() > 1 {
             actions.push(json!({ "instruction_id": ids[1], "action": "create_task", "folder": "", "categories": [], "flag_due": "", "read": false,
-                "task_title": "Pay Telstra", "task_list": "", "task_due": "", "task_reminder": "", "reason": "A bill." }));
+                "task_title": "Pay Telstra", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "A bill." }));
         }
     }
     Reply::Answer(json!({ "actions": actions }))
@@ -492,4 +492,98 @@ async fn a_run_makes_tasks_only_when_asked_and_undoes_them_with_the_rest() {
     .await;
     run(&f.titan, "mail.sync", json!({})).await;
     assert!(f.graph.todo_tasks(&tasks_list).is_empty());
+}
+
+fn with_tools(asked: &Asked) -> Reply {
+    let ids =
+        asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"]
+            .as_array()
+            .unwrap()
+            .clone();
+    let mut actions = vec![];
+    // The Bills instruction is offered only where tools may be called.
+    if asked.user.contains("Telstra") && ids.len() > 1 {
+        actions.push(json!({ "instruction_id": ids[1], "action": "call_tool", "folder": "", "categories": [], "flag_due": "", "read": false,
+            "task_title": "", "task_list": "", "task_due": "", "task_reminder": "",
+            "tool": "Helpdesk/create_ticket", "tool_inputs": r#"{"subject":"Telstra bill","description":"Pay it."}"#, "reason": "A bill." }));
+    }
+    Reply::Answer(json!({ "actions": actions }))
+}
+
+#[tokio::test]
+async fn a_run_calls_tools_only_when_asked_and_applying_it_approves_them() {
+    let f = Fixture::set_up(None).await;
+    let mcp = brolga_fake_mcp::FakeMcp::start().await.unwrap();
+    mcp.accept_token("pat-1");
+    let server = run(
+        &f.titan,
+        "mcp_servers.add",
+        json!({ "name": "Helpdesk", "url": mcp.url() }),
+    )
+    .await["server"]["id"]
+        .clone();
+    run(
+        &f.titan,
+        "mcp_servers.set_token",
+        json!({ "server_id": server, "token": "pat-1" }),
+    )
+    .await;
+    run(
+        &f.titan,
+        "mcp_servers.tools",
+        json!({ "server_id": server }),
+    )
+    .await;
+    run(&f.titan, "mail.instructions.set", json!({
+        "name": "Bills", "text": "A bill from Telstra becomes a ticket.", "actions": ["call_tool"],
+        "tools": [{ "server_id": server, "tool": "create_ticket", "fixed": { "client_id": 7 } }]
+    }))
+    .await;
+    f.ai.answer_with(with_tools);
+
+    // Not asked for: no tool is offered the model.
+    let started = run(
+        &f.titan,
+        "mail.instructions.run.preview",
+        json!({ "folder_id": "inbox" }),
+    )
+    .await;
+    let id = started["run"]["id"].as_str().unwrap().to_owned();
+    let without = f.until(&id, "previewed").await;
+    assert_eq!(without["actions"], json!({}));
+    run(
+        &f.titan,
+        "mail.instructions.run.cancel",
+        json!({ "run_id": id }),
+    )
+    .await;
+
+    let started = run(
+        &f.titan,
+        "mail.instructions.run.preview",
+        json!({ "folder_id": "inbox", "include_tools": true }),
+    )
+    .await;
+    let id = started["run"]["id"].as_str().unwrap().to_owned();
+    let with = f.until(&id, "previewed").await;
+    assert_eq!(with["actions"], json!({ "call_tool": 3 }));
+    // The preview calls nothing.
+    assert!(mcp.calls().is_empty());
+    run(
+        &f.titan,
+        "mail.instructions.run.apply",
+        json!({ "run_id": id }),
+    )
+    .await;
+    f.until(&id, "applied").await;
+    let calls = mcp.calls();
+    assert_eq!(calls.len(), 3);
+    assert!(
+        calls
+            .iter()
+            .all(|(tool, args)| tool == "create_ticket" && args["client_id"] == 7)
+    );
+    // Applying was the approval: nothing waits.
+    let waiting = run(&f.titan, "mail.instructions.approvals.list", json!({})).await;
+    assert!(waiting["approvals"].as_array().unwrap().is_empty());
 }
