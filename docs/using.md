@@ -177,6 +177,16 @@ Installed from a package, Brolga offers itself as the program for `mailto:`
 links. Choose it as your default mail program in your desktop's settings, and
 a clicked address starts a new message in the window you already have open.
 
+## Outside tools
+
+Under **Settings**, **Outside tools**, on the computer that carries out your
+mail instructions, add the MCP server of a service such as a helpdesk, by
+its address, and sign in to it: through your browser, or with an access
+token the service gave you (the helpdesk's are under its Settings, API
+tokens). **Try it** checks that it works and reads its tools. What you sign
+in with stays on that computer. Letting an instruction use a tool comes in a
+later version.
+
 ## Tasks
 
 **Tasks** (Ctrl+4) is your Microsoft To Do: its lists, including the built-in

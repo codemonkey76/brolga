@@ -386,6 +386,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         let chosenModel: { provider: string | null; model: string | null; cloud_consent: boolean } = core.instructionsModel ?? { provider: null, model: null, cloud_consent: false };
         let keySaved = false;
         let ollamaAt = "http://localhost:11434";
+        /** Outside tool servers on this computer. */
+        let mcpServers: Record<string, unknown>[] = [];
         /** To Do as the core keeps it, and what undoes each change. */
         const todoLists = [
             { id: "list-tasks", name: "Tasks", well_known: "defaultList", built_in: true, read_only: false },
@@ -1123,6 +1125,26 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { ready, not_ready_because: ready ? null : "Sending this mailbox's mail to Anthropic has not been agreed to.", waiting: 0, failed: 0, today: { requests: 7 }, daily_cap: 500, last_error: null, last_pass: null, last_pass_at: null };
             },
             "mail.instructions.log": () => ({ entries: core.instructionsLog ?? [] }),
+            "mcp_servers.list": () => ({ servers: mcpServers }),
+            "mcp_servers.add": (args) => {
+                const server = { id: `mcp-${mcpServers.length + 1}`, name: String(args.name), url: String(args.url), signed_in: null, tools: null, tools_read_at: null };
+                mcpServers = [...mcpServers, server];
+                return { server };
+            },
+            "mcp_servers.sign_in": (args) => {
+                mcpServers = mcpServers.map((s) => (s.id === args.server_id ? { ...s, signed_in: "browser", tools: 2 } : s));
+                return { server: mcpServers.find((s) => s.id === args.server_id) };
+            },
+            "mcp_servers.set_token": (args) => {
+                mcpServers = mcpServers.map((s) => (s.id === args.server_id ? { ...s, signed_in: args.token ? "token" : null } : s));
+                return { server: mcpServers.find((s) => s.id === args.server_id) };
+            },
+            "mcp_servers.test": () => ({ ok: true, tools: 2, seconds: 0.4, error: null }),
+            "mcp_servers.tools": () => ({ tools: [{ name: "create_ticket", title: "Create a ticket", description: "Open a new ticket." }, { name: "list_tickets", title: null, description: "List the tickets." }] }),
+            "mcp_servers.remove": (args) => {
+                mcpServers = mcpServers.filter((s) => s.id !== args.server_id);
+                return { removed: true };
+            },
             "tasks.lists.list": () => ({ lists: todoLists, needs_sign_in: core.tasksNeedSignIn ?? false, changes_waiting: 0, changes_refused: [] }),
             "tasks.list": (args) => ({ tasks: todo.filter((t) => t.list_id === (args.list_id ?? "list-tasks") && (args.include_done || !t.done)) }),
             "tasks.get": (args) => ({ task: todo.find((t) => t.id === args.task_id) }),

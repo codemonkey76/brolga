@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "testing/fake-graph", "testing/fake-ai", "app/src-tauri"]
+members = ["crates/*", "testing/fake-graph", "testing/fake-ai", "testing/fake-mcp", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.20"
@@ -11,6 +11,7 @@ license = "MIT"
 
 [workspace.dependencies]
 brolga-ai = { path = "crates/ai" }
+brolga-tools = { path = "crates/tools" }
 brolga-auth = { path = "crates/auth" }
 brolga-commands = { path = "crates/commands" }
 brolga-control = { path = "crates/control" }
@@ -22,6 +23,7 @@ brolga-store = { path = "crates/store" }
 brolga-sync = { path = "crates/sync" }
 brolga-fake-graph = { path = "testing/fake-graph" }
 brolga-fake-ai = { path = "testing/fake-ai" }
+brolga-fake-mcp = { path = "testing/fake-mcp" }
 brolga-graph = { path = "crates/graph" }
 
 axum = "0.8"
