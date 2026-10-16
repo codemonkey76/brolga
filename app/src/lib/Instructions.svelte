@@ -293,11 +293,19 @@
         readModel();
     });
 
+    /** Each provider's model while the choice is open: switching provider brings back that provider's own. */
+    let modelFor = { anthropic: "", ollama: "" };
+
     function choose() {
         if (!model) return;
+        modelFor = {
+            anthropic: (model.provider === "anthropic" && model.model) || model.default_anthropic_model,
+            ollama: (model.provider === "ollama" && model.model) || "",
+        };
+        const provider = model.provider ?? "anthropic";
         choosing = {
-            provider: model.provider ?? "anthropic",
-            model: model.model ?? (model.provider === "ollama" ? "" : model.default_anthropic_model),
+            provider,
+            model: modelFor[provider],
             consent: model.cloud_consent,
             address: model.ollama_address,
             key: "",
@@ -305,6 +313,14 @@
         problem = null;
         tried = null;
         if (choosing.provider === "ollama") findModels();
+    }
+
+    function switchTo(provider: "anthropic" | "ollama") {
+        if (!choosing || choosing.provider === provider) return;
+        modelFor[choosing.provider] = choosing.model;
+        choosing.provider = provider;
+        choosing.model = modelFor[provider];
+        if (provider === "ollama") findModels();
     }
 
     async function findModels() {
@@ -486,11 +502,12 @@
                     <form aria-label="Choose the model" onsubmit={saveModel}>
                         <fieldset>
                             <legend>Read the mail with</legend>
-                            <label><input type="radio" name="provider" value="anthropic" bind:group={choosing.provider} /> A model at Anthropic, with an API key</label>
-                            <label><input type="radio" name="provider" value="ollama" bind:group={choosing.provider} onchange={findModels} /> A model on an Ollama server</label>
+                            <label><input type="radio" name="provider" value="anthropic" checked={choosing.provider === "anthropic"} onchange={() => switchTo("anthropic")} /> A model at Anthropic, with an API key</label>
+                            <label><input type="radio" name="provider" value="ollama" checked={choosing.provider === "ollama"} onchange={() => switchTo("ollama")} /> A model on an Ollama server</label>
                         </fieldset>
                         {#if choosing.provider === "anthropic"}
-                            <label class="stacked">Model <input type="text" bind:value={choosing.model} placeholder={model.default_anthropic_model} /></label>
+                            <label class="stacked">Model <input type="text" list="anthropic-models" bind:value={choosing.model} placeholder={model.default_anthropic_model} /></label>
+                            <datalist id="anthropic-models"><option value={model.default_anthropic_model}></option></datalist>
                             {#if listed.processing_here}
                                 <label class="stacked">
                                     API key {model.key_saved ? "(one is saved; type a new one to replace it)" : ""}
