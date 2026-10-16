@@ -520,7 +520,7 @@ checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
 name = "brolga-ai"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-fake-ai",
  "jsonschema",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-app"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-auth",
  "brolga-commands",
@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-auth"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "base64 0.23.1",
  "brolga-fake-graph",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-calendar"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "jiff",
  "serde",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-cli"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-auth",
  "brolga-commands",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-commands"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "futures",
  "jsonschema",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-contacts"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "calcard",
  "serde_json",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-control"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-commands",
  "getrandom 0.4.3",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-core"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-fake-ai"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "axum",
  "serde_json",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-fake-graph"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-fake-mcp"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-graph"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "base64 0.23.1",
  "brolga-fake-graph",
@@ -714,14 +714,14 @@ dependencies = [
 
 [[package]]
 name = "brolga-mail"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "ammonia",
 ]
 
 [[package]]
 name = "brolga-mcp"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-commands",
  "brolga-control",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-ops"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-calendar",
  "brolga-fake-graph",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-platform"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-auth",
  "directories",
@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-pst"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "encoding_rs",
  "jiff",
@@ -770,11 +770,11 @@ dependencies = [
 
 [[package]]
 name = "brolga-search"
-version = "0.1.21"
+version = "0.1.22"
 
 [[package]]
 name = "brolga-store"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "rusqlite",
  "serde",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-sync"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "brolga-calendar",
  "brolga-fake-graph",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "brolga-tools"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "async-trait",
  "brolga-auth",

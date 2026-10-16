@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.22" date="2026-10-16">
+      <description>
+        <p>Mail instructions can look things up before they act, and make up to three calls in a row from one approval. One instruction can now find the client and contact who wrote to you in a helpdesk, make them if they are not there, and then make the ticket under them. You choose which tools only look things up and may run without asking; the approval shows each step and what was looked up first.</p>
+      </description>
+    </release>
     <release version="0.1.21" date="2026-10-16">
       <description>
         <p>Mail instructions: standing instructions for each mailbox, written in plain words, that an AI model (Anthropic's, or one of your own through Ollama) carries out on new mail in the Inbox. They can move, categorise, flag and mark messages, make To Do tasks, and call tools on other services such as a helpdesk, asking first until you let a tool run unattended. Calls waiting for approval can be approved from any computer signed in to the mailbox. Instructions can also be run over existing mail, with a preview first and undo for three days. A new Tasks section works with Microsoft To Do. A new icon.</p>

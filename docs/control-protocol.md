@@ -86,7 +86,7 @@ comes back on the answer:
 An answer has either a `result` or an `error`:
 
 ```json
-{"id": 2, "result": {"name": "Brolga", "version": "0.1.21"}}
+{"id": 2, "result": {"name": "Brolga", "version": "0.1.22"}}
 {"id": 3, "error": {"code": "unknown_command", "message": "there is no command called `mail.nothing`"}}
 ```
 
