@@ -31,6 +31,9 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     // Mailboxes other people have shared: to read, change and send from.
     "Mail.ReadWrite.Shared",
     "Mail.Send.Shared",
+    // Microsoft To Do: the person's task lists and tasks
+    // (docs/spec-mail-instructions.md, "Tasks").
+    "Tasks.ReadWrite",
 ];
 
 /// The app registration a sign-in is made under.

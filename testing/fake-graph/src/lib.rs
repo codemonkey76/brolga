@@ -14,6 +14,7 @@ mod identity;
 mod mailbox;
 mod people;
 mod rules;
+mod todo;
 
 pub use calendar::{FakeCalendar, FakeEvent};
 pub use identity::FakeIdentity;
@@ -59,6 +60,12 @@ struct Inner {
     people: people::People,
     /// The inbox's rules, and the categories the mailbox has.
     rules: rules::Rules,
+    /// Microsoft To Do: task lists and tasks.
+    todo: todo::Todo,
+    /// The next task made is made, and the answer to its request is lost.
+    lose_next_task_answer: bool,
+    /// Refuse To Do with 403, as for a sign-in from before Tasks.ReadWrite.
+    todo_forbidden: bool,
     categories: rules::Categories,
     /// Who the main calendar is shared with. Nobody yet, until it is first asked about.
     calendar_permissions: Option<Vec<Value>>,
@@ -244,6 +251,24 @@ impl FakeGraph {
                 "/v1.0/me/mailboxSettings/automaticRepliesSetting",
                 get(automatic_replies),
             )
+            .route("/v1.0/me/todo/lists/delta", get(todo_lists_delta))
+            .route("/v1.0/me/todo/lists", axum::routing::post(create_todo_list))
+            .route(
+                "/v1.0/me/todo/lists/{list}",
+                axum::routing::patch(rename_todo_list).delete(delete_todo_list),
+            )
+            .route(
+                "/v1.0/me/todo/lists/{list}/tasks/delta",
+                get(todo_tasks_delta),
+            )
+            .route(
+                "/v1.0/me/todo/lists/{list}/tasks",
+                get(todo_tasks).post(create_todo_task),
+            )
+            .route(
+                "/v1.0/me/todo/lists/{list}/tasks/{task}",
+                axum::routing::patch(update_todo_task).delete(delete_todo_task),
+            )
             .route("/v1.0/me/mailFolders/delta", get(folders_delta))
             .route("/v1.0/me/mailFolders", get(top_folders).post(create_folder))
             .route(
@@ -393,6 +418,62 @@ impl FakeGraph {
 
     pub fn add_folder(&self, name: &str, parent: Option<&str>) -> String {
         lock(&self.shared).mailbox.add_folder(name, parent)
+    }
+
+    /// The To Do list of this name or well-known name (`defaultList`,
+    /// `flaggedEmails`), by id.
+    pub fn todo_list(&self, name: &str) -> Option<String> {
+        lock(&self.shared).todo.list_id(name)
+    }
+
+    /// Every To Do list, as the server gives it.
+    pub fn todo_lists(&self) -> Vec<Value> {
+        lock(&self.shared).todo.lists()
+    }
+
+    /// Make a list, as the person would in To Do itself.
+    pub fn add_todo_list(&self, name: &str) -> String {
+        lock(&self.shared).todo.add_list(name, "none")
+    }
+
+    /// The tasks in a list, as the server has them.
+    pub fn todo_tasks(&self, list: &str) -> Vec<Value> {
+        lock(&self.shared).todo.tasks_in(list)
+    }
+
+    /// A task, and the list it is in.
+    pub fn todo_task(&self, id: &str) -> Option<(String, Value)> {
+        lock(&self.shared).todo.task(id)
+    }
+
+    /// Make a task, as the person would in To Do itself. Gives its id.
+    pub fn add_todo_task(&self, list: &str, task: Value) -> String {
+        lock(&self.shared)
+            .todo
+            .add_task(list, &task)
+            .ok()
+            .and_then(|t| t["id"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// Change a task, as the person would in To Do itself.
+    pub fn change_todo_task(&self, list: &str, id: &str, changes: Value) {
+        let _ = lock(&self.shared).todo.update_task(list, id, &changes);
+    }
+
+    /// Delete a task, as the person would in To Do itself.
+    pub fn delete_todo_task(&self, list: &str, id: &str) {
+        let _ = lock(&self.shared).todo.delete_task(list, id);
+    }
+
+    /// The next task asked for is made, and the answer is lost.
+    pub fn lose_next_task_answer(&self) {
+        lock(&self.shared).lose_next_task_answer = true;
+    }
+
+    /// Refuse To Do, as for a sign-in that has not granted Tasks.ReadWrite.
+    pub fn forbid_todo(&self, forbidden: bool) {
+        lock(&self.shared).todo_forbidden = forbidden;
     }
 
     /// Add a hidden folder at the top of the mailbox.
@@ -2114,6 +2195,149 @@ fn page_size(request: &axum::http::HeaderMap) -> usize {
         .unwrap_or(10)
 }
 
+fn todo_refused(refusal: todo::Refusal) -> Response {
+    match refusal {
+        todo::Refusal::NotFound => error(
+            StatusCode::NOT_FOUND,
+            "ErrorItemNotFound",
+            "The specified object was not found in the store.",
+        ),
+        todo::Refusal::BuiltIn => error(
+            StatusCode::BAD_REQUEST,
+            "invalidRequest",
+            "A built-in list cannot be renamed or deleted.",
+        ),
+    }
+}
+
+fn forbidden() -> Response {
+    error(
+        StatusCode::FORBIDDEN,
+        "ErrorAccessDenied",
+        "Access is denied. Check credentials and try again.",
+    )
+}
+
+fn delta_since(query: &HashMap<String, String>) -> Option<u64> {
+    query.get("$deltatoken").and_then(|t| t.parse().ok())
+}
+
+async fn todo_lists_delta(
+    State(shared): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let inner = lock(&shared);
+    if inner.todo_forbidden {
+        return forbidden();
+    }
+    let link = format!("{}/me/todo/lists/delta", inner.base);
+    axum::Json(inner.todo.lists_delta(delta_since(&query), &link)).into_response()
+}
+
+async fn todo_tasks_delta(
+    State(shared): State<Shared>,
+    Path(list): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let inner = lock(&shared);
+    if inner.todo_forbidden {
+        return forbidden();
+    }
+    let link = format!("{}/me/todo/lists/{list}/tasks/delta", inner.base);
+    match inner.todo.tasks_delta(&list, delta_since(&query), &link) {
+        Some(page) => axum::Json(page).into_response(),
+        None => todo_refused(todo::Refusal::NotFound),
+    }
+}
+
+async fn todo_tasks(State(shared): State<Shared>, Path(list): Path<String>) -> Response {
+    let inner = lock(&shared);
+    axum::Json(json!({ "value": inner.todo.tasks_in(&list) })).into_response()
+}
+
+async fn create_todo_list(
+    State(shared): State<Shared>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    let Some(name) = body["displayName"].as_str().filter(|n| !n.is_empty()) else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalidRequest",
+            "displayName is required.",
+        );
+    };
+    let id = inner.todo.add_list(name, "none");
+    let list = inner
+        .todo
+        .lists()
+        .into_iter()
+        .find(|l| l["id"] == id.as_str())
+        .unwrap_or_default();
+    (StatusCode::CREATED, axum::Json(list)).into_response()
+}
+
+async fn rename_todo_list(
+    State(shared): State<Shared>,
+    Path(list): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    match inner
+        .todo
+        .rename_list(&list, body["displayName"].as_str().unwrap_or_default())
+    {
+        Ok(list) => axum::Json(list).into_response(),
+        Err(refusal) => todo_refused(refusal),
+    }
+}
+
+async fn delete_todo_list(State(shared): State<Shared>, Path(list): Path<String>) -> Response {
+    match lock(&shared).todo.delete_list(&list) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refusal) => todo_refused(refusal),
+    }
+}
+
+async fn create_todo_task(
+    State(shared): State<Shared>,
+    Path(list): Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut inner = lock(&shared);
+    if inner.todo_forbidden {
+        return forbidden();
+    }
+    match inner.todo.add_task(&list, &body) {
+        Ok(_) if std::mem::take(&mut inner.lose_next_task_answer) => {
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+        Ok(task) => (StatusCode::CREATED, axum::Json(task)).into_response(),
+        Err(refusal) => todo_refused(refusal),
+    }
+}
+
+async fn update_todo_task(
+    State(shared): State<Shared>,
+    Path((list, task)): Path<(String, String)>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    match lock(&shared).todo.update_task(&list, &task, &body) {
+        Ok(task) => axum::Json(task).into_response(),
+        Err(refusal) => todo_refused(refusal),
+    }
+}
+
+async fn delete_todo_task(
+    State(shared): State<Shared>,
+    Path((list, task)): Path<(String, String)>,
+) -> Response {
+    match lock(&shared).todo.delete_task(&list, &task) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refusal) => todo_refused(refusal),
+    }
+}
+
 fn token(query: &HashMap<String, String>) -> Option<&str> {
     query
         .get("$skiptoken")
@@ -3281,7 +3505,7 @@ mod tests {
     async fn something_not_built_says_so() {
         let graph = FakeGraph::start().await.unwrap();
 
-        let response = get(&graph, "/me/todo/lists", Some("token")).await;
+        let response = get(&graph, "/me/onenote/notebooks", Some("token")).await;
 
         assert_eq!(response.status(), 404);
         let body: Value = response.json().await.unwrap();
@@ -3290,7 +3514,7 @@ mod tests {
             body["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("/v1.0/me/todo/lists")
+                .contains("/v1.0/me/onenote/notebooks")
         );
     }
 }

@@ -294,6 +294,14 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
             // when the mailbox is out of reach; the device that carries
             // them out says it is still running. Trouble with them is not
             // the sync's.
+            // And To Do, for the person's own account: what was changed here
+            // goes first, then what changed there comes down.
+            mailbox.stage(Some("tasks"));
+            let tasks = if mailbox.shared.is_some() {
+                Ok(())
+            } else {
+                crate::task_commands::sync(&mailbox).await
+            };
             mailbox.stage(Some("instructions"));
             if let Ok(device) = crate::device::this(context.mailboxes.global())
                 && let Ok(true) = crate::instructions::on_sync(&mailbox, &device).await
@@ -304,15 +312,16 @@ async fn sync(context: Context, args: SyncArgs) -> Result<Value, CommandError> {
                 crate::runs::soon(context.mailboxes.clone(), account.id.clone(), mailbox.clone(), device.clone());
                 crate::processing::soon(context.mailboxes.clone(), account.id.clone(), mailbox.clone(), device);
             }
-            Ok::<_, String>(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts)))
+            Ok::<_, String>(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts, tasks)))
         }
         .await;
 
         results.push(match outcome {
             // Mail that synced in part is not a sync that went well: what
             // stood in its way is the result, beside what was still done.
-            Ok(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts))) => json!({
+            Ok(Some((synced, bodies, mail_problem, events_changed, calendar_problem, contacts, tasks))) => json!({
                 "contacts_error": contacts.err(),
+                "tasks_error": tasks.err(),
                 "account_id": account.id, "ok": mail_problem.is_none(), "changed": synced.changed, "removed": synced.removed,
                 "bodies_downloaded": bodies, "syncing_elsewhere": false, "error": mail_problem,
                 "events_changed": events_changed, "calendar_error": calendar_problem,
@@ -1413,7 +1422,8 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                 "error": { "type": ["string", "null"], "description": "Why this account did not sync, in plain words." },
                                 "events_changed": { "type": ["integer", "null"], "description": "Calendars and events added, updated or removed." },
                                 "calendar_error": { "type": ["string", "null"], "description": "Why the calendar did not sync, where the mail did." },
-                                "contacts_error": { "type": ["string", "null"], "description": "Why contacts did not sync, where the mail did." }
+                                "contacts_error": { "type": ["string", "null"], "description": "Why contacts did not sync, where the mail did." },
+                                "tasks_error": { "type": ["string", "null"], "description": "Why To Do tasks did not sync, where the mail did." }
                             },
                             "required": ["account_id", "ok", "changed", "removed", "error"]
                         }
@@ -1454,7 +1464,7 @@ pub(crate) fn register(registry: &mut Registry, context: Context) -> Result<(), 
                                     "type": ["object", "null"],
                                     "description": "What a sync running in this copy of Brolga is busy with. Null when none is, or when another copy is doing the syncing.",
                                     "properties": {
-                                        "doing": { "type": "string", "enum": ["sending", "folders", "mail", "bodies", "markers", "calendar", "contacts", "instructions"], "description": "sending: changes made here are going up. folders: the folder list is being read. mail: a folder's messages are being fetched. bodies: recent messages are being fetched whole, to read offline. markers: which messages were answered or forwarded is being asked. instructions: the mailbox's mail instructions are being read." },
+                                        "doing": { "type": "string", "enum": ["sending", "folders", "mail", "bodies", "markers", "calendar", "contacts", "tasks", "instructions"], "description": "sending: changes made here are going up. folders: the folder list is being read. mail: a folder's messages are being fetched. bodies: recent messages are being fetched whole, to read offline. markers: which messages were answered or forwarded is being asked. tasks: To Do is being brought up to date. instructions: the mailbox's mail instructions are being read." },
                                         "folder_id": { "type": "string", "description": "With `mail`: the folder being fetched." },
                                         "folder": { "type": "string", "description": "Its name." },
                                         "fetched": { "type": ["integer", "null"], "description": "How many of its messages have been fetched, while it is being fetched whole. Null while it is only being checked for what is new." },

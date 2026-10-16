@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { BellRing } from "@lucide/svelte";
+    import { BellRing, ListTodo } from "@lucide/svelte";
     import type { Account } from "./accounts";
     import { type CalendarEvent, timeSaid, span } from "./calendar";
     import { execute, notify } from "./commands";
@@ -8,6 +8,13 @@
         accounts: Account[];
         /** Go to the calendar, to the event's day. */
         onOpen: () => void;
+        /** Go to a task, in Tasks. */
+        onOpenTask?: (account_id: string, task_id: string) => void;
+    }
+
+    interface TaskReminder {
+        account_id: string;
+        task: { id: string; title: string; due: string | null; reminder_at: string };
     }
 
     interface Reminder {
@@ -16,8 +23,9 @@
         starts_in_minutes: number;
     }
 
-    let { accounts, onOpen }: Props = $props();
+    let { accounts, onOpen, onOpenTask }: Props = $props();
     let reminders = $state<Reminder[]>([]);
+    let taskReminders = $state<TaskReminder[]>([]);
     /** The reminders the desktop has already been told of, so each is told once. */
     const told = new Set<string>();
     /** Bumped with each look, and whenever a reminder is dismissed or put off, so that a look begun before then does not bring it back. */
@@ -41,6 +49,7 @@
     async function look() {
         const mine = ++looks;
         const found: Reminder[] = [];
+        const tasks: TaskReminder[] = [];
         for (const account of accounts) {
             try {
                 const got = await execute<{ reminders: Omit<Reminder, "account_id">[] }>("calendar.reminders.due", { account_id: account.id, time_zone: zone });
@@ -48,9 +57,21 @@
             } catch {
                 // Nothing to remind of until the client can be asked again.
             }
+            try {
+                const got = await execute<{ reminders: TaskReminder["task"][] }>("tasks.reminders.due", { account_id: account.id });
+                tasks.push(...got.reminders.map((task) => ({ task, account_id: account.id })));
+            } catch {
+                // An account that does not reach To Do has no task reminders.
+            }
         }
         if (mine !== looks) return;
         reminders = found;
+        taskReminders = tasks;
+        for (const reminder of tasks) {
+            if (told.has(reminder.task.id)) continue;
+            told.add(reminder.task.id);
+            notify(reminder.task.title || "(No title)", reminder.task.due ? `Task due ${new Date(`${reminder.task.due}T00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}` : "Task");
+        }
         for (const reminder of found) {
             if (told.has(reminder.event.id)) continue;
             told.add(reminder.event.id);
@@ -85,14 +106,48 @@
 
     const dismiss = (reminder: Reminder) => put(reminder, "calendar.reminders.dismiss");
 
+    /** Do something with a task's reminder, and take it off the list. */
+    async function forTask(reminder: TaskReminder, command: string, more: Record<string, unknown> = {}) {
+        taskReminders = taskReminders.filter((each) => each !== reminder);
+        looks += 1;
+        try {
+            await execute(command, { account_id: reminder.account_id, task_id: reminder.task.id, ...more });
+            looks += 1;
+            if (command === "tasks.reminders.snooze") told.delete(reminder.task.id);
+        } catch {
+            await look();
+        }
+    }
+
+    const snoozeTask = (reminder: TaskReminder, minutes: number) =>
+        forTask(reminder, "tasks.reminders.snooze", { until: new Date(Date.now() + minutes * 60_000).toISOString() });
+
     async function snooze(reminder: Reminder, minutes: number) {
         // When it comes back, the desktop is told again.
         if (await put(reminder, "calendar.reminders.snooze", { minutes })) told.delete(reminder.event.id);
     }
 </script>
 
-{#if reminders.length > 0}
+{#if reminders.length > 0 || taskReminders.length > 0}
     <section class="reminders" aria-label="Reminders">
+        {#each taskReminders as reminder (reminder.task.id)}
+            <article>
+                <ListTodo size={18} aria-hidden="true" />
+                <div class="what">
+                    <button type="button" class="subject" onclick={() => onOpenTask?.(reminder.account_id, reminder.task.id)}>{reminder.task.title || "(No title)"}</button>
+                    <span class="muted">Task{reminder.task.due ? ` · due ${new Date(`${reminder.task.due}T00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}` : ""}</span>
+                </div>
+                <select aria-label="Snooze {reminder.task.title}" onchange={(event) => event.currentTarget.value && snoozeTask(reminder, Number(event.currentTarget.value))}>
+                    <option value="">Snooze…</option>
+                    <option value="5">5 minutes</option>
+                    <option value="15">15 minutes</option>
+                    <option value="60">1 hour</option>
+                    <option value="1440">Tomorrow</option>
+                </select>
+                <button type="button" onclick={() => forTask(reminder, "tasks.complete")}>Done</button>
+                <button type="button" onclick={() => forTask(reminder, "tasks.reminders.dismiss")}>Dismiss</button>
+            </article>
+        {/each}
         {#each reminders as reminder (reminder.event.id)}
             <article>
                 <BellRing size={18} aria-hidden="true" />

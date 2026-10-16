@@ -177,6 +177,19 @@ Installed from a package, Brolga offers itself as the program for `mailto:`
 links. Choose it as your default mail program in your desktop's settings, and
 a clicked address starts a new message in the window you already have open.
 
+## Tasks
+
+**Tasks** (Ctrl+4) is your Microsoft To Do: its lists, including the built-in
+Tasks list, and your flagged email, which is shown there and changed by
+flagging the message. Add a task by typing it at the top of a list; choose
+one to give it a due day, a reminder, notes or importance. It works offline,
+and changes reach To Do when Brolga next can. Each change can be undone for a
+while after. A task made from an email has a link that opens it in Mail.
+Reminders appear beside calendar reminders.
+
+The first time, Brolga needs your permission to read To Do: the Tasks view
+offers **Sign in again to use Tasks**.
+
 ## Mail instructions
 
 Under **Settings**, **Instructions**, each mailbox, a shared one included,

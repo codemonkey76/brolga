@@ -18,10 +18,12 @@
 mod calendar;
 mod contacts;
 mod mail;
+mod tasks;
 
 pub use calendar::{CalendarSync, event_row};
 pub use contacts::{ContactSync, contact_row};
 pub use mail::{Doing, MailSync, Synced};
+pub use tasks::{TaskSync, task_list_row, task_row};
 
 use brolga_graph::GraphError;
 use brolga_store::StoreError;

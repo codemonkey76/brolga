@@ -149,6 +149,18 @@ async fn every_command_is_described_and_its_examples_run() {
     );
     // A folder of one's own making, for `mail.folders.move`.
     assert_eq!(graph.add_folder("Projects", None), "folder-000010");
+    // To Do lists and tasks, for the tasks examples: Tasks and Flagged
+    // email are list-0001 and list-0002.
+    assert_eq!(graph.add_todo_list("Groceries"), "list-0003");
+    assert_eq!(graph.add_todo_list("Old things"), "list-0004");
+    assert_eq!(
+        graph.add_todo_task("list-0001", json!({ "title": "Pay the bill" })),
+        "task-0005"
+    );
+    assert_eq!(
+        graph.add_todo_task("list-0001", json!({ "title": "Old task" })),
+        "task-0006"
+    );
     // Mail instructions, kept in the mailbox's hidden settings folder, for
     // `mail.instructions.get`, `.delete` and `.reorder`.
     let settings = graph.add_hidden_folder("Brolga");
@@ -212,6 +224,14 @@ async fn every_command_is_described_and_its_examples_run() {
         .as_str()
         .unwrap()
         .to_owned();
+    // A change to tasks, for `tasks.undo`.
+    let task_undo = registry
+        .execute("tasks.create", json!({ "title": "To be undone" }))
+        .await
+        .unwrap()["undo_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     for _ in 0..500 {
         let status = registry
             .execute("mail.instructions.run.status", json!({ "run_id": run }))
@@ -269,6 +289,9 @@ async fn every_command_is_described_and_its_examples_run() {
             }
             if example["run_id"] == "run-000000000000" {
                 example["run_id"] = json!(run);
+            }
+            if spec.id == "tasks.undo" {
+                example["undo_id"] = json!(task_undo);
             }
             let example = &example;
             // As the window, which may run every command there is.

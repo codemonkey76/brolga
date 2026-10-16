@@ -6,6 +6,10 @@
 //! until the server has answered for it, and sending one twice leaves the
 //! mailbox as sending it once does.
 
+mod tasks;
+
+pub use tasks::TaskOutbox;
+
 use std::collections::HashSet;
 use std::sync::Arc;
 

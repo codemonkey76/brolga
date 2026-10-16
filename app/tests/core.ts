@@ -213,6 +213,11 @@ export interface FakeCore {
     /** The model the instructions use, and what they have done. */
     instructionsModel?: { provider: "anthropic" | "ollama"; model: string; cloud_consent: boolean };
     instructionsLog?: Record<string, unknown>[];
+    /** Microsoft To Do: lists beside the built-in two, and tasks. */
+    taskLists?: { id: string; name: string }[];
+    tasks?: Record<string, unknown>[];
+    /** The sign-in is from before Tasks. */
+    tasksNeedSignIn?: boolean;
     /** How automatic replies are set to begin with, where that is not off. */
     replies?: Record<string, unknown>;
     /** Why automatic replies cannot be read, if they cannot. */
@@ -381,6 +386,21 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         let chosenModel: { provider: string | null; model: string | null; cloud_consent: boolean } = core.instructionsModel ?? { provider: null, model: null, cloud_consent: false };
         let keySaved = false;
         let ollamaAt = "http://localhost:11434";
+        /** To Do as the core keeps it, and what undoes each change. */
+        const todoLists = [
+            { id: "list-tasks", name: "Tasks", well_known: "defaultList", built_in: true, read_only: false },
+            { id: "list-flagged", name: "Flagged email", well_known: "flaggedEmails", built_in: true, read_only: true },
+            ...(core.taskLists ?? []).map((each) => ({ ...each, well_known: "none", built_in: false, read_only: false })),
+        ];
+        let todo: Record<string, unknown>[] = (core.tasks ?? []).map((each) => ({ list_id: "list-tasks", notes: "", due: null, reminder_at: null, importance: "normal", status: "notStarted", done: false, links: [], on_server: true, ...each }));
+        const todoUndo = new Map<string, () => void>();
+        let todoNext = 0;
+        const todoChange = (change: () => () => void) => {
+            const undo = change();
+            const id = `tu-${++todoNext}`;
+            todoUndo.set(id, undo);
+            return id;
+        };
         /** The latest run over existing mail, as the core would keep it. */
         let instructionRun: Record<string, unknown> | null = null;
         const runItems = [
@@ -1103,6 +1123,53 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { ready, not_ready_because: ready ? null : "Sending this mailbox's mail to Anthropic has not been agreed to.", waiting: 0, failed: 0, today: { requests: 7 }, daily_cap: 500, last_error: null, last_pass: null, last_pass_at: null };
             },
             "mail.instructions.log": () => ({ entries: core.instructionsLog ?? [] }),
+            "tasks.lists.list": () => ({ lists: todoLists, needs_sign_in: core.tasksNeedSignIn ?? false, changes_waiting: 0, changes_refused: [] }),
+            "tasks.list": (args) => ({ tasks: todo.filter((t) => t.list_id === (args.list_id ?? "list-tasks") && (args.include_done || !t.done)) }),
+            "tasks.get": (args) => ({ task: todo.find((t) => t.id === args.task_id) }),
+            "tasks.create": (args) => {
+                const task = { id: `task-${todo.length + 1}`, list_id: args.list_id ?? "list-tasks", title: args.title, notes: "", due: null, reminder_at: null, importance: "normal", status: "notStarted", done: false, links: [], on_server: false };
+                const undo_id = todoChange(() => {
+                    todo = [...todo, task];
+                    return () => (todo = todo.filter((t) => t !== task));
+                });
+                return { task, undo_id };
+            },
+            "tasks.update": (args) => {
+                const { account_id: _, task_id, ...changes } = args;
+                const was = todo.find((t) => t.id === task_id);
+                const undo_id = todoChange(() => {
+                    todo = todo.map((t) => (t.id === task_id ? { ...t, ...changes } : t));
+                    return () => (todo = todo.map((t) => (t.id === task_id && was ? was : t)));
+                });
+                return { task: todo.find((t) => t.id === task_id), undo_id };
+            },
+            "tasks.complete": (args) => {
+                const was = todo.find((t) => t.id === args.task_id);
+                const done = args.done !== false;
+                const undo_id = todoChange(() => {
+                    todo = todo.map((t) => (t.id === args.task_id ? { ...t, done, status: done ? "completed" : "notStarted" } : t));
+                    return () => (todo = todo.map((t) => (t.id === args.task_id && was ? was : t)));
+                });
+                return { task: todo.find((t) => t.id === args.task_id), undo_id };
+            },
+            "tasks.delete": (args) => {
+                const was = todo.find((t) => t.id === args.task_id);
+                const undo_id = todoChange(() => {
+                    todo = todo.filter((t) => t.id !== args.task_id);
+                    return () => (todo = was ? [...todo, was] : todo);
+                });
+                return { deleted: true, undo_id };
+            },
+            "tasks.undo": (args) => {
+                todoUndo.get(String(args.undo_id))?.();
+                return { undone: 1 };
+            },
+            "tasks.lists.create": (args) => {
+                const list = { id: `list-${todoLists.length + 1}`, name: String(args.name), well_known: "none", built_in: false, read_only: false };
+                todoLists.push(list);
+                return { list, undo_id: "tl" };
+            },
+            "tasks.reminders.due": () => ({ reminders: [] }),
             "mail.instructions.run.estimate": () => ({ messages: 1480, provider: "anthropic", model: "claude-haiku-5-5", estimated_cost_usd: 0.31, estimated_minutes: 19, not_synced: [] }),
             "mail.instructions.run.preview": (args) => {
                 instructionRun = { id: "run-1", state: "previewed", folder_id: args.folder_id, total: 1480, counts: { decided: 2, nothing: 1478 }, actions: { move: 2 }, undo_until: null, error: null };

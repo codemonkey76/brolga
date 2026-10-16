@@ -707,6 +707,7 @@ impl Mailbox {
             },
             "categories": m.categories,
             "inferenceClassification": "focused",
+            "webLink": format!("https://outlook.office365.com/owa/?ItemID={id}&exvsurl=1&viewmodel=ReadMessageItem"),
         });
         if with_body {
             value["body"] = json!({ "contentType": "html", "content": m.body_html });
