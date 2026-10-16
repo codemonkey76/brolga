@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Archive, CalendarRange, CircleUser, Laptop, ListFilter, PenLine, Reply, Share2, Signature as SignatureIcon, Sparkles, Tag, Users } from "@lucide/svelte";
+    import { Archive, CalendarRange, CircleUser, Laptop, ListFilter, PenLine, Plug, Reply, Share2, Signature as SignatureIcon, Sparkles, Tag, Users } from "@lucide/svelte";
     import { type Account, listAccounts, listShared, mailboxes, type SharedMailbox } from "./accounts";
     import Accounts from "./Accounts.svelte";
     import Archives from "./Archives.svelte";
@@ -9,6 +9,7 @@
     import Categories from "./Categories.svelte";
     import Desktop from "./Desktop.svelte";
     import Instructions from "./Instructions.svelte";
+    import OutsideTools from "./OutsideTools.svelte";
     import Rules from "./Rules.svelte";
     import SharedMailboxes from "./SharedMailboxes.svelte";
     import Signature from "./Signature.svelte";
@@ -23,7 +24,7 @@
 
     let { onChanged, onArchives }: Props = $props();
 
-    type Id = "accounts" | "shared" | "signature" | "replies" | "rules" | "instructions" | "categories" | "writing" | "calendar-sharing" | "week" | "computer" | "archives";
+    type Id = "accounts" | "shared" | "signature" | "replies" | "rules" | "instructions" | "categories" | "writing" | "calendar-sharing" | "week" | "computer" | "archives" | "outside";
 
     interface Section {
         id: Id;
@@ -69,6 +70,7 @@
             sections: [
                 { id: "computer", name: "Start-up and updates", icon: Laptop },
                 { id: "archives", name: "Archives", icon: Archive },
+                { id: "outside", name: "Outside tools", icon: Plug },
             ],
         },
     ];
@@ -200,6 +202,8 @@
                 <Desktop />
             {:else if shown === "archives"}
                 <Archives onChanged={onArchives} />
+            {:else if shown === "outside"}
+                <OutsideTools />
             {:else if account}
                 {#if section.signedIn && account.needs_sign_in}
                     <p class="muted" role="status">{account.username} has to sign in again before this can be read. That is done under Accounts.</p>

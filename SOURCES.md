@@ -111,6 +111,15 @@ interface text. The full rules are in [AGENTS.md](AGENTS.md).
 | linkedResource resource type | https://learn.microsoft.com/graph/api/resources/linkedresource | `applicationName`, `displayName`, `externalId` and `webUrl` (optional) for the email a task is made from. What To Do shows for one is not said |
 | message resource type | https://learn.microsoft.com/graph/api/resources/message | `webLink`: where a message opens in Outlook on the web, the `webUrl` of a task's link to it |
 
+## Model Context Protocol, as a client
+
+| Source | URL | Used for |
+|---|---|---|
+| MCP specification 2026-07-28: Streamable HTTP; Versioning; Tools | https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http | The current protocol, with no `initialize` and no session, and how to tell an older server: send a current request, and on an answer that is not a current error, fall back to `initialize`. rmcp's `ClientLifecycleMode::Auto` does this. `tools/list` gives each tool's `inputSchema`; tool annotations and descriptions are the server's word, and untrusted. Read 16 October 2026 (TKT-01184) |
+| MCP specification 2025-11-25: Transports | https://modelcontextprotocol.io/specification/2025-11-25/basic/transports | The older protocol most servers speak today: `initialize`, then `notifications/initialized`, an `Mcp-Session-Id` kept and sent back |
+| MCP specification 2026-07-28: Authorization; Authorization server discovery; Client registration | https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization | OAuth 2.1 for an MCP client: the `WWW-Authenticate` `resource_metadata` of a 401 (RFC 9728), the authorization server's metadata (RFC 8414 or OIDC), a client ID metadata document or dynamic registration (RFC 7591, `application_type` native), PKCE with S256 only, the `resource` parameter (RFC 8707), `iss` checked on the way back (RFC 9207), a `localhost` redirect. rmcp's `OAuthState` and `AuthorizationManager` carry it out; Brolga keeps what they hold in the system secret store and listens on the loopback port |
+| rmcp 3.5 (the official Rust SDK) | https://docs.rs/rmcp/latest/rmcp/ | The client, its Streamable HTTP transport over reqwest, and its OAuth support, with a `CredentialStore` of Brolga's own so that a refreshed token is kept |
+
 ## Anthropic and Ollama
 
 | Source | URL | Used for |

@@ -42,6 +42,10 @@ pub const WINDOW_ONLY: &[&str] = &[
     "mail.instructions.processor.take",
     // The key to the person's own Anthropic account.
     "mail.instructions.model.set_key",
+    // Outside tool servers: which a computer reaches, and as whom.
+    "mcp_servers.add",
+    "mcp_servers.set_token",
+    "mcp_servers.sign_in",
 ];
 
 /// Arguments only a person gives, by command: an agent that sets one is

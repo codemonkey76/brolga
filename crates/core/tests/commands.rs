@@ -224,6 +224,31 @@ async fn every_command_is_described_and_its_examples_run() {
         .as_str()
         .unwrap()
         .to_owned();
+    // Outside tool servers: one signed in with a token, for the examples to
+    // use, and one to remove.
+    let mcp = brolga_fake_mcp::FakeMcp::start().await.unwrap();
+    mcp.accept_token("pat-example");
+    let added = |name: &'static str, url: String| {
+        let registry = registry.clone();
+        async move {
+            registry
+                .execute_from_window("mcp_servers.add", json!({ "name": name, "url": url }))
+                .await
+                .unwrap()["server"]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let mcp_server = added("Fake helpdesk", mcp.url()).await;
+    let mcp_spare = added("Spare", "http://127.0.0.1:9/mcp".to_owned()).await;
+    registry
+        .execute_from_window(
+            "mcp_servers.set_token",
+            json!({ "server_id": mcp_server, "token": "pat-example" }),
+        )
+        .await
+        .unwrap();
     // A change to tasks, for `tasks.undo`.
     let task_undo = registry
         .execute("tasks.create", json!({ "title": "To be undone" }))
@@ -292,6 +317,12 @@ async fn every_command_is_described_and_its_examples_run() {
             }
             if spec.id == "tasks.undo" {
                 example["undo_id"] = json!(task_undo);
+            }
+            if example["server_id"] == "mcp-000000000000" {
+                example["server_id"] = json!(mcp_server);
+            }
+            if example["server_id"] == "mcp-000000000001" {
+                example["server_id"] = json!(mcp_spare);
             }
             let example = &example;
             // As the window, which may run every command there is.

@@ -30,6 +30,7 @@ mod saving;
 mod shared_commands;
 mod sharing_commands;
 mod task_commands;
+mod tool_commands;
 mod window_commands;
 
 use std::path::PathBuf;
@@ -158,6 +159,11 @@ impl Core {
         rule_commands::register(&mut registry, mailboxes.clone())?;
         instruction_commands::register(&mut registry, mailboxes.clone())?;
         task_commands::register(&mut registry, mailboxes.clone())?;
+        tool_commands::register(
+            &mut registry,
+            mailboxes.clone(),
+            options.open_browser.clone(),
+        )?;
         sharing_commands::register(&mut registry, mailboxes.clone())?;
         archive_commands::register(&mut registry, mailboxes.clone())?;
         reply_commands::register(&mut registry, mailboxes.clone())?;

@@ -37,7 +37,10 @@ Built and released in this order, each usable on its own:
      with the mail actions (move, categories, flag, read).
    - **2b:** runs over existing mail.
 3. **Tasks:** the Tasks section, and the "create a task" action.
-4. **Outside tools:** MCP servers, the tool action, and approvals.
+4. **Outside tools**, in two parts (owner, 2026-10-16):
+   - **4a:** MCP servers: adding them, signing in, and reading their tools.
+   - **4b:** the tool action, fixed inputs, approvals from any device, and
+     running unattended.
 
 ## Requirements
 
@@ -137,7 +140,7 @@ for the model to use.
 
 | Item | Requirement | Priority |
 |---|---|---|
-| Servers | Servers are added in Settings by address (Streamable HTTP; `https` unless local) and signed in to with the server's own OAuth sign-in. Tokens are kept in the system secret store. Servers are set up on the processing device only, and stay on it. | P0 |
+| Servers | Servers are added in Settings by address (Streamable HTTP; `https` unless local) and signed in to with the server's own OAuth sign-in (through the browser, Brolga registering itself where the server lets it, with PKCE and a loopback redirect) or with an access token the service gave the person, such as the helpdesk's personal access tokens. Both the current protocol and the older one that starts with `initialize` are spoken. Tokens are kept in the system secret store, refreshed as they run out, and never given out. Servers are set up on the processing device only, and stay on it. | P0 |
 | Named tools | An instruction names each tool it may call, by server and tool name. The model cannot call any other tool. | P0 |
 | Fixed inputs | An instruction can fix a tool's inputs (for example client = CarCoop, assigned to = Shane). The model fills only the inputs left open, and what it fills is checked against the tool's own schema before the call. A fixed input cannot be changed by the model. | P0 |
 | Ask first | Each instruction that names a tool has a switch: ask first, or run unattended. New instructions ask first. A call that asks first waits in an Approvals list, showing the message, the instruction, the tool and every input, until it is approved or rejected. Nothing is called until then. | P0 |
@@ -150,7 +153,7 @@ for the model to use.
 | Once only | Before a call, Brolga records locally that it is about to make it, and after it, the result. A call interrupted by a crash or restart is not made again by itself: it is shown as unknown, for the person to check and retry or drop. | P0 |
 | No undo | A call to an outside tool cannot be undone by Brolga. The record says so, and undoing a run leaves its outside calls listed as not undone. | P0 |
 | Failure | A call that fails is kept with the error and retried with back-off up to three times, then left for the person. | P0 |
-| Commands | `mcp_servers.list`, `.add`, `.remove`, `.test`, and `mail.instructions.approvals.list` for agents to read. Adding a server is consequential. | P0 |
+| Commands | `mcp_servers.list`, `.add`, `.remove`, `.set_token`, `.sign_in`, `.test`, `.tools` (4a), and `mail.instructions.approvals.list` for agents to read (4b). Adding a server and signing in to one are the person's own, in the window. | P0 |
 
 ### Safety
 
