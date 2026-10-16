@@ -547,6 +547,12 @@ const STEPS: &[&str] = &[
 
     -- A run over existing mail makes outside tool calls only where asked to.
     ALTER TABLE instruction_runs ADD COLUMN include_tools INTEGER NOT NULL DEFAULT 0;
+",    "
+    -- A call to outside tools is a plan of up to three steps, made in
+    -- order (TKT-01203). What each step made so far returned, as a JSON
+    -- array, so that a plan taken up again goes on from where it was and no
+    -- step is made twice.
+    ALTER TABLE tool_calls ADD COLUMN progress TEXT NOT NULL DEFAULT '[]';
 ",
 ];
 

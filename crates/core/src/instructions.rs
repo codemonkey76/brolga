@@ -57,11 +57,18 @@ pub(crate) fn processed_property() -> String {
 
 /// The form the list is written in. A list in a later form was written by
 /// a newer Brolga, and is not written over by this one.
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
+
+/// The form a list is written in that names outside tools and no lookups:
+/// the one Brolga 0.1.21 wrote, which it still reads.
+const FORMAT_WITHOUT_LOOKUPS: u32 = 2;
 
 /// The form a list is written in that names no outside tools: the one
 /// Brolga wrote before it could, which a Brolga from then still reads.
 const FORMAT_WITHOUT_TOOLS: u32 = 1;
+
+/// The most tools an instruction may name.
+pub(crate) const MOST_TOOLS: usize = 8;
 
 pub(crate) const MOST_INSTRUCTIONS: usize = 50;
 pub(crate) const LONGEST_TEXT: usize = 2_000;
@@ -130,6 +137,11 @@ pub(crate) struct ToolUse {
     /// this on.
     #[serde(default)]
     pub unattended: bool,
+    /// A lookup: a tool that only reads, which the model may call before it
+    /// decides, without asking, and see what it returns. The person says
+    /// which tools are lookups.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lookup: bool,
 }
 
 /// Who wrote the list last.
@@ -317,8 +329,11 @@ async fn folder(mailbox: &Mailbox) -> Result<Option<String>, GraphError> {
 /// The form a list is written in: the older one where it can be, so that a
 /// Brolga from before outside tools still reads a list that names none.
 fn format_for(list: &List) -> u32 {
-    if list.instructions.iter().any(|i| !i.tools.is_empty()) {
+    let tools = || list.instructions.iter().flat_map(|i| &i.tools);
+    if tools().any(|t| t.lookup) {
         FORMAT
+    } else if tools().next().is_some() {
+        FORMAT_WITHOUT_LOOKUPS
     } else {
         FORMAT_WITHOUT_TOOLS
     }
@@ -530,14 +545,14 @@ fn check(list: &List) -> Result<(), String> {
                 "“{name}” is too long: an instruction can be at most {LONGEST_TEXT} characters."
             ));
         }
-        if each.actions.contains(&Action::CallTool) && each.tools.is_empty() {
+        if each.actions.contains(&Action::CallTool) && each.tools.iter().all(|t| t.lookup) {
             return Err(format!(
-                "“{name}” may call a tool, and names none: choose the tools it may call."
+                "“{name}” may call a tool, and names none but lookups: choose a tool for it to call."
             ));
         }
-        if each.tools.len() > 5 {
+        if each.tools.len() > MOST_TOOLS {
             return Err(format!(
-                "“{name}” names more tools than the five an instruction may."
+                "“{name}” names more tools than the {MOST_TOOLS} an instruction may."
             ));
         }
         if each.actions.is_empty() {
@@ -758,8 +773,12 @@ mod tests {
             tool: "create_ticket".to_owned(),
             fixed: serde_json::Map::new(),
             unattended: false,
+            lookup: false,
         });
         assert_eq!(format_for(&list), 2);
+        list.instructions[0].tools[0].lookup = true;
+        assert_eq!(format_for(&list), 3);
+        list.instructions[0].tools[0].lookup = false;
         // And a list in the newer form is read.
         let written = serde_json::to_string(&List {
             format: 2,
@@ -775,7 +794,7 @@ mod tests {
     #[test]
     fn a_list_from_a_newer_brolga_is_not_read() {
         assert_eq!(read_list(None).unwrap(), List::default());
-        let newer = r#"{"format":3,"version":3,"enabled":true,"instructions":[],"what_is_this":1}"#;
+        let newer = r#"{"format":4,"version":3,"enabled":true,"instructions":[],"what_is_this":1}"#;
         assert!(matches!(
             read_list(Some(&newer.to_owned())),
             Err(Trouble::Newer)

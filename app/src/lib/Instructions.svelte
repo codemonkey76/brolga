@@ -16,6 +16,7 @@
         tool: string;
         fixed: Record<string, unknown>;
         unattended: boolean;
+        lookup?: boolean;
     }
 
     interface Instruction {
@@ -114,8 +115,21 @@
         picking = "";
     }
 
-    const setUnattended = (each: Instruction, tool: ToolUse, unattended: boolean) =>
-        changing("mail.instructions.tools.set_unattended", { instruction_id: each.id, server_id: tool.server_id, tool: tool.tool, unattended });
+    type Use = "ask" | "unattended" | "lookup";
+    const useOf = (tool: ToolUse): Use => (tool.lookup ? "lookup" : tool.unattended ? "unattended" : "ask");
+    const USES: { id: Use; name: string }[] = [
+        { id: "ask", name: "Asks first" },
+        { id: "unattended", name: "Runs unattended" },
+        { id: "lookup", name: "Lookup: only reads, runs without asking" },
+    ];
+    const setUse = (each: Instruction, tool: ToolUse, use: Use) =>
+        changing("mail.instructions.tools.set_unattended", {
+            instruction_id: each.id,
+            server_id: tool.server_id,
+            tool: tool.tool,
+            unattended: use === "unattended",
+            lookup: use === "lookup",
+        });
     /** The instruction being written, while its form is open. */
     let form = $state<ReturnType<typeof blank> | null>(null);
 
@@ -379,6 +393,7 @@
             "mail.messages.set_read": "Marked",
             "tasks.create": "Made a task",
             "tools.call": "Called a tool",
+            "tools.lookup": "Looked up",
         })[entry.command] ?? entry.command.replace(/^mail\.instructions\./, "Wanted to ");
 
     const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "never");
@@ -590,8 +605,12 @@
                         <span class="muted">May: {allowed(each)}.</span>
                         {#each each.tools ?? [] as tool (`${tool.server_id}/${tool.tool}`)}
                             <span class="tool">
-                                <span class="muted">{tool.server} {tool.tool}: {tool.unattended ? "called without asking" : "asks first"}</span>
-                                <button type="button" class="small" disabled={busy || listed.offline} onclick={() => setUnattended(each, tool, !tool.unattended)}>{tool.unattended ? "Ask first again" : "Let it run unattended"}</button>
+                                <span class="muted">{tool.server} {tool.tool}</span>
+                                <select class="small" aria-label={`How ${each.name} uses ${tool.tool}`} value={useOf(tool)} disabled={busy || listed.offline} onchange={(event) => setUse(each, tool, event.currentTarget.value as Use)}>
+                                    {#each USES as use (use.id)}
+                                        <option value={use.id}>{use.name}</option>
+                                    {/each}
+                                </select>
                             </span>
                         {/each}
                     </span>
@@ -631,7 +650,7 @@
                                 <span>{t.server} {t.tool}</span>
                                 <label class="stacked">
                                     Always called with (optional)
-                                    <input type="text" aria-label={`What ${t.tool} is always called with`} bind:value={form.tools[n].fixed} placeholder={'{"client_id": 7}'} />
+                                    <input type="text" aria-label={`What ${t.tool} is always called with`} bind:value={form.tools[n].fixed} placeholder={'nothing fixed; e.g. {"client_id": 7}'} />
                                 </label>
                                 <button type="button" onclick={() => form && (form.tools = form.tools.filter((_, at) => at !== n))}>Remove</button>
                             </div>
@@ -640,7 +659,7 @@
                             <p class="muted" role="status">Reading the tools…</p>
                         {:else if offered.length === 0}
                             <p class="muted">No tools are set up on this computer. Add a server under Outside tools, on the computer that carries out the instructions.</p>
-                        {:else if form.tools.length < 5}
+                        {:else if form.tools.length < 8}
                             <div class="buttons">
                                 <select aria-label="Tool to add" bind:value={picking}>
                                     <option value="">Choose a tool…</option>
@@ -651,7 +670,8 @@
                                 <button type="button" disabled={!picking} onclick={addTool}>Add tool</button>
                             </div>
                         {/if}
-                        <p class="muted">The model fills in the rest from the email, so what it fills in can carry the email's words to that service. Each call asks you first, here or on any computer signed in to this mailbox, until you let that tool run unattended.</p>
+                        <p class="muted">The model fills in the rest from the email, so what it fills in can carry the email's words to that service. It may make up to three calls, one after another, each able to use what an earlier one returns. They ask you first, as one approval, here or on any computer signed in to this mailbox, unless you let every tool in them run unattended.</p>
+                        <p class="muted">Once saved, a tool that only reads, such as finding a client, can be made a lookup: the model may use it before deciding, without asking, and see what it returns.</p>
                         {#if accountId.includes("~")}
                             <p class="muted">This is a shared mailbox: anyone who can open it in Brolga can approve its calls.</p>
                         {/if}
@@ -841,7 +861,7 @@
         flex-wrap: wrap;
     }
 
-    button.small {
+    select.small {
         font-size: 0.75rem;
         padding: 0.1rem 0.4rem;
     }

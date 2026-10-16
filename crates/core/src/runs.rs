@@ -416,17 +416,13 @@ fn decided_json(each: &Decided) -> Value {
             shown["reminder"] = json!(reminder);
         }
         Step::CallTool {
-            server_id,
-            server,
-            tool,
-            inputs,
+            calls,
             unattended,
+            looked,
         } => {
             shown["action"] = json!("call_tool");
-            shown["server_id"] = json!(server_id);
-            shown["server"] = json!(server);
-            shown["tool"] = json!(tool);
-            shown["inputs"] = json!(inputs);
+            shown["steps"] = json!(calls);
+            shown["looked"] = json!(looked);
             shown["unattended"] = json!(unattended);
         }
     }
@@ -445,11 +441,9 @@ fn decided_from(kept: &Value) -> Option<Decided> {
         "flag" => Step::Flag(kept["due"].as_str().map(str::to_owned)),
         "set_read" => Step::Read(kept["read"] == true),
         "call_tool" => Step::CallTool {
-            server_id: kept["server_id"].as_str()?.to_owned(),
-            server: kept["server"].as_str().unwrap_or_default().to_owned(),
-            tool: kept["tool"].as_str()?.to_owned(),
-            inputs: kept["inputs"].as_object().cloned().unwrap_or_default(),
+            calls: serde_json::from_value(kept["steps"].clone()).ok()?,
             unattended: kept["unattended"] == true,
+            looked: serde_json::from_value(kept["looked"].clone()).unwrap_or_default(),
         },
         "create_task" => Step::CreateTask {
             list_id: kept["list_id"].as_str()?.to_owned(),
@@ -570,12 +564,29 @@ async fn preview_some(
                 } else {
                     Vec::new()
                 };
-                let ask = plan.ask(&row, &body, &attachments, day, zone);
-                (
-                    message_id.clone(),
-                    Some(row),
-                    processing::timed_ask(mailboxes.global(), http, provider, &ask).await,
+                // Lookups only read, so a preview makes them, as new mail's
+                // processing does.
+                let asked = processing::ask_looking(
+                    mailboxes,
+                    account_id,
+                    http,
+                    provider,
+                    plan,
+                    &row,
+                    &body,
+                    &attachments,
+                    (day, zone),
+                    |answer| {
+                        let _ = mailbox.db.count_instruction_request(
+                            day,
+                            &format!("{}:run", provider.name()),
+                            i64::try_from(answer.input_tokens).unwrap_or(i64::MAX),
+                            i64::try_from(answer.output_tokens).unwrap_or(i64::MAX),
+                        );
+                    },
                 )
+                .await;
+                (message_id.clone(), Some(row), asked)
             }
         });
         for (message_id, row, answer) in futures::future::join_all(asked).await {
@@ -592,14 +603,9 @@ async fn preview_some(
                         )
                         .map_err(local)?;
                 }
-                (Some(row), Ok(answer)) => {
-                    let _ = mailbox.db.count_instruction_request(
-                        &day,
-                        &format!("{}:run", provider.name()),
-                        i64::try_from(answer.input_tokens).unwrap_or(i64::MAX),
-                        i64::try_from(answer.output_tokens).unwrap_or(i64::MAX),
-                    );
-                    let (decided, not_done) = plan.decide(&answer.value);
+                (Some(row), Ok((answer, looked, lookups_refused))) => {
+                    let (decided, mut not_done) = plan.decide(&answer.value, &looked);
+                    not_done.extend(lookups_refused);
                     let decisions: Vec<Value> = decided.iter().map(decided_json).collect();
                     let refused: Vec<Value> = not_done
                         .iter()
@@ -712,21 +718,17 @@ async fn apply_some(
         for each in steps {
             // Applying the run is the approval of the calls it shows.
             if let Step::CallTool {
-                server_id,
-                server,
-                tool,
-                inputs,
+                calls,
                 unattended,
+                looked,
             } = &each.step
             {
                 let proposal = crate::calls::Proposal {
                     message: &row,
                     instruction_id: &each.instruction_id,
                     instruction: &each.instruction,
-                    server_id,
-                    server,
-                    tool,
-                    inputs,
+                    calls,
+                    looked,
                     unattended: *unattended,
                     reason: &each.reason,
                     run_id: Some(&run.id),
@@ -734,7 +736,11 @@ async fn apply_some(
                 match crate::calls::propose(mailboxes, mailbox, account_id, &proposal).await {
                     Ok(state) if state == "done" => {}
                     Ok(state) => {
-                        trouble.push(format!("The call to {server} {tool} came to: {state}."))
+                        let tools: Vec<&str> = calls.iter().map(|c| c.tool.as_str()).collect();
+                        trouble.push(format!(
+                            "The calls to {} came to: {state}.",
+                            tools.join(", then ")
+                        ));
                     }
                     Err(e) => trouble.push(e),
                 }

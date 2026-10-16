@@ -337,6 +337,9 @@ pub struct Called {
     pub ok: bool,
     /// What it said, as text, cut to a few thousand characters.
     pub text: String,
+    /// What it said as data: its structured content, or its text where
+    /// that is JSON, whole.
+    pub value: Option<Value>,
 }
 
 /// Call a tool with these arguments. Not safe to repeat blindly: the
@@ -368,9 +371,15 @@ pub async fn call(
         })
         .unwrap_or_default();
 
+    let value = match &answer["structuredContent"] {
+        Value::Null => serde_json::from_str::<Value>(text.trim()).ok(),
+        structured => Some(structured.clone()),
+    };
+
     Ok(Called {
         ok: answer["isError"] != true,
         text: text.chars().take(4_000).collect(),
+        value,
     })
 }
 
