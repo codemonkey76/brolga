@@ -28,7 +28,7 @@ pub(crate) const FOLDER: &str = "Brolga";
 /// Brolga's own property set, the one its drafts are marked in.
 const SET: &str = "{4431b77f-55c6-4e5f-9693-e9ccc2a3f0fb}";
 
-fn property(name: &str) -> String {
+pub(crate) fn property(name: &str) -> String {
     format!("String {SET} Name {name}")
 }
 
@@ -57,7 +57,11 @@ pub(crate) fn processed_property() -> String {
 
 /// The form the list is written in. A list in a later form was written by
 /// a newer Brolga, and is not written over by this one.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
+
+/// The form a list is written in that names no outside tools: the one
+/// Brolga wrote before it could, which a Brolga from then still reads.
+const FORMAT_WITHOUT_TOOLS: u32 = 1;
 
 pub(crate) const MOST_INSTRUCTIONS: usize = 50;
 pub(crate) const LONGEST_TEXT: usize = 2_000;
@@ -86,9 +90,18 @@ pub(crate) enum Action {
     /// Make a To Do task, in a list the instruction names or the default
     /// one, linked back to the message.
     CreateTask,
+    /// Call one of the outside tools the instruction names.
+    CallTool,
 }
 
-pub(crate) const ACTIONS: [&str; 5] = ["move", "set_categories", "flag", "set_read", "create_task"];
+pub(crate) const ACTIONS: [&str; 6] = [
+    "move",
+    "set_categories",
+    "flag",
+    "set_read",
+    "create_task",
+    "call_tool",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Instruction {
@@ -97,6 +110,26 @@ pub(crate) struct Instruction {
     pub text: String,
     pub enabled: bool,
     pub actions: Vec<Action>,
+    /// The outside tools it may call, where it may call any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolUse>,
+}
+
+/// A tool an instruction may call, on a server set up on the processing
+/// device (docs/spec-mail-instructions.md, "Outside tools").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ToolUse {
+    pub server_id: String,
+    /// The server's name, to show where the server is not set up.
+    pub server: String,
+    pub tool: String,
+    /// Inputs the instruction fixes, which the model cannot change.
+    #[serde(default)]
+    pub fixed: serde_json::Map<String, serde_json::Value>,
+    /// Called without asking first. Only the person, in the window, turns
+    /// this on.
+    #[serde(default)]
+    pub unattended: bool,
 }
 
 /// Who wrote the list last.
@@ -121,7 +154,7 @@ pub(crate) struct List {
 impl Default for List {
     fn default() -> Self {
         Self {
-            format: FORMAT,
+            format: FORMAT_WITHOUT_TOOLS,
             version: 0,
             enabled: true,
             written_by: None,
@@ -281,6 +314,16 @@ async fn folder(mailbox: &Mailbox) -> Result<Option<String>, GraphError> {
     Ok(found)
 }
 
+/// The form a list is written in: the older one where it can be, so that a
+/// Brolga from before outside tools still reads a list that names none.
+fn format_for(list: &List) -> u32 {
+    if list.instructions.iter().any(|i| !i.tools.is_empty()) {
+        FORMAT
+    } else {
+        FORMAT_WITHOUT_TOOLS
+    }
+}
+
 /// The settings as the mailbox holds them now, or none if they were never
 /// written. Should there be two settings messages, which two devices making
 /// them at once would leave, the one with the later list is taken, and of
@@ -431,7 +474,7 @@ pub(crate) async fn change_list(
     }
     change(&mut list).map_err(Trouble::Refused)?;
     check(&list).map_err(Trouble::Refused)?;
-    list.format = FORMAT;
+    list.format = format_for(&list);
     list.version += 1;
     list.written_by = Some(Writer {
         device_id: device.id.clone(),
@@ -485,6 +528,16 @@ fn check(list: &List) -> Result<(), String> {
         if each.text.chars().count() > LONGEST_TEXT {
             return Err(format!(
                 "“{name}” is too long: an instruction can be at most {LONGEST_TEXT} characters."
+            ));
+        }
+        if each.actions.contains(&Action::CallTool) && each.tools.is_empty() {
+            return Err(format!(
+                "“{name}” may call a tool, and names none: choose the tools it may call."
+            ));
+        }
+        if each.tools.len() > 5 {
+            return Err(format!(
+                "“{name}” names more tools than the five an instruction may."
             ));
         }
         if each.actions.is_empty() {
@@ -661,6 +714,7 @@ mod tests {
             text: "Invoices from Telstra go in Accounts/Telstra.".to_owned(),
             enabled: true,
             actions: vec![Action::Move],
+            tools: Vec::new(),
         }
     }
 
@@ -692,9 +746,36 @@ mod tests {
     }
 
     #[test]
+    fn a_list_naming_tools_is_written_in_the_newer_form_and_one_without_in_the_older() {
+        let mut list = List {
+            instructions: vec![instruction("Telstra")],
+            ..List::default()
+        };
+        assert_eq!(format_for(&list), 1);
+        list.instructions[0].tools.push(ToolUse {
+            server_id: "mcp-1".to_owned(),
+            server: "Helpdesk".to_owned(),
+            tool: "create_ticket".to_owned(),
+            fixed: serde_json::Map::new(),
+            unattended: false,
+        });
+        assert_eq!(format_for(&list), 2);
+        // And a list in the newer form is read.
+        let written = serde_json::to_string(&List {
+            format: 2,
+            ..list.clone()
+        })
+        .unwrap();
+        assert_eq!(
+            read_list(Some(&written)).unwrap().instructions,
+            list.instructions
+        );
+    }
+
+    #[test]
     fn a_list_from_a_newer_brolga_is_not_read() {
         assert_eq!(read_list(None).unwrap(), List::default());
-        let newer = r#"{"format":2,"version":3,"enabled":true,"instructions":[],"what_is_this":1}"#;
+        let newer = r#"{"format":3,"version":3,"enabled":true,"instructions":[],"what_is_this":1}"#;
         assert!(matches!(
             read_list(Some(&newer.to_owned())),
             Err(Trouble::Newer)

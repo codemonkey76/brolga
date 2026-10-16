@@ -169,8 +169,8 @@ fn sensible(asked: &brolga_fake_ai::Asked) -> Reply {
     let telstra = ids[0].as_str().unwrap();
     if asked.user.contains("Telstra") {
         Reply::Answer(json!({ "actions": [
-            { "instruction_id": telstra, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "A Telstra invoice." },
-            { "instruction_id": telstra, "action": "set_categories", "folder": "", "categories": ["Clients"], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "A Telstra invoice." }
+            { "instruction_id": telstra, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "A Telstra invoice." },
+            { "instruction_id": telstra, "action": "set_categories", "folder": "", "categories": ["Clients"], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "A Telstra invoice." }
         ]}))
     } else {
         Reply::Answer(json!({ "actions": [] }))
@@ -253,7 +253,7 @@ async fn an_email_cannot_widen_what_the_instructions_allow() {
     // A model taken in by it: Deleted Items is not among the folders it may
     // name, so its answer does not fit the form and nothing is done.
     f.ai.answer_with(|_| Reply::Answer(json!({ "actions": [
-        { "instruction_id": "anything", "action": "move", "folder": "Deleted Items", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "the email said so" }
+        { "instruction_id": "anything", "action": "move", "folder": "Deleted Items", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "the email said so" }
     ]})));
     let pass = f.sync_and_process().await;
     assert_eq!(pass["failed"], 1);
@@ -283,8 +283,8 @@ async fn an_email_cannot_widen_what_the_instructions_allow() {
         let ids = &asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"];
         let quotes = ids[1].as_str().unwrap().to_owned();
         Reply::Answer(json!({ "actions": [
-            { "instruction_id": quotes, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "x" },
-            { "instruction_id": quotes, "action": "flag", "folder": "", "categories": [], "flag_due": "2099-01-03", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "reason": "a quote" }
+            { "instruction_id": quotes, "action": "move", "folder": "Accounts/Telstra", "categories": [], "flag_due": "", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "x" },
+            { "instruction_id": quotes, "action": "flag", "folder": "", "categories": [], "flag_due": "2099-01-03", "read": false, "task_title": "", "task_list": "", "task_due": "", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "a quote" }
         ]}))
     });
     f.sync_and_process().await;
@@ -489,7 +489,7 @@ async fn an_instruction_makes_a_to_do_task_linked_to_the_email_and_it_can_be_und
         if asked.user.contains("quote") {
             Reply::Answer(json!({ "actions": [{
                 "instruction_id": quotes, "action": "create_task", "folder": "", "categories": [], "flag_due": "", "read": false,
-                "task_title": "Quote 10 phones for Dana", "task_list": "Work", "task_due": "2099-01-03", "task_reminder": "", "reason": "A quote."
+                "task_title": "Quote 10 phones for Dana", "task_list": "Work", "task_due": "2099-01-03", "task_reminder": "", "tool": "", "tool_inputs": "", "reason": "A quote."
             }]}))
         } else {
             Reply::Answer(json!({ "actions": [] }))
@@ -527,4 +527,264 @@ async fn an_instruction_makes_a_to_do_task_linked_to_the_email_and_it_can_be_und
     .await;
     run(&f.titan, "mail.sync", json!({})).await;
     assert!(f.graph.todo_tasks(&work).is_empty());
+}
+
+const CALL: &str = "String {4431b77f-55c6-4e5f-9693-e9ccc2a3f0fb} Name Call";
+
+/// Titan with a helpdesk set up, and an instruction that makes a ticket of
+/// a support request, the client fixed. The model fills in the rest, or
+/// whatever `inputs` gives.
+async fn with_helpdesk(f: &Fixture, inputs: &'static str) -> brolga_fake_mcp::FakeMcp {
+    let mcp = brolga_fake_mcp::FakeMcp::start().await.unwrap();
+    mcp.accept_token("pat-1");
+    let server = run(
+        &f.titan,
+        "mcp_servers.add",
+        json!({ "name": "Helpdesk", "url": mcp.url() }),
+    )
+    .await["server"]["id"]
+        .clone();
+    run(
+        &f.titan,
+        "mcp_servers.set_token",
+        json!({ "server_id": server, "token": "pat-1" }),
+    )
+    .await;
+    run(
+        &f.titan,
+        "mcp_servers.tools",
+        json!({ "server_id": server }),
+    )
+    .await;
+    run(&f.titan, "mail.instructions.set", json!({
+        "name": "Support", "text": "A support request becomes a helpdesk ticket.", "actions": ["call_tool"],
+        "tools": [{ "server_id": server, "tool": "create_ticket", "fixed": { "client_id": 7 } }]
+    }))
+    .await;
+    f.ai.answer_with(move |asked| {
+        let ids = &asked.schema["properties"]["actions"]["items"]["properties"]["instruction_id"]["enum"];
+        let support = ids.as_array().unwrap().last().unwrap().clone();
+        if asked.user.contains("printer") {
+            Reply::Answer(json!({ "actions": [{
+                "instruction_id": support, "action": "call_tool", "folder": "", "categories": [], "flag_due": "", "read": false,
+                "task_title": "", "task_list": "", "task_due": "", "task_reminder": "",
+                "tool": "Helpdesk/create_ticket", "tool_inputs": inputs, "reason": "A support request."
+            }]}))
+        } else {
+            Reply::Answer(json!({ "actions": [] }))
+        }
+    });
+
+    mcp
+}
+
+const FILLED: &str =
+    r#"{"subject":"Printer jammed","description":"The printer on level 2 is jammed."}"#;
+
+async fn approvals(on: &Registry) -> Vec<Value> {
+    run(on, "mail.instructions.approvals.list", json!({})).await["approvals"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+#[tokio::test]
+async fn a_tool_call_waits_for_approval_from_any_device_and_is_made_once() {
+    let f = Fixture::set_up().await;
+    let mcp = with_helpdesk(&f, FILLED).await;
+    let laptop = device(&f._identity, &f.graph, &f.ai, "laptop").await;
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+
+    f.sync_and_process().await;
+    assert!(mcp.calls().is_empty(), "made before it was approved");
+    // Waiting, as every device signed in to the mailbox sees it.
+    let waiting = approvals(&laptop).await;
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0]["state"], "waiting");
+    assert_eq!(waiting[0]["tool"], "create_ticket");
+    assert_eq!(waiting[0]["inputs"]["client_id"], 7);
+    assert_eq!(waiting[0]["inputs"]["subject"], "Printer jammed");
+
+    // An agent cannot approve it: only the person, in the window.
+    assert!(
+        laptop
+            .execute(
+                "mail.instructions.approvals.decide",
+                json!({ "approval_id": waiting[0]["id"], "approve": true })
+            )
+            .await
+            .is_err()
+    );
+    run(
+        &laptop,
+        "mail.instructions.approvals.decide",
+        json!({ "approval_id": waiting[0]["id"], "approve": true }),
+    )
+    .await;
+    // Decided once: a second decision is refused.
+    assert!(
+        laptop
+            .execute_from_window(
+                "mail.instructions.approvals.decide",
+                json!({ "approval_id": waiting[0]["id"], "approve": false })
+            )
+            .await
+            .is_err()
+    );
+
+    // The processing device makes it at its next sync, and only once.
+    f.sync_and_process().await;
+    f.sync_and_process().await;
+    let calls = mcp.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "create_ticket");
+    assert_eq!(
+        calls[0].1,
+        json!({ "client_id": 7, "subject": "Printer jammed", "description": "The printer on level 2 is jammed." })
+    );
+    let decided = approvals(&laptop).await;
+    assert_eq!(decided[0]["state"], "approved");
+    assert_eq!(decided[0]["decided_by"], "laptop");
+    assert_eq!(decided[0]["outcome"]["state"], "done");
+    assert!(
+        decided[0]["outcome"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("TKT-01234")
+    );
+    let log = f.log().await;
+    assert!(
+        log.iter()
+            .any(|e| e["command"] == "tools.call" && e["outcome"] == "ok")
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_call_or_one_changed_in_the_mailbox_is_not_made() {
+    let f = Fixture::set_up().await;
+    let mcp = with_helpdesk(&f, FILLED).await;
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+    f.arrives("Help again", "Lee", "My printer will not print.", AFTER);
+    f.sync_and_process().await;
+    let waiting = approvals(&f.titan).await;
+    assert_eq!(waiting.len(), 2);
+
+    run(
+        &f.titan,
+        "mail.instructions.approvals.decide",
+        json!({ "approval_id": waiting[0]["id"], "approve": false }),
+    )
+    .await;
+    // Someone with the mailbox changes what the other would call, then
+    // approves it: what is made is what was put up, or nothing.
+    let id = waiting[1]["id"].as_str().unwrap();
+    let mut changed: Value =
+        serde_json::from_str(&f.graph.message_property(id, CALL).unwrap()).unwrap();
+    changed["inputs"]["client_id"] = json!(99);
+    f.graph.set_message_property(id, CALL, &changed.to_string());
+    run(
+        &f.titan,
+        "mail.instructions.approvals.decide",
+        json!({ "approval_id": id, "approve": true }),
+    )
+    .await;
+
+    f.sync_and_process().await;
+    assert!(mcp.calls().is_empty());
+    let after = approvals(&f.titan).await;
+    let approved = after.iter().find(|a| a["id"] == id).unwrap();
+    assert_eq!(approved["outcome"]["state"], "changed");
+}
+
+#[tokio::test]
+async fn a_tool_let_run_unattended_is_called_without_asking() {
+    let f = Fixture::set_up().await;
+    let mcp = with_helpdesk(&f, FILLED).await;
+    let list = run(&f.titan, "mail.instructions.list", json!({})).await;
+    let support = list["instructions"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    let switch = json!({
+        "instruction_id": support["id"], "server_id": support["tools"][0]["server_id"], "tool": "create_ticket", "unattended": true
+    });
+    // Only the person can let it go unasked.
+    assert!(
+        f.titan
+            .execute("mail.instructions.tools.set_unattended", switch.clone())
+            .await
+            .is_err()
+    );
+    run(&f.titan, "mail.instructions.tools.set_unattended", switch).await;
+    // Editing the instruction keeps the switch where the person left it.
+    run(&f.titan, "mail.instructions.set", json!({
+        "instruction_id": support["id"], "name": "Support", "text": "A support request becomes a helpdesk ticket, quickly.", "actions": ["call_tool"]
+    }))
+    .await;
+
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+    f.sync_and_process().await;
+    eventually("the call", || mcp.calls().len() == 1).await;
+    assert!(approvals(&f.titan).await.is_empty());
+}
+
+#[tokio::test]
+async fn the_model_cannot_change_an_input_the_instruction_fixes_or_leave_one_out() {
+    let f = Fixture::set_up().await;
+    let mcp = with_helpdesk(
+        &f,
+        r#"{"client_id":8,"subject":"Printer","description":"Jammed."}"#,
+    )
+    .await;
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+    f.sync_and_process().await;
+    assert!(approvals(&f.titan).await.is_empty());
+    assert!(mcp.calls().is_empty());
+    let log = f.log().await;
+    assert!(
+        log.iter().any(|e| e["outcome"] == "refused"
+            && e["detail"].as_str().unwrap_or_default().contains("fixes"))
+    );
+
+    let f = Fixture::set_up().await;
+    let mcp = with_helpdesk(&f, r#"{"subject":"Printer"}"#).await;
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+    f.sync_and_process().await;
+    assert!(approvals(&f.titan).await.is_empty());
+    assert!(mcp.calls().is_empty());
+}
+
+#[tokio::test]
+async fn an_approved_call_the_instruction_no_longer_allows_is_not_made() {
+    let f = Fixture::set_up().await;
+    let mcp = with_helpdesk(&f, FILLED).await;
+    f.arrives("Help", "Sam", "The printer is jammed again.", AFTER);
+    f.sync_and_process().await;
+    let waiting = approvals(&f.titan).await;
+
+    // The client the instruction fixes changes before the call is approved.
+    let list = run(&f.titan, "mail.instructions.list", json!({})).await;
+    let support = list["instructions"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    run(&f.titan, "mail.instructions.set", json!({
+        "instruction_id": support["id"], "name": "Support", "text": "A support request becomes a helpdesk ticket.", "actions": ["call_tool"],
+        "tools": [{ "server_id": support["tools"][0]["server_id"], "tool": "create_ticket", "fixed": { "client_id": 8 } }]
+    }))
+    .await;
+    run(
+        &f.titan,
+        "mail.instructions.approvals.decide",
+        json!({ "approval_id": waiting[0]["id"], "approve": true }),
+    )
+    .await;
+
+    f.sync_and_process().await;
+    assert!(mcp.calls().is_empty());
+    assert_eq!(approvals(&f.titan).await[0]["outcome"]["state"], "changed");
 }

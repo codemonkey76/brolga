@@ -38,7 +38,7 @@
 
     let { accountId }: Props = $props();
     let folders = $state<Folder[]>([]);
-    let scope = $state({ folder: "", subfolders: false, from: "", to: "", tasks: false });
+    let scope = $state({ folder: "", subfolders: false, from: "", to: "", tasks: false, tools: false });
     let estimate = $state<Estimate | null>(null);
     let current = $state<Run | null>(null);
     let items = $state<Item[]>([]);
@@ -92,6 +92,7 @@
         if (scope.from) args.received_from = scope.from;
         if (scope.to) args.received_to = scope.to;
         if (scope.tasks) args.include_tasks = true;
+        if (scope.tools) args.include_tools = true;
         return args;
     };
 
@@ -165,6 +166,8 @@
             </label>
             <label><input type="checkbox" bind:checked={scope.subfolders} onchange={() => (estimate = null)} /> And the folders inside it</label>
             <label><input type="checkbox" bind:checked={scope.tasks} /> Let instructions make To Do tasks too</label>
+            <label><input type="checkbox" bind:checked={scope.tools} /> Let instructions call outside tools too</label>
+            {#if scope.tools}<p class="muted">Applying the run then approves every call its preview shows, and calls cannot be undone.</p>{/if}
             <div class="days">
                 <label class="stacked">Received from <input type="date" bind:value={scope.from} onchange={() => (estimate = null)} /></label>
                 <label class="stacked">to <input type="date" bind:value={scope.to} onchange={() => (estimate = null)} /></label>

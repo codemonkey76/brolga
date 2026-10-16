@@ -41,6 +41,9 @@ pub(crate) struct Scope {
     pub to: Option<String>,
     /// Let the instructions make To Do tasks: left out unless asked for.
     pub include_tasks: bool,
+    /// Let the instructions call outside tools: left out unless asked for,
+    /// and made when the run is applied, which is their approval.
+    pub include_tools: bool,
 }
 
 /// The folders a run covers by id, and the names of any of them not yet
@@ -210,6 +213,7 @@ pub(crate) async fn preview(
             provider.model(),
             i64::try_from(settings.list.version).unwrap_or(i64::MAX),
             scope.include_tasks,
+            scope.include_tools,
             &ids,
         )
         .map_err(local)?;
@@ -311,7 +315,16 @@ pub(crate) async fn undo(
         .set_run_state(run_id, "undone", "")
         .map_err(|e| e.to_string())?;
 
-    Ok(json!({ "undone": undone }))
+    // Calls to outside tools are not Brolga's to undo.
+    let not_undone = mailbox
+        .db
+        .run_items(run_id, None, 0, u32::MAX)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter(|item| item.state == "applied" && item.decisions.contains("\"call_tool\""))
+        .count();
+
+    Ok(json!({ "undone": undone, "calls_not_undone": not_undone }))
 }
 
 fn the_run(mailbox: &Mailbox, run_id: &str) -> Result<RunRow, String> {
@@ -402,6 +415,20 @@ fn decided_json(each: &Decided) -> Value {
             shown["due"] = json!(due);
             shown["reminder"] = json!(reminder);
         }
+        Step::CallTool {
+            server_id,
+            server,
+            tool,
+            inputs,
+            unattended,
+        } => {
+            shown["action"] = json!("call_tool");
+            shown["server_id"] = json!(server_id);
+            shown["server"] = json!(server);
+            shown["tool"] = json!(tool);
+            shown["inputs"] = json!(inputs);
+            shown["unattended"] = json!(unattended);
+        }
     }
     shown
 }
@@ -417,6 +444,13 @@ fn decided_from(kept: &Value) -> Option<Decided> {
         }
         "flag" => Step::Flag(kept["due"].as_str().map(str::to_owned)),
         "set_read" => Step::Read(kept["read"] == true),
+        "call_tool" => Step::CallTool {
+            server_id: kept["server_id"].as_str()?.to_owned(),
+            server: kept["server"].as_str().unwrap_or_default().to_owned(),
+            tool: kept["tool"].as_str()?.to_owned(),
+            inputs: kept["inputs"].as_object().cloned().unwrap_or_default(),
+            unattended: kept["unattended"] == true,
+        },
         "create_task" => Step::CreateTask {
             list_id: kept["list_id"].as_str()?.to_owned(),
             list: kept["list"].as_str().unwrap_or_default().to_owned(),
@@ -468,8 +502,19 @@ async fn preview_some(
     } else {
         Vec::new()
     };
-    let plan = Plan::new(&settings.list, &folders, &categories, &task_lists)
-        .ok_or("No instruction is on.")?;
+    let catalogue = if run.include_tools {
+        crate::tool_commands::catalogue(mailboxes)
+    } else {
+        Vec::new()
+    };
+    let plan = Plan::new(
+        &settings.list,
+        &folders,
+        &categories,
+        &task_lists,
+        &catalogue,
+    )
+    .ok_or("No instruction is on.")?;
     let (day, zone) = processing::today();
     let batch = mailbox
         .db
@@ -665,6 +710,36 @@ async fn apply_some(
         let mut undo_ids = Vec::new();
         let mut trouble = Vec::new();
         for each in steps {
+            // Applying the run is the approval of the calls it shows.
+            if let Step::CallTool {
+                server_id,
+                server,
+                tool,
+                inputs,
+                unattended,
+            } = &each.step
+            {
+                let proposal = crate::calls::Proposal {
+                    message: &row,
+                    instruction_id: &each.instruction_id,
+                    instruction: &each.instruction,
+                    server_id,
+                    server,
+                    tool,
+                    inputs,
+                    unattended: *unattended,
+                    reason: &each.reason,
+                    run_id: Some(&run.id),
+                };
+                match crate::calls::propose(mailboxes, mailbox, account_id, &proposal).await {
+                    Ok(state) if state == "done" => {}
+                    Ok(state) => {
+                        trouble.push(format!("The call to {server} {tool} came to: {state}."))
+                    }
+                    Err(e) => trouble.push(e),
+                }
+                continue;
+            }
             let (command, args) = processing::command_for(account_id, &row, &each.step);
             match registry.execute(command, args.clone()).await {
                 Ok(done) => {

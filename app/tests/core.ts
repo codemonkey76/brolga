@@ -208,7 +208,11 @@ export interface FakeCore {
     /** The inbox's rules, as `mail.rules.list` gives them, less the sentence. */
     rules?: Record<string, unknown>[];
     /** Mail instructions, as `mail.instructions.list` gives them, and the computer that carries them out. */
-    instructions?: { id: string; name: string; text: string; enabled: boolean; actions: string[] }[];
+    instructions?: { id: string; name: string; text: string; enabled: boolean; actions: string[]; tools?: Record<string, unknown>[] }[];
+    /** Calls to outside tools waiting for approval, or decided, as `mail.instructions.approvals.list` gives them. */
+    approvals?: Record<string, unknown>[];
+    /** Outside tool servers already set up on this computer. */
+    mcpServers?: Record<string, unknown>[];
     instructionsProcessor?: { device_id: string; device_name: string; since: string };
     /** The model the instructions use, and what they have done. */
     instructionsModel?: { provider: "anthropic" | "ollama"; model: string; cloud_consent: boolean };
@@ -387,7 +391,8 @@ export async function withCore(page: Page, core: FakeCore = {}) {
         let keySaved = false;
         let ollamaAt = "http://localhost:11434";
         /** Outside tool servers on this computer. */
-        let mcpServers: Record<string, unknown>[] = [];
+        let mcpServers: Record<string, unknown>[] = [...(core.mcpServers ?? [])];
+        let approvals: Record<string, unknown>[] = [...(core.approvals ?? [])];
         /** To Do as the core keeps it, and what undoes each change. */
         const todoLists = [
             { id: "list-tasks", name: "Tasks", well_known: "defaultList", built_in: true, read_only: false },
@@ -1075,7 +1080,12 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return instructed();
             },
             "mail.instructions.set": (args) => {
-                const made = { id: String(args.instruction_id ?? `i-${instructions.list.length + 1}`), name: String(args.name), text: String(args.text), enabled: args.enabled !== false, actions: args.actions as string[] };
+                const was = instructions.list.find((each) => each.id === args.instruction_id);
+                const given = args.tools as { server_id: string; tool: string; fixed?: Record<string, unknown> }[] | undefined;
+                const tools = given
+                    ? given.map((t) => ({ server_id: t.server_id, server: String(mcpServers.find((s) => s.id === t.server_id)?.name ?? ""), tool: t.tool, fixed: t.fixed ?? {}, unattended: Boolean(was?.tools?.find((w) => w.server_id === t.server_id && w.tool === t.tool)?.unattended) }))
+                    : (was?.tools ?? []);
+                const made = { id: String(args.instruction_id ?? `i-${instructions.list.length + 1}`), name: String(args.name), text: String(args.text), enabled: args.enabled !== false, actions: args.actions as string[], tools };
                 instruct(args, () => {
                     const at = instructions.list.findIndex((each) => each.id === made.id);
                     if (at >= 0) instructions.list[at] = made;
@@ -1125,6 +1135,17 @@ export async function withCore(page: Page, core: FakeCore = {}) {
                 return { ready, not_ready_because: ready ? null : "Sending this mailbox's mail to Anthropic has not been agreed to.", waiting: 0, failed: 0, today: { requests: 7 }, daily_cap: 500, last_error: null, last_pass: null, last_pass_at: null };
             },
             "mail.instructions.log": () => ({ entries: core.instructionsLog ?? [] }),
+            "mail.instructions.tools.set_unattended": (args) =>
+                instruct(args, () => {
+                    const tool = instructions.list.find((each) => each.id === args.instruction_id)?.tools?.find((t) => t.server_id === args.server_id && t.tool === args.tool);
+                    if (tool) tool.unattended = Boolean(args.unattended);
+                }),
+            "mail.instructions.approvals.list": () => ({ approvals }),
+            "mail.instructions.approvals.decide": (args) => {
+                const decision = { state: args.approve ? "approved" : "rejected", by: computer.name };
+                approvals = approvals.map((a) => (a.id === args.approval_id ? { ...a, state: decision.state, decided_by: computer.name } : a));
+                return { decision };
+            },
             "mcp_servers.list": () => ({ servers: mcpServers }),
             "mcp_servers.add": (args) => {
                 const server = { id: `mcp-${mcpServers.length + 1}`, name: String(args.name), url: String(args.url), signed_in: null, tools: null, tools_read_at: null };

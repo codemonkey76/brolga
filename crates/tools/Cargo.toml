@@ -21,6 +21,7 @@ url.workspace = true
 [dev-dependencies]
 brolga-fake-mcp.workspace = true
 reqwest.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

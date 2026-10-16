@@ -330,6 +330,50 @@ pub async fn tools(
         .collect())
 }
 
+/// What a tool call came to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Called {
+    /// The tool did what it was asked; false where it says it failed.
+    pub ok: bool,
+    /// What it said, as text, cut to a few thousand characters.
+    pub text: String,
+}
+
+/// Call a tool with these arguments. Not safe to repeat blindly: the
+/// caller keeps a record of a call before making it.
+pub async fn call(
+    secrets: Arc<dyn SecretStore>,
+    server: &Server,
+    tool: &str,
+    arguments: serde_json::Map<String, Value>,
+) -> Result<Called, ToolsError> {
+    let connection = connect(secrets, server).await?;
+    let answer = connection
+        .call_tool(
+            rmcp::model::CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments),
+        )
+        .await
+        .map_err(|e| ToolsError::Unreached(server.name.clone(), e.to_string()));
+    let _ = connection.cancel().await;
+    let answer = serde_json::to_value(answer?)
+        .map_err(|e| ToolsError::Unreached(server.name.clone(), e.to_string()))?;
+    let text: String = answer["content"]
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+
+    Ok(Called {
+        ok: answer["isError"] != true,
+        text: text.chars().take(4_000).collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

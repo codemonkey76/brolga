@@ -522,6 +522,31 @@ const STEPS: &[&str] = &[
 ",    "
     -- A run over existing mail makes To Do tasks only where asked to.
     ALTER TABLE instruction_runs ADD COLUMN include_tasks INTEGER NOT NULL DEFAULT 0;
+",    "
+    -- Calls to outside tools the instructions make, on the processing
+    -- device (docs/spec-mail-instructions.md, \"Outside tools\"). Written
+    -- before a call is made, so that one interrupted is never made again
+    -- unasked. state: waiting (for approval), calling, retry (from
+    -- next_try), done, failed, rejected, changed (the item approved was
+    -- not the call put up) or unknown (interrupted: it may have been made).
+    -- call is the call exactly as it was put up for approval.
+    CREATE TABLE tool_calls (
+        id TEXT PRIMARY KEY NOT NULL,
+        approval_id TEXT NOT NULL DEFAULT '',
+        message_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        call TEXT NOT NULL,
+        state TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_try INTEGER NOT NULL DEFAULT 0,
+        outcome TEXT NOT NULL DEFAULT '',
+        run_id TEXT,
+        changed_at INTEGER NOT NULL DEFAULT (unixepoch())
+    ) STRICT;
+
+    -- A run over existing mail makes outside tool calls only where asked to.
+    ALTER TABLE instruction_runs ADD COLUMN include_tools INTEGER NOT NULL DEFAULT 0;
 ",
 ];
 
