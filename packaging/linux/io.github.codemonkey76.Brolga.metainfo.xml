@@ -64,6 +64,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.21" date="2026-10-16">
+      <description>
+        <p>Mail instructions: standing instructions for each mailbox, written in plain words, that an AI model (Anthropic's, or one of your own through Ollama) carries out on new mail in the Inbox. They can move, categorise, flag and mark messages, make To Do tasks, and call tools on other services such as a helpdesk, asking first until you let a tool run unattended. Calls waiting for approval can be approved from any computer signed in to the mailbox. Instructions can also be run over existing mail, with a preview first and undo for three days. A new Tasks section works with Microsoft To Do. A new icon.</p>
+      </description>
+    </release>
     <release version="0.1.20" date="2026-10-16">
       <description>
         <p>A follow-up date set in Brolga now shows as the same day in Outlook; before, it showed a day early east of Greenwich. In conversation view, deleting, moving, archiving, marking read or unread and categorising a conversation does it to the whole conversation in that folder, and a flag goes on its newest message. A message an AI agent was allowed to send goes out only as it was shown. Public holiday regions in New Zealand, Austria, Malaysia and Bosnia are listed by name.</p>
