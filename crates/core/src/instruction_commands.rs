@@ -458,7 +458,7 @@ async fn model_test(mailboxes: Arc<Mailboxes>, args: Account) -> Result<Value, C
         }],
         ..List::default()
     };
-    let plan = crate::deciding::Plan::new(&list, &[], &[])
+    let plan = crate::deciding::Plan::new(&list, &[], &[], &[])
         .ok_or_else(|| failed("The test could not be set up."))?;
     let ask = plan.ask(
         &crate::deciding::sample(),
@@ -562,6 +562,7 @@ async fn log(mailboxes: Arc<Mailboxes>, args: Log) -> Result<Value, CommandError
                     "instruction": args["instruction"],
                     "model": args["model"],
                     "undo_id": args["undo_id"],
+                    "undo_command": args["undo_command"].as_str().unwrap_or("mail.undo"),
                 })
             })
         })
@@ -578,6 +579,7 @@ struct RunScope {
     subfolders: Option<bool>,
     received_from: Option<String>,
     received_to: Option<String>,
+    include_tasks: Option<bool>,
 }
 
 impl RunScope {
@@ -597,6 +599,7 @@ impl RunScope {
             subfolders: self.subfolders.unwrap_or(false),
             from: self.received_from.clone(),
             to: self.received_to.clone(),
+            include_tasks: self.include_tasks.unwrap_or(false),
         })
     }
 }
@@ -1194,7 +1197,7 @@ pub(crate) fn register(
             id: "mail.instructions.log".to_owned(),
             title: "What mail instructions have done".to_owned(),
             description: format!(
-                "What the instructions have done to this mailbox's mail, the latest first: each action with its message, instruction and model, whether it was done (`ok`),                  not allowed (`refused`) or did not work (`failed`), and the undo_id to take it back with mail.undo. {WHAT}"
+                "What the instructions have done to this mailbox's mail, the latest first: each action with its message, instruction and model, whether it was done (`ok`),                  not allowed (`refused`) or did not work (`failed`), and the undo_id to take it back with the undo_command it names (mail.undo, or tasks.undo for a task made). {WHAT}"
             ),
             kind: CommandKind::Query,
             consequential: false,
@@ -1220,6 +1223,10 @@ pub(crate) fn register(
         properties.insert(
             "received_to".to_owned(),
             json!({ "type": "string", "description": "Messages received on or before this day." }),
+        );
+        properties.insert(
+            "include_tasks".to_owned(),
+            json!({ "type": "boolean", "description": "Let the instructions make To Do tasks in this run. Left out unless asked for: a task for each of many old messages is a lot of tasks." }),
         );
     };
     let mut scoped = serde_json::Map::new();

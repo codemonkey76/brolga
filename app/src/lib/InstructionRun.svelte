@@ -30,7 +30,7 @@
         from: { name: string; address: string };
         received_at: string;
         state: string;
-        decisions: { action: string; folder?: string; categories?: string[]; due?: string | null; read?: boolean; instruction: string; reason: string }[];
+        decisions: { action: string; folder?: string; categories?: string[]; due?: string | null; read?: boolean; title?: string; list?: string; instruction: string; reason: string }[];
         error: string | null;
     }
 
@@ -38,7 +38,7 @@
 
     let { accountId }: Props = $props();
     let folders = $state<Folder[]>([]);
-    let scope = $state({ folder: "", subfolders: false, from: "", to: "" });
+    let scope = $state({ folder: "", subfolders: false, from: "", to: "", tasks: false });
     let estimate = $state<Estimate | null>(null);
     let current = $state<Run | null>(null);
     let items = $state<Item[]>([]);
@@ -91,6 +91,7 @@
         const args: Record<string, unknown> = { account_id: accountId, folder_id: scope.folder, subfolders: scope.subfolders };
         if (scope.from) args.received_from = scope.from;
         if (scope.to) args.received_to = scope.to;
+        if (scope.tasks) args.include_tasks = true;
         return args;
     };
 
@@ -122,10 +123,12 @@
     const when = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
     const said = (actions: Record<string, number>) =>
         Object.entries(actions)
-            .map(([action, n]) => `${({ move: "move", set_categories: "categorise", flag: "flag", set_read: "mark read or unread" } as Record<string, string>)[action] ?? action} ${n}`)
+            .map(([action, n]) => `${({ move: "move", set_categories: "categorise", flag: "flag", set_read: "mark read or unread", create_task: "make a task for" } as Record<string, string>)[action] ?? action} ${n}`)
             .join(", ") || "change nothing";
     const decision = (each: Item["decisions"][number]) =>
-        each.action === "move"
+        each.action === "create_task"
+            ? `Make a task in ${each.list}: ${each.title}${each.due ? `, due ${each.due}` : ""}`
+            : each.action === "move"
             ? `Move to ${each.folder}`
             : each.action === "set_categories"
               ? `Categorise ${each.categories?.join(", ")}`
@@ -161,6 +164,7 @@
                 </select>
             </label>
             <label><input type="checkbox" bind:checked={scope.subfolders} onchange={() => (estimate = null)} /> And the folders inside it</label>
+            <label><input type="checkbox" bind:checked={scope.tasks} /> Let instructions make To Do tasks too</label>
             <div class="days">
                 <label class="stacked">Received from <input type="date" bind:value={scope.from} onchange={() => (estimate = null)} /></label>
                 <label class="stacked">to <input type="date" bind:value={scope.to} onchange={() => (estimate = null)} /></label>

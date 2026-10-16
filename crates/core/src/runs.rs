@@ -39,6 +39,8 @@ pub(crate) struct Scope {
     pub subfolders: bool,
     pub from: Option<String>,
     pub to: Option<String>,
+    /// Let the instructions make To Do tasks: left out unless asked for.
+    pub include_tasks: bool,
 }
 
 /// The folders a run covers by id, and the names of any of them not yet
@@ -207,6 +209,7 @@ pub(crate) async fn preview(
             provider.name(),
             provider.model(),
             i64::try_from(settings.list.version).unwrap_or(i64::MAX),
+            scope.include_tasks,
             &ids,
         )
         .map_err(local)?;
@@ -291,12 +294,13 @@ pub(crate) async fn undo(
     }
     let registry = mailboxes.registry().ok_or("Brolga is shutting down.")?;
     let mut undone = 0;
-    for undo_id in mailbox.db.run_undo_ids(run_id).map_err(|e| e.to_string())? {
+    for kept in mailbox.db.run_undo_ids(run_id).map_err(|e| e.to_string())? {
+        let (command, on, undo_id) = match kept.strip_prefix("tasks:") {
+            Some(task) => ("tasks.undo", processing::owner(account_id), task.to_owned()),
+            None => ("mail.undo", account_id, kept),
+        };
         if let Ok(done) = registry
-            .execute(
-                "mail.undo",
-                json!({ "account_id": account_id, "undo_id": undo_id }),
-            )
+            .execute(command, json!({ "account_id": on, "undo_id": undo_id }))
             .await
         {
             undone += done["undone"].as_u64().unwrap_or_default();
@@ -332,7 +336,9 @@ pub(crate) fn soon(
         };
         while let Ok(Some(run)) = mailbox.db.active_run() {
             let went = match run.state.as_str() {
-                "previewing" => preview_some(&mailboxes, &mailbox, &device, &run).await,
+                "previewing" => {
+                    preview_some(&mailboxes, &account_id, &mailbox, &device, &run).await
+                }
                 "applying" => apply_some(&mailboxes, &account_id, &mailbox, &device, &run).await,
                 _ => Ok(false),
             };
@@ -382,6 +388,20 @@ fn decided_json(each: &Decided) -> Value {
             shown["action"] = json!("set_read");
             shown["read"] = json!(read);
         }
+        Step::CreateTask {
+            list_id,
+            list,
+            title,
+            due,
+            reminder,
+        } => {
+            shown["action"] = json!("create_task");
+            shown["list_id"] = json!(list_id);
+            shown["list"] = json!(list);
+            shown["title"] = json!(title);
+            shown["due"] = json!(due);
+            shown["reminder"] = json!(reminder);
+        }
     }
     shown
 }
@@ -397,6 +417,13 @@ fn decided_from(kept: &Value) -> Option<Decided> {
         }
         "flag" => Step::Flag(kept["due"].as_str().map(str::to_owned)),
         "set_read" => Step::Read(kept["read"] == true),
+        "create_task" => Step::CreateTask {
+            list_id: kept["list_id"].as_str()?.to_owned(),
+            list: kept["list"].as_str().unwrap_or_default().to_owned(),
+            title: kept["title"].as_str()?.to_owned(),
+            due: kept["due"].as_str().map(str::to_owned),
+            reminder: kept["reminder"].as_str().map(str::to_owned),
+        },
         _ => return None,
     };
 
@@ -415,6 +442,7 @@ fn decided_from(kept: &Value) -> Option<Decided> {
 /// more to do.
 async fn preview_some(
     mailboxes: &Mailboxes,
+    account_id: &str,
     mailbox: &Arc<Mailbox>,
     device: &Device,
     run: &RunRow,
@@ -435,7 +463,13 @@ async fn preview_some(
         .ok_or("No connection could be set up.")?;
     let folders = mailbox.db.folders().map_err(local)?;
     let categories = processing::categories(mailbox).await;
-    let plan = Plan::new(&settings.list, &folders, &categories).ok_or("No instruction is on.")?;
+    let task_lists = if run.include_tasks {
+        processing::task_lists(mailboxes, account_id).await
+    } else {
+        Vec::new()
+    };
+    let plan = Plan::new(&settings.list, &folders, &categories, &task_lists)
+        .ok_or("No instruction is on.")?;
     let (day, zone) = processing::today();
     let batch = mailbox
         .db
@@ -634,8 +668,12 @@ async fn apply_some(
             let (command, args) = processing::command_for(account_id, &row, &each.step);
             match registry.execute(command, args.clone()).await {
                 Ok(done) => {
+                    // Kept with the command that undoes it: a task's is To Do's.
                     if let Some(undo_id) = done["undo_id"].as_str() {
-                        undo_ids.push(undo_id.to_owned());
+                        undo_ids.push(match processing::undo_command(command) {
+                            "tasks.undo" => format!("tasks:{undo_id}"),
+                            _ => undo_id.to_owned(),
+                        });
                     }
                     processing::record(
                         mailboxes.global(),
@@ -663,10 +701,24 @@ async fn apply_some(
                 }
             }
         }
-        mailbox
-            .db
-            .keep_undo(&undo_ids, processing::now_secs() + UNDO_FOR)
-            .map_err(local)?;
+        // What undoes them is kept for three days, each where it is kept:
+        // a task's with the To Do of the account the mailbox belongs to.
+        let until = processing::now_secs() + UNDO_FOR;
+        let (tasks, mail): (Vec<String>, Vec<String>) = undo_ids
+            .iter()
+            .cloned()
+            .partition(|id| id.starts_with("tasks:"));
+        mailbox.db.keep_undo(&mail, until).map_err(local)?;
+        if !tasks.is_empty()
+            && let Ok(account) = mailboxes.account(Some(processing::owner(account_id)))
+            && let Ok(owner) = mailboxes.open(&account).await
+        {
+            let tasks: Vec<String> = tasks
+                .iter()
+                .map(|id| id.trim_start_matches("tasks:").to_owned())
+                .collect();
+            owner.db.keep_undo(&tasks, until).map_err(local)?;
+        }
         let written = json!({
             "at": jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
             "version": run.list_version,

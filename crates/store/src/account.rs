@@ -519,6 +519,9 @@ const STEPS: &[&str] = &[
         dismissed INTEGER NOT NULL DEFAULT 0,
         snoozed_until TEXT
     ) STRICT;
+",    "
+    -- A run over existing mail makes To Do tasks only where asked to.
+    ALTER TABLE instruction_runs ADD COLUMN include_tasks INTEGER NOT NULL DEFAULT 0;
 ",
 ];
 

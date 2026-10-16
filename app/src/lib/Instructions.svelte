@@ -7,7 +7,7 @@
         username: string;
     }
 
-    type Action = "move" | "set_categories" | "flag" | "set_read";
+    type Action = "move" | "set_categories" | "flag" | "set_read" | "create_task";
 
     interface Instruction {
         id: string;
@@ -40,6 +40,7 @@
         { id: "set_categories", name: "Give it categories" },
         { id: "flag", name: "Flag it, with a due day if the instruction gives one" },
         { id: "set_read", name: "Mark it read or unread" },
+        { id: "create_task", name: "Make a To Do task from it, in a list the instruction names or in Tasks" },
     ];
     const LONGEST = 2000;
 
@@ -167,6 +168,8 @@
         subject: string | null;
         instruction: string | null;
         undo_id: string | null;
+        /** mail.undo, or tasks.undo for a task made. */
+        undo_command?: string;
     }
 
     let model = $state<Model | null>(null);
@@ -276,7 +279,9 @@
     async function undo(entry: Entry) {
         if (!entry.undo_id) return;
         try {
-            await execute("mail.undo", { account_id: accountId, undo_id: entry.undo_id });
+            // A task is in the To Do of the account a shared mailbox belongs to.
+            const tasks = entry.undo_command === "tasks.undo";
+            await execute(entry.undo_command ?? "mail.undo", { account_id: tasks ? accountId.split("~")[0] : accountId, undo_id: entry.undo_id });
             undone = [...undone, entry.undo_id];
         } catch (failure) {
             problem = say(failure);
@@ -290,6 +295,7 @@
             "mail.messages.set_categories": "Categorised",
             "mail.messages.set_flag": "Flagged",
             "mail.messages.set_read": "Marked",
+            "tasks.create": "Made a task",
         })[entry.command] ?? entry.command.replace(/^mail\.instructions\./, "Wanted to ");
 
     const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "never");

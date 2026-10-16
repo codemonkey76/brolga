@@ -402,6 +402,9 @@ struct Create {
     reminder_at: Option<String>,
     importance: Option<String>,
     message_id: Option<String>,
+    /// The mailbox the message is in, where it is not the account's own: a
+    /// shared one.
+    message_account_id: Option<String>,
 }
 
 /// A link back to a message, for a task made from it.
@@ -425,14 +428,27 @@ async fn link_to(mailbox: &Mailbox, message_id: &str) -> Result<Value, CommandEr
     )
 }
 
-async fn create_task(mailbox: &Arc<Mailbox>, args: Create) -> Result<Value, CommandError> {
+async fn create_task(
+    mailboxes: &Mailboxes,
+    mailbox: &Arc<Mailbox>,
+    args: Create,
+) -> Result<Value, CommandError> {
     let list = writable_list(mailbox, args.list_id.as_deref())?;
     let title = args.title.trim().to_owned();
     if title.is_empty() || title.chars().count() > 255 {
         return Err(failed("A task needs a title of up to 255 characters."));
     }
     let links = match &args.message_id {
-        Some(message_id) => vec![link_to(mailbox, message_id).await?],
+        Some(message_id) => {
+            let holder = match &args.message_account_id {
+                Some(other) => {
+                    let account = mailboxes.account(Some(other)).map_err(failed)?;
+                    mailboxes.open(&account).await.map_err(failed)?
+                }
+                None => mailbox.clone(),
+            };
+            vec![link_to(&holder, message_id).await?]
+        }
         None => Vec::new(),
     };
     let task = TaskRow {
@@ -468,7 +484,7 @@ async fn create_task(mailbox: &Arc<Mailbox>, args: Create) -> Result<Value, Comm
 
 async fn create(mailboxes: Arc<Mailboxes>, args: Create) -> Result<Value, CommandError> {
     let mailbox = open(&mailboxes, args.account_id.as_deref()).await?;
-    create_task(&mailbox, args).await
+    create_task(&mailboxes, &mailbox, args).await
 }
 
 #[derive(Deserialize)]
@@ -932,7 +948,8 @@ pub(crate) fn register(
                         "due": { "type": "string", "description": "The day it is due, 2026-10-20." },
                         "reminder_at": { "type": "string", "description": "When to be reminded, with its offset: 2026-10-20T09:00:00+10:00." },
                         "importance": { "type": "string", "enum": ["low", "normal", "high"] },
-                        "message_id": { "type": "string", "description": "An email the task is made from, from mail.messages.list." }
+                        "message_id": { "type": "string", "description": "An email the task is made from, from mail.messages.list." },
+                        "message_account_id": { "type": "string", "description": "The mailbox that email is in, where it is a shared one: from accounts.shared.list." }
                     },
                     "required": ["title"],
                     "additionalProperties": false

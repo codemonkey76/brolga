@@ -83,9 +83,12 @@ pub(crate) enum Action {
     Flag,
     /// Mark it read or unread.
     SetRead,
+    /// Make a To Do task, in a list the instruction names or the default
+    /// one, linked back to the message.
+    CreateTask,
 }
 
-pub(crate) const ACTIONS: [&str; 4] = ["move", "set_categories", "flag", "set_read"];
+pub(crate) const ACTIONS: [&str; 5] = ["move", "set_categories", "flag", "set_read", "create_task"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Instruction {
